@@ -1644,6 +1644,16 @@ local icons = {
     answered = { " ", "OctoGreen" },
     closed = { " ", "OctoRed" },
   },
+  notification = {
+    issue = {
+      unread = { " ", "OctoBlue" },
+      read = { " ", "OctoGrey" },
+    },
+    pull_request = {
+      unread = { " ", "OctoBlue" },
+      read = { " ", "OctoGrey" },
+    },
+  },
   unknown = { " " },
 }
 

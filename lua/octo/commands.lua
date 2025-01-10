@@ -437,6 +437,11 @@ function M.setup()
         M.remove_project_card()
       end,
     },
+    notification = {
+      list = function()
+        picker.notifications()
+      end,
+    },
   }
 
   setmetatable(M.commands.pr, {
@@ -444,6 +449,12 @@ function M.setup()
       utils.get_pull_request_for_current_branch(function(pr)
         vim.cmd("e " .. utils.get_pull_request_uri(pr.repo, pr.number))
       end)
+    end,
+  })
+
+  setmetatable(M.commands.notification, {
+    __call = function(_)
+      picker.notifications()
     end,
   })
 
