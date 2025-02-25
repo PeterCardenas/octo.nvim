@@ -1288,7 +1288,7 @@ function M.notifications(opts)
               end)
               map("i", cfg.picker_config.mappings.open_in_browser.lhs, open_in_browser())
               map("i", cfg.picker_config.mappings.copy_url.lhs, copy_url())
-              map("i", cfg.mappings.notification.read.lhs, mark_notification_read())
+              map("n", cfg.mappings.notification.read.lhs, mark_notification_read())
               return true
             end,
           })
