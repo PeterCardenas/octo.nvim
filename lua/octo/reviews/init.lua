@@ -218,6 +218,12 @@ function Review:initiate(opts)
     end
   end
 
+  local left, right = opts.left or pr.left, opts.right or pr.right
+  if not left.commit or not right.commit then
+    utils.error "Cannot start review without commits"
+    return
+  end
+
   -- create the layout
   self.layout = Layout:new {
     left = opts.left or pr.left,
