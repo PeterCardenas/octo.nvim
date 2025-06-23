@@ -340,6 +340,10 @@ function Review:collect_submit_info()
     utils.error "No review in progress"
     return
   end
+  if self.submit_review_win then
+    utils.error "Review submit window already open"
+    return
+  end
 
   local conf = config.values
   local winid, bufnr = window.create_centered_float {
@@ -349,6 +353,10 @@ function Review:collect_submit_info()
       conf.mappings.submit_win.comment_review.lhs,
       conf.mappings.submit_win.request_changes.lhs
     ),
+  }
+  self.submit_review_win = {
+    winid = winid,
+    bufnr = bufnr,
   }
   vim.api.nvim_set_current_win(winid)
   vim.bo[bufnr].syntax = "octo"
@@ -364,10 +372,15 @@ function Review:submit(event)
     return
   end
   review_id = review_id --[[@as string]]
-  local bufnr = vim.api.nvim_get_current_buf()
-  local winid = vim.api.nvim_get_current_win()
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, default_id, false)
-  local body = utils.escape_char(utils.trim(table.concat(lines, "\n")))
+  local body = ""
+  local winid ---@type integer?
+  if self.submit_review_win then
+    local bufnr = self.submit_review_win.bufnr
+    winid = self.submit_review_win.winid
+    self.submit_review_win = nil
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    body = utils.escape_char(utils.trim(table.concat(lines, "\n")))
+  end
   local query = graphql("submit_pull_request_review_mutation", review_id, event, body, { escape = false })
   gh.api.graphql {
     f = { query = query },

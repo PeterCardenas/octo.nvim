@@ -124,6 +124,10 @@ function M.try_close_wins(...)
   for _, win_id in ipairs { ... } do
     pcall(vim.api.nvim_win_close, win_id, true)
   end
+  local review = require("octo.reviews").get_current_review()
+  if review then
+    review.submit_review_win = nil
+  end
 end
 
 ---@class octo.PopupOpts
