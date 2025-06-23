@@ -159,31 +159,10 @@ local function get_closest_valid(name, valid, argLead)
   return valid_types
 end
 
-local function remove_through_colon(qualifier, value)
-  local pattern = ":"
-  local start_index = string.find(value, pattern)
-  if start_index then
-    return string.sub(value, start_index + #pattern)
-  end
-  return value
-end
-
 local function create_complete_user(qualifier)
   return function(argLead, cmdLine)
-    local partial_user = remove_through_colon(qualifier, argLead)
     local valid_users = { qualifier .. ":@me" }
 
-    if utils.is_blank(partial_user) then
-      return valid_users
-    end
-
-    local users = get_users(partial_user)
-
-    for _, user in ipairs(users) do
-      if not utils.is_blank(user) then
-        table.insert(valid_users, qualifier .. ":" .. user)
-      end
-    end
     return valid_users
   end
 end
