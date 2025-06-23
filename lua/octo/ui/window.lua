@@ -119,8 +119,11 @@ function M.create_centered_float(opts)
   return winid, bufnr
 end
 
----@param ... integer
+---@param ... integer Window IDs to be closed
 function M.try_close_wins(...)
+  if require("blink.cmp").is_menu_visible() then
+    return
+  end
   for _, win_id in ipairs { ... } do
     pcall(vim.api.nvim_win_close, win_id, true)
   end
