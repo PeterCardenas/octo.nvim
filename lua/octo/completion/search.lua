@@ -173,32 +173,32 @@ local function complete_repo(argLead, cmdLine)
     return {}
   end
 
-  local owner, repo = utils.split_repo(repoWithName)
-
-  local has_slash = string.match(argLead, "/")
-
-  if not has_slash then
-    local users = get_users(owner)
-    local valid_users = {}
-
-    for _, user in ipairs(users) do
-      if not utils.is_blank(user) then
-        table.insert(valid_users, "repo:" .. user .. "/")
-      end
-    end
-    return valid_users
-  end
-
-  local repos = get_repos(owner, repo)
-  local valid_repos = {}
-  for _, repo in ipairs(repos) do
-    if string.match(repo, " ") then
-      repo = '"' .. repo .. '"'
-    end
-
-    table.insert(valid_repos, "repo:" .. owner .. "/" .. repo)
-  end
-  return valid_repos
+  -- local owner, repo = utils.split_repo(repoWithName)
+  --
+  -- local has_slash = string.match(argLead, "/")
+  --
+  -- if not has_slash then
+  --   local users = get_users(owner)
+  --   local valid_users = {}
+  --
+  --   for _, user in ipairs(users) do
+  --     if not utils.is_blank(user) then
+  --       table.insert(valid_users, "repo:" .. user .. "/")
+  --     end
+  --   end
+  --   return valid_users
+  -- end
+  --
+  -- local repos = get_repos(owner, repo)
+  -- local valid_repos = {}
+  -- for _, repo in ipairs(repos) do
+  --   if string.match(repo, " ") then
+  --     repo = '"' .. repo .. '"'
+  --   end
+  --
+  --   table.insert(valid_repos, "repo:" .. owner .. "/" .. repo)
+  -- end
+  -- return valid_repos
 end
 
 local function create_complete_branch(qualifier)
