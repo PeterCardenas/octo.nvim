@@ -155,6 +155,8 @@ function M.search()
               local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
               writers.write_block(tmpbuf, { "", "" }, reactions_line)
               writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
+              vim.b[tmpbuf].bufpath =
+                string.format("octo://%s/%s/%s/%s", owner, name, kind == "pull_request" and "pull" or kind, number)
               vim.bo[tmpbuf].filetype = "octo"
             end
           end,
@@ -406,10 +408,16 @@ function M.notifications(formatted_notifications, cached_notification_infos)
   function previewer:populate_preview_buf(entry_str)
     local tmpbuf = self:get_tmp_buffer() ---@type integer
     local entry = formatted_notifications[entry_str]
-    local number = entry.value ---@type string
+    local number = entry.value
     local owner, name = utils.split_repo(entry.repo)
     local kind = entry.kind
-    local preview = notifications.get_preview_fn(kind)
+    local preview_inner = notifications.get_preview_fn(kind)
+    ---@param bufnr integer
+    local function preview(obj, bufnr)
+      preview_inner(obj, bufnr)
+      vim.b[bufnr].bufpath =
+        string.format("octo://%s/%s/%s", entry.repo, entry.kind == "pull_request" and "pull" or entry.kind, number)
+    end
     local cached_notification = cached_notification_infos[entry.ordinal]
 
     if cached_notification then
