@@ -165,7 +165,7 @@ function OctoBuffer:render_discussion()
 end
 
 ---@type string[]
-local non_rendering_events = { "UnsubscribedEvent", "SubscribedEvent", "MentionedEvent" }
+local non_rendering_events = { "UnsubscribedEvent", "SubscribedEvent", "MentionedEvent", "PullRequestRevisionMarker" }
 
 ---@param typename string
 ---@return boolean
