@@ -1469,6 +1469,33 @@ function M.notifications(opts)
       end)
     end
     opts.preview_fn = preview_fn
+    vim.defer_fn(function()
+      for idx, notification in ipairs(resp) do
+        local owner, name = utils.split_repo(notification.repository.full_name)
+        local number = notification.subject.url:match "/(%d+)$"
+        local kind = (function(type)
+          if type == "Issue" then
+            return "issue"
+          elseif type == "PullRequest" then
+            return "pull_request"
+          elseif type == "Discussion" then
+            return "discussion"
+          elseif type == "Release" then
+            return "release"
+          end
+          return "unknown"
+        end)(notification.subject.type)
+        if kind ~= "unknown" then
+          notifications.fetch_preview(owner, name, number, kind, function(obj)
+            local ordinal = notification.subject.title .. " " .. notification.repository.full_name .. " " .. number
+            cached_notification_infos[ordinal] = obj
+          end)
+        end
+        if idx > 50 then
+          break
+        end
+      end
+    end, 1000)
 
     local function copy_notification_url(prompt_bufnr)
       local entry = action_state.get_selected_entry(prompt_bufnr)
