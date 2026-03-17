@@ -407,6 +407,7 @@ function M.create_buffer(kind, obj, repo, create, hostname)
     octo_buffer:async_fetch_issues()
   end
   utils.clear_history()
+  vim.bo[bufnr].modified = false
   require("octo.polling").track_buffer(bufnr)
 end
 
