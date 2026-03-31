@@ -14,6 +14,336 @@ local vim = vim
 
 local M = {}
 
+---@class octo.ChecksBreakdown
+---@field required_pass integer
+---@field required_fail integer
+---@field required_pending integer
+---@field required_skip integer
+---@field optional_pass integer
+---@field optional_fail integer
+---@field optional_pending integer
+---@field optional_skip integer
+
+--- Compute a breakdown of required vs optional checks from statusCheckRollup contexts.
+---@param context_nodes octo.StatusCheckRollupContext[]
+---@return octo.ChecksBreakdown
+local function compute_checks_breakdown(context_nodes)
+  local b = {
+    required_pass = 0,
+    required_fail = 0,
+    required_pending = 0,
+    required_skip = 0,
+    optional_pass = 0,
+    optional_fail = 0,
+    optional_pending = 0,
+    optional_skip = 0,
+  }
+  for _, node in ipairs(context_nodes) do
+    local key_prefix = node.isRequired and "required_" or "optional_"
+    local status_key ---@type string
+
+    if node.__typename == "CheckRun" then
+      if node.status ~= "COMPLETED" then
+        status_key = "pending"
+      else
+        local c = node.conclusion
+        if c == "SKIPPED" then
+          status_key = "skip"
+        elseif c == "SUCCESS" or c == "NEUTRAL" then
+          status_key = "pass"
+        else
+          status_key = "fail"
+        end
+      end
+    elseif node.__typename == "StatusContext" then
+      local s = node.state
+      if s == "PENDING" or s == "EXPECTED" then
+        status_key = "pending"
+      else
+        status_key = s == "SUCCESS" and "pass" or "fail"
+      end
+    end
+
+    if status_key then
+      b[key_prefix .. status_key] = b[key_prefix .. status_key] + 1
+    end
+  end
+  return b
+end
+
+--- Check if a repository ruleset applies to a given branch.
+---@param ruleset octo.RepositoryRuleset
+---@param branch_name string
+---@param default_branch string?
+---@return boolean
+local function ruleset_applies_to_branch(ruleset, branch_name, default_branch)
+  if ruleset.target ~= "BRANCH" then
+    return false
+  end
+  if ruleset.enforcement ~= "ACTIVE" then
+    return false
+  end
+  local conditions = ruleset.conditions and ruleset.conditions.refName
+  if not conditions then
+    return false
+  end
+
+  local matches_include = false
+  for _, pattern in ipairs(conditions.include or {}) do
+    if pattern == "~ALL" then
+      matches_include = true
+    elseif pattern == "~DEFAULT_BRANCH" then
+      matches_include = (branch_name == default_branch)
+    elseif pattern:match "^refs/heads/" then
+      local glob = pattern:gsub("^refs/heads/", "")
+      matches_include = vim.fn.match(branch_name, vim.fn.glob2regpat(glob)) ~= -1
+    end
+    if matches_include then
+      break
+    end
+  end
+
+  if not matches_include then
+    return false
+  end
+
+  for _, pattern in ipairs(conditions.exclude or {}) do
+    local excluded = false
+    if pattern == "~ALL" then
+      excluded = true
+    elseif pattern == "~DEFAULT_BRANCH" then
+      excluded = (branch_name == default_branch)
+    elseif pattern:match "^refs/heads/" then
+      local glob = pattern:gsub("^refs/heads/", "")
+      excluded = vim.fn.match(branch_name, vim.fn.glob2regpat(glob)) ~= -1
+    end
+    if excluded then
+      return false
+    end
+  end
+
+  return true
+end
+
+--- Aggregate rules from all applicable rulesets for a branch.
+---@param rulesets octo.RepositoryRuleset[]
+---@param branch_name string
+---@param default_branch string?
+---@return octo.BranchProtectionRule
+local function get_aggregated_rules(rulesets, branch_name, default_branch)
+  local rules = {
+    requiresApprovingReviews = false,
+    requiredApprovingReviewCount = 0,
+    requiresStatusChecks = false,
+    requiresLinearHistory = false,
+    requiresCommitSignatures = false,
+    requiresConversationResolution = false,
+    requiresCodeOwnerReviews = false,
+  }
+  for _, ruleset in ipairs(rulesets) do
+    if ruleset_applies_to_branch(ruleset, branch_name, default_branch) then
+      for _, rule in ipairs((ruleset.rules and ruleset.rules.nodes) or {}) do
+        local t = rule.type
+        if t == "PULL_REQUEST" and rule.parameters then
+          rules.requiresApprovingReviews = true
+          local count = rule.parameters.requiredApprovingReviewCount or 0
+          if count > rules.requiredApprovingReviewCount then
+            rules.requiredApprovingReviewCount = count
+          end
+          if rule.parameters.requireCodeOwnerReview then
+            rules.requiresCodeOwnerReviews = true
+          end
+          if rule.parameters.requiredReviewThreadResolution then
+            rules.requiresConversationResolution = true
+          end
+        elseif t == "REQUIRED_STATUS_CHECKS" then
+          rules.requiresStatusChecks = true
+        elseif t == "REQUIRED_LINEAR_HISTORY" then
+          rules.requiresLinearHistory = true
+        elseif t == "REQUIRED_SIGNATURES" then
+          rules.requiresCommitSignatures = true
+        end
+      end
+    end
+  end
+  return rules
+end
+
+--- Use GitHub Commit.signature (GraphQL) to count unsigned / invalid commits in the fetched window.
+---@param commits octo.PullRequestCommits?
+---@return { problem_count: integer, sampled: integer, total: integer, incomplete: boolean, first_detail: string? }?
+local function summarize_pr_commit_signatures(commits)
+  if not commits or commits == vim.NIL then
+    return nil
+  end
+  local nodes = commits.nodes
+  if not nodes then
+    return nil
+  end
+  local total = commits.totalCount or 0
+  if #nodes == 0 then
+    return total > 0 and { problem_count = 0, sampled = 0, total = total, incomplete = true, first_detail = nil } or nil
+  end
+  local problem_count = 0
+  local first_detail ---@type string?
+  for _, n in ipairs(nodes) do
+    if n ~= vim.NIL and n.commit and n.commit ~= vim.NIL then
+      local c = n.commit
+      local sig = c.signature
+      local ok = sig and sig ~= vim.NIL and sig.isValid
+      if not ok then
+        problem_count = problem_count + 1
+        if not first_detail then
+          local st = (sig and sig ~= vim.NIL) and sig.state or "UNSIGNED"
+          first_detail = string.format("%s (%s)", c.abbreviatedOid or "?", st)
+        end
+      end
+    end
+  end
+  return {
+    problem_count = problem_count,
+    sampled = #nodes,
+    total = total,
+    incomplete = total > #nodes,
+    first_detail = first_detail,
+  }
+end
+
+--- Count approving reviews from latestOpinionatedReviews.
+---@param issue octo.PullRequest
+---@return integer
+local function count_approving_reviews(issue)
+  local reviews = issue.latestOpinionatedReviews
+  if not reviews or reviews == vim.NIL or not reviews.nodes then
+    return 0
+  end
+  local count = 0
+  for _, review in ipairs(reviews.nodes) do
+    if review ~= vim.NIL and review.state == "APPROVED" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+--- Check whether the review approval requirement is satisfied.
+--- Uses reviewDecision when available (legacy branch protection), otherwise
+--- falls back to counting latestOpinionatedReviews (repository rulesets).
+---@param issue octo.PullRequest
+---@param required_count integer
+---@return boolean
+local function reviews_satisfied(issue, required_count)
+  if issue.reviewDecision and issue.reviewDecision ~= vim.NIL then
+    return issue.reviewDecision == "APPROVED"
+  end
+  return count_approving_reviews(issue) >= required_count
+end
+
+--- Render merge blocking context sub-lines when mergeStateStatus is BLOCKED.
+---@param issue octo.PullRequest
+---@param checks_breakdown octo.ChecksBreakdown?
+---@return table[] sub_lines virtual text lines to insert
+local function get_merge_blocking_lines(issue, checks_breakdown)
+  local lines = {}
+
+  -- Try branchProtectionRule first (legacy branch protection)
+  local bpr = issue.baseRef
+    and issue.baseRef ~= vim.NIL
+    and issue.baseRef.branchProtectionRule
+    and issue.baseRef.branchProtectionRule ~= vim.NIL
+    and issue.baseRef.branchProtectionRule
+
+  -- Try rulesets if no branchProtectionRule
+  if not bpr then
+    local rulesets = issue._rulesets
+    if rulesets and rulesets ~= vim.NIL and rulesets.nodes and #rulesets.nodes > 0 then
+      bpr = get_aggregated_rules(rulesets.nodes, issue.baseRefName, issue._defaultBranchName)
+    end
+  end
+
+  if bpr then
+    local required_count = bpr.requiredApprovingReviewCount or 1
+    if bpr.requiresApprovingReviews and not reviews_satisfied(issue, required_count) then
+      TextChunkBuilder:new()
+        :text("  × ", "OctoStateDismissed")
+        :text(string.format("Requires %d approving review(s)", required_count), "OctoStateDismissed")
+        :write_detail_line(lines)
+    end
+    if bpr.requiresStatusChecks then
+      if checks_breakdown and checks_breakdown.required_fail > 0 then
+        TextChunkBuilder:new()
+          :text("  × ", "OctoStateDismissed")
+          :text(string.format("%d required check(s) failing", checks_breakdown.required_fail), "OctoStateDismissed")
+          :write_detail_line(lines)
+      elseif checks_breakdown and checks_breakdown.required_pending > 0 then
+        TextChunkBuilder:new()
+          :text("  ⏳ ", "OctoStatePending")
+          :text(string.format("%d required check(s) pending", checks_breakdown.required_pending), "OctoStatePending")
+          :write_detail_line(lines)
+      end
+    end
+    if bpr.requiresCommitSignatures then
+      local sigs = summarize_pr_commit_signatures(issue.commits)
+      if sigs then
+        if sigs.problem_count > 0 then
+          local msg = string.format(
+            "%d commit(s) not signed or failed verification (e.g. %s)",
+            sigs.problem_count,
+            sigs.first_detail or "?"
+          )
+          TextChunkBuilder:new()
+            :text("  × ", "OctoStateDismissed")
+            :text(msg, "OctoStateDismissed")
+            :write_detail_line(lines)
+        elseif sigs.incomplete then
+          local msg = sigs.sampled == 0 and "Requires signed commits (commit list not loaded in this response)"
+            or string.format(
+              "Signed commits required — verified %d of %d commits; older commits not fetched",
+              sigs.sampled,
+              sigs.total
+            )
+          TextChunkBuilder:new():text("  ⚠ ", "OctoGrey"):text(msg, "OctoGrey"):write_detail_line(lines)
+        end
+      else
+        TextChunkBuilder:new()
+          :text("  ⚠ ", "OctoGrey")
+          :text("Requires signed commits (commit signature data unavailable)", "OctoGrey")
+          :write_detail_line(lines)
+      end
+    end
+    if bpr.requiresConversationResolution then
+      local unresolved = 0
+      if issue.reviewThreads and issue.reviewThreads.nodes then
+        for _, thread in ipairs(issue.reviewThreads.nodes) do
+          if thread ~= vim.NIL and not thread.isResolved then
+            unresolved = unresolved + 1
+          end
+        end
+      end
+      if unresolved > 0 then
+        TextChunkBuilder:new()
+          :text("  × ", "OctoStateDismissed")
+          :text(string.format("%d unresolved conversation(s)", unresolved), "OctoStateDismissed")
+          :write_detail_line(lines)
+      end
+    end
+    if bpr.requiresCodeOwnerReviews and not reviews_satisfied(issue, required_count) then
+      TextChunkBuilder:new()
+        :text("  × ", "OctoStateDismissed")
+        :text("Requires code owner review", "OctoStateDismissed")
+        :write_detail_line(lines)
+    end
+  else
+    -- No protection rule data at all — show generic blocked message
+    TextChunkBuilder:new()
+      :text("  ⚠ ", "OctoGrey")
+      :text("Blocked by branch protection rules", "OctoGrey")
+      :write_detail_line(lines)
+  end
+
+  return lines
+end
+
 -- Track if we've already warned about ProjectV2 config
 local projects_v2_config_warned = false
 
@@ -586,8 +916,8 @@ function M.write_state(bufnr, state, number)
   -- Skip showing state for open discussions
   if not (is_discussion and display_state == "OPEN") then
     local builder = TextChunkBuilder:new()
-    builder:state_with_icon(display_state, obj.stateReason, obj.isDraft, function(state, state_reason)
-      return get_state_icon(state, state_reason, is_issue, is_discussion)
+    builder:state_with_icon(display_state, obj.stateReason, obj.isDraft, function(st, st_reason)
+      return get_state_icon(st, st_reason, is_issue, is_discussion)
     end)
     vim.list_extend(title_vt, builder:build())
   end
@@ -979,16 +1309,63 @@ function M.write_details(bufnr, issue, update, include_status)
     end
 
     -- checks
+    local checks_breakdown ---@type octo.ChecksBreakdown?
     if issue.statusCheckRollup and issue.statusCheckRollup ~= vim.NIL then
-      local state = issue.statusCheckRollup.state
-      local state_info = utils.state_map[state]
-      ---@type string
-      local message = state_info.symbol .. state
-      local checks_vt = {
-        { "Checks: ", "OctoDetailsLabel" },
-        { message, state_info.hl },
-      }
-      table.insert(details, checks_vt)
+      local contexts = issue.statusCheckRollup.contexts
+      if contexts and contexts ~= vim.NIL and contexts.nodes and contexts.nodes ~= vim.NIL and #contexts.nodes > 0 then
+        checks_breakdown = compute_checks_breakdown(contexts.nodes)
+        local checks_builder = TextChunkBuilder:new():detail_label "Checks"
+        local total_required = checks_breakdown.required_pass
+          + checks_breakdown.required_fail
+          + checks_breakdown.required_pending
+          + checks_breakdown.required_skip
+        local total_skip = checks_breakdown.required_skip + checks_breakdown.optional_skip
+
+        if checks_breakdown.required_fail > 0 then
+          checks_builder:text(
+            string.format("× FAILURE (%d required failing)", checks_breakdown.required_fail),
+            "OctoStateDismissed"
+          )
+        elseif checks_breakdown.required_pending > 0 then
+          checks_builder:text(
+            string.format("⏳ PENDING (%d required pending)", checks_breakdown.required_pending),
+            "OctoStatePending"
+          )
+        elseif checks_breakdown.optional_fail > 0 then
+          if total_required > 0 then
+            checks_builder
+              :text(string.format("✓ %d required", total_required), "OctoStateApproved")
+              :text(string.format("  %d optional failing", checks_breakdown.optional_fail), "OctoGrey")
+          else
+            local state_info = utils.state_map[issue.statusCheckRollup.state]
+            checks_builder:text(state_info.symbol .. issue.statusCheckRollup.state, state_info.hl)
+          end
+        elseif checks_breakdown.optional_pending > 0 then
+          if total_required > 0 then
+            checks_builder
+              :text(string.format("✓ %d required", total_required), "OctoStateApproved")
+              :text(string.format("  %d optional pending", checks_breakdown.optional_pending), "OctoGrey")
+          else
+            checks_builder:text("⏳ PENDING", "OctoStatePending")
+          end
+        else
+          checks_builder:text("✓ SUCCESS", "OctoStateApproved")
+        end
+
+        if total_skip > 0 then
+          checks_builder:text(string.format("  %d skipped", total_skip), "OctoGrey")
+        end
+
+        checks_builder:write_detail_line(details)
+      else
+        -- Fallback: no contexts data (older GHES), show rollup only
+        local state = issue.statusCheckRollup.state
+        local state_info = utils.state_map[state]
+        TextChunkBuilder:new()
+          :detail_label("Checks")
+          :text(state_info.symbol .. state, state_info.hl)
+          :write_detail_line(details)
+      end
     end
 
     -- merge state
@@ -1010,6 +1387,15 @@ function M.write_details(bufnr, issue, update, include_status)
       end
 
       table.insert(details, merge_state_vt)
+
+      -- merge blocking context sub-lines
+      if issue.mergeStateStatus == "BLOCKED" then
+        for _, line in
+          ipairs(get_merge_blocking_lines(issue --[[@as octo.PullRequest]], checks_breakdown))
+        do
+          table.insert(details, line)
+        end
+      end
     end
 
     if not issue.merged and issue.autoMergeRequest and issue.autoMergeRequest ~= vim.NIL then
@@ -2129,22 +2515,68 @@ local function get_status_check(statusCheckRollup)
   return { state_info.symbol, state_info.hl }
 end
 
+--- Timeline commit line: show × only when a *required* check fails; optional-only failures use ✓.
+--- Falls back to rollup `state` when `contexts` are missing (e.g. older APIs).
+---@param statusCheckRollup { state: octo.StatusState, contexts?: { nodes: octo.StatusCheckRollupContext[] } }|vim.NIL|nil
+---@return string[]
+local function get_commit_status_check(statusCheckRollup)
+  if utils.is_blank(statusCheckRollup) then
+    return TextChunkBuilder:new():text("  "):build()
+  end
+  ---@cast statusCheckRollup -vim.NIL, -nil
+  local raw_nodes = statusCheckRollup.contexts and statusCheckRollup.contexts.nodes
+  if type(raw_nodes) == "table" and raw_nodes ~= vim.NIL and #raw_nodes > 0 then
+    local b = compute_checks_breakdown(raw_nodes)
+    local st
+    if b.required_fail > 0 then
+      st = utils.state_map.FAILURE
+    elseif b.required_pending > 0 then
+      st = utils.state_map.PENDING
+    else
+      st = utils.state_map.SUCCESS
+    end
+    return TextChunkBuilder:new():text(st.symbol, st.hl):build()
+  end
+  -- Fallback: wrap legacy single-chunk return for consistent [string, string][] shape
+  return { get_status_check(statusCheckRollup) }
+end
+
+--- GPG/SSH signature indicator (similar to GitHub’s verified badge on commit lines).
+---@param signature { isValid: boolean, state: string }|vim.NIL|nil
+---@return [string, string][]
+local function get_commit_signature_chunks(signature)
+  if not config.values.use_timeline_icons then
+    return {}
+  end
+
+  local icons = config.values.timeline_icons
+  if not signature or signature == vim.NIL then
+    return TextChunkBuilder:new():text(icons.commit_signature_unverified, "OctoGrey"):build()
+  end
+  if signature.isValid then
+    return TextChunkBuilder:new():text(icons.commit_signature_verified, "OctoGreen"):build()
+  end
+  if (signature.state or ""):upper() == "OCSP_PENDING" then
+    return TextChunkBuilder:new():text(icons.commit_signature_pending, "OctoStatePending"):build()
+  end
+  return TextChunkBuilder:new():text(icons.commit_signature_invalid, "OctoRed"):build()
+end
+
 ---@param bufnr integer
 ---@param item octo.fragments.PullRequestCommit
 ---@param include_date boolean
 local function write_commit(bufnr, item, include_date)
-  local status_check = get_status_check(item.commit.statusCheckRollup)
+  local status_check = get_commit_status_check(item.commit.statusCheckRollup)
   local builder = TextChunkBuilder:new()
     :timeline_marker("commit")
-    :extend({ status_check })
+    :extend(status_check)
+    :extend(get_commit_signature_chunks(item.commit.signature))
     :text(item.commit.abbreviatedOid, "OctoDetailsLabel")
     :space()
     :text(item.commit.messageHeadline, "OctoDetailsLabel")
-
   if include_date then
     builder = builder:date(item.commit.committedDate)
   end
-
   builder:write_event(bufnr)
 end
 
@@ -2990,8 +3422,6 @@ end
 ---@param bufnr integer
 ---@param item octo.fragments.RenamedTitleEvent
 function M.write_renamed_title_event(bufnr, item)
-  local conf = config.values
-
   if utils.is_blank(item.actor) then
     TextChunkBuilder:new():timeline_marker("renamed"):heading("Title renamed"):write_event(bufnr)
     return

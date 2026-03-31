@@ -806,10 +806,12 @@ fragment ProjectCardFragment on ProjectCard {
   ---  additions: integer,
   ---  deletions: integer,
   ---  author: { user: { login: string } },
-  ---  statusCheckRollup: { state: octo.StatusState },
+  ---  statusCheckRollup: { state: octo.StatusState, contexts?: { nodes: octo.StatusCheckRollupContext[] } },
+  ---  signature?: { isValid: boolean, state: string },
   ---  committer: { user: { login: string } },
   ---}
 
+  -- Mutations embed this without string.format — no %-placeholders.
   M.pull_request_commit = [[
 fragment PullRequestCommitFragment on PullRequestCommit {
   commit {
@@ -826,6 +828,59 @@ fragment PullRequestCommitFragment on PullRequestCommit {
       }
     }
     statusCheckRollup {
+      state
+    }
+    signature {
+      isValid
+      state
+    }
+    committer {
+      user {
+        login
+      }
+    }
+  }
+}
+]]
+
+  -- Pull request query only: formatted with PR number for isRequired (see M.pull_request in queries.lua).
+  M.pull_request_commit_detail = [[
+fragment PullRequestCommitDetailFragment on PullRequestCommit {
+  commit {
+    messageHeadline
+    committedDate
+    oid
+    abbreviatedOid
+    changedFiles
+    additions
+    deletions
+    author {
+      user {
+        login
+      }
+    }
+    statusCheckRollup {
+      state
+      contexts(first: 100) {
+        nodes {
+          ... on CheckRun {
+            __typename
+            name
+            conclusion
+            status
+            isRequired(pullRequestNumber: $number)
+          }
+          ... on StatusContext {
+            __typename
+            context
+            state
+            isRequired(pullRequestNumber: $number)
+          }
+        }
+      }
+    }
+    signature {
+      isValid
       state
     }
     committer {
@@ -1308,6 +1363,11 @@ fragment IssueTimelineItemsConnectionFragment on IssueTimelineItemsConnection {
     ]]
   end
 
+  local pull_request_timeline_items_connection_fragments_query = pull_request_timeline_items_connection_fragments:gsub(
+    "%.%.%.PullRequestCommitFragment",
+    "...PullRequestCommitDetailFragment",
+    1
+  )
   ---@alias octo.PullRequestTimelineItem octo.fragments.AssignedEvent|octo.fragments.UnassignedEvent|octo.fragments.AutomaticBaseChangeSucceededEvent|octo.fragments.BaseRefChangedEvent|octo.fragments.ClosedEvent|octo.fragments.ConnectedEvent|octo.fragments.ConvertToDraftEvent|octo.fragments.CrossReferencedEvent|octo.fragments.DemilestonedEvent|octo.fragments.IssueComment|octo.fragments.LabeledEvent|octo.fragments.MergedEvent|octo.fragments.MilestonedEvent|octo.fragments.PullRequestCommit|octo.fragments.PullRequestReview|octo.fragments.ReadyForReviewEvent|octo.fragments.RenamedTitleEvent|octo.fragments.ReopenedEvent|octo.fragments.ReviewDismissedEvent|octo.fragments.ReviewRequestRemovedEvent|octo.fragments.ReviewRequestedEvent|octo.fragments.UnlabeledEvent|octo.fragments.DeployedEvent|octo.fragments.HeadRefDeletedEvent|octo.fragments.HeadRefRestoredEvent|octo.fragments.HeadRefForcePushedEvent|octo.fragments.AutoSquashEnabledEvent|octo.fragments.AutoMergeEnabledEvent|octo.fragments.AutoMergeDisabledEvent|octo.fragments.AddedToProjectV2Event|octo.fragments.RemovedFromProjectV2Event|octo.fragments.ProjectV2ItemStatusChangedEvent|octo.fragments.LockedEvent|octo.fragments.UnlockedEvent|octo.fragments.MarkedAsDuplicateEvent|octo.fragments.UnmarkedAsDuplicateEvent
 
   ---@class octo.fragments.PullRequestTimelineItemsConnection
@@ -1322,6 +1382,17 @@ fragment PullRequestTimelineItemsConnectionFragment on PullRequestTimelineItemsC
 }
 ]],
     pull_request_timeline_items_connection_fragments
+  )
+
+  M.pull_request_timeline_items_connection_query = string.format(
+    [[
+fragment PullRequestTimelineItemsConnectionFragment on PullRequestTimelineItemsConnection {
+  nodes {
+  %s
+  }
+}
+]],
+    pull_request_timeline_items_connection_fragments_query
   )
 
   ---@alias octo.IssueState "OPEN"|"CLOSED"

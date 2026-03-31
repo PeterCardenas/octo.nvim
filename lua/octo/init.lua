@@ -170,6 +170,15 @@ function M.load(repo, kind, id, hostname, cb)
       local resp = utils.aggregate_pages(output, string.format("data.repository.%s.timelineItems.nodes", key))
       ---@type octo.Issue|octo.PullRequest
       local obj = resp.data.repository[key]
+      if kind == "pull" then
+        local repo_data = resp.data.repository
+        if repo_data.rulesets then
+          obj._rulesets = repo_data.rulesets
+        end
+        if repo_data.defaultBranchRef then
+          obj._defaultBranchName = repo_data.defaultBranchRef.name
+        end
+      end
       cb(obj)
     elseif kind == "repo" then
       local resp = vim.json.decode(output)

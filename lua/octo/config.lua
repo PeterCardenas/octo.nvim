@@ -253,6 +253,10 @@ function M.get_default_values()
       assigned = "  ",
       locked = "  ",
       review_requested = "  ",
+      commit_signature_verified = "  ",
+      commit_signature_unverified = "○  ",
+      commit_signature_invalid = "  ",
+      commit_signature_pending = "◌  ",
     },
     right_bubble_delimiter = "", -- bubble delimiter
     left_bubble_delimiter = "", -- bubble delimiter

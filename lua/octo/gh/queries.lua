@@ -101,6 +101,70 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   ---@alias octo.MergeableState "MERGEABLE"|"CONFLICTING"|"UNKNOWN"
   ---@alias octo.StatusState "EXPECTED"|"ERROR"|"FAILURE"|"PENDING"|"SUCCESS"
 
+  ---@class octo.CheckRunContext
+  ---@field __typename "CheckRun"
+  ---@field name string
+  ---@field conclusion string?
+  ---@field status string
+  ---@field isRequired boolean
+
+  ---@class octo.StatusContextContext
+  ---@field __typename "StatusContext"
+  ---@field context string
+  ---@field state string
+  ---@field isRequired boolean
+
+  ---@alias octo.StatusCheckRollupContext octo.CheckRunContext|octo.StatusContextContext
+
+  ---@class octo.BranchProtectionRule
+  ---@field requiredApprovingReviewCount integer
+  ---@field requiresApprovingReviews boolean
+  ---@field requiresStatusChecks boolean
+  ---@field requiredStatusCheckContexts string[]
+  ---@field requiresLinearHistory boolean
+  ---@field requiresCommitSignatures boolean
+  ---@field requiresConversationResolution boolean
+  ---@field dismissesStaleReviews boolean
+  ---@field requiresCodeOwnerReviews boolean
+
+  ---@alias octo.RuleEnforcement "DISABLED"|"ACTIVE"|"EVALUATE"
+  ---@alias octo.RepositoryRulesetTarget "BRANCH"|"TAG"|"PUSH"|"REPOSITORY"
+  ---@alias octo.RepositoryRuleType "CREATION"|"UPDATE"|"DELETION"|"REQUIRED_LINEAR_HISTORY"|"MERGE_QUEUE"|"REQUIRED_REVIEW_THREAD_RESOLUTION"|"REQUIRED_DEPLOYMENTS"|"REQUIRED_SIGNATURES"|"PULL_REQUEST"|"REQUIRED_STATUS_CHECKS"|"REQUIRED_WORKFLOW_STATUS_CHECKS"|"NON_FAST_FORWARD"|"AUTHORIZATION"|"TAG"|"MERGE_QUEUE_LOCKED_REF"|"LOCK_BRANCH"|"MAX_REF_UPDATES"|"COMMIT_MESSAGE_PATTERN"|"COMMIT_AUTHOR_EMAIL_PATTERN"|"COMMITTER_EMAIL_PATTERN"|"BRANCH_NAME_PATTERN"|"TAG_NAME_PATTERN"|"FILE_PATH_RESTRICTION"|"MAX_FILE_PATH_LENGTH"|"FILE_EXTENSION_RESTRICTION"|"MAX_FILE_SIZE"|"WORKFLOWS"|"SECRET_SCANNING"|"WORKFLOW_UPDATES"|"CODE_SCANNING"|"COPILOT_CODE_REVIEW"
+
+  ---@class octo.PullRequestRuleParameters
+  ---@field requiredApprovingReviewCount integer
+  ---@field dismissStaleReviewsOnPush boolean
+  ---@field requireCodeOwnerReview boolean
+  ---@field requireLastPushApproval boolean
+  ---@field requiredReviewThreadResolution boolean
+
+  ---@class octo.RequiredStatusChecksParameters
+  ---@field requiredStatusChecks { context: string }[]
+  ---@field strictRequiredStatusChecksPolicy boolean
+
+  ---@class octo.RepositoryRule
+  ---@field type octo.RepositoryRuleType
+  ---@field parameters? octo.PullRequestRuleParameters|octo.RequiredStatusChecksParameters
+
+  ---@class octo.RepositoryRuleset
+  ---@field name string
+  ---@field enforcement octo.RuleEnforcement
+  ---@field target? octo.RepositoryRulesetTarget
+  ---@field conditions { refName?: { include: string[], exclude: string[] } }
+  ---@field rules? { nodes: octo.RepositoryRule[] }
+
+  ---@class octo.RepositoryRulesetConnection
+  ---@field nodes octo.RepositoryRuleset[]
+
+  ---@class octo.PullRequestCommitSummary
+  ---@field oid string
+  ---@field abbreviatedOid string
+  ---@field signature? { isValid: boolean, state: string }
+
+  ---@class octo.PullRequestCommits
+  ---@field totalCount integer
+  ---@field nodes { commit: octo.PullRequestCommitSummary }[]
+
   ---@class octo.PullRequestTimelineItemsConnection : octo.fragments.PullRequestTimelineItemsConnection
   ---@field pageInfo octo.PageInfo
 
@@ -123,13 +187,14 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   ---@field participants { nodes: { login: string }[] }
   ---@field additions integer
   ---@field deletions integer
-  ---@field commits { totalCount: integer }
+  ---@field commits octo.PullRequestCommits
   ---@field changedFiles integer
   ---@field headRefName string
   ---@field headRefOid string
   ---@field headRef? { id: string }
   ---@field baseRefName string
   ---@field baseRefOid string
+  ---@field baseRef? { branchProtectionRule?: octo.BranchProtectionRule }
   ---@field baseRepository { name: string, nameWithOwner: string }
   ---@field milestone { title: string, state: string, openIssueCount: number, closedIssueCount: number, progressPercentage: number }
   ---@field author { login: string }
@@ -141,19 +206,56 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   ---@field projectItems? octo.fragments.ProjectsV2Connection
   ---@field timelineItems octo.PullRequestTimelineItemsConnection
   ---@field reviewDecision string
+  ---@field latestOpinionatedReviews? { nodes: { state: octo.PullRequestReviewState }[] }
   ---@field reviewThreads { nodes: octo.ReviewThread[] }
   ---@field labels octo.fragments.LabelConnection
   ---@field assignees octo.fragments.AssigneeConnection
   ---@field reviewRequests { totalCount: integer, nodes: { requestedReviewer: { name: string }|{ login: string }|{ login: string, isViewer: boolean } }[] }
-  ---@field statusCheckRollup { state: octo.StatusState }
+  ---@field statusCheckRollup { state: octo.StatusState, contexts?: { nodes: octo.StatusCheckRollupContext[] } }
   ---@field mergeStateStatus octo.MergeStateStatus
   ---@field mergeable octo.MergeableState
   ---@field autoMergeRequest { enabledBy: { login: string }, mergeMethod: string }
+  ---@field _rulesets? octo.RepositoryRulesetConnection  -- injected from repository-level query data
+  ---@field _defaultBranchName? string                    -- injected from repository.defaultBranchRef.name
 
   -- https://docs.github.com/en/free-pro-team@latest/graphql/reference/objects#pullrequest
   M.pull_request = [[
-query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
+query PullRequest($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
+    defaultBranchRef { name }
+    rulesets(first: 10, includeParents: true) {
+      nodes {
+        name
+        enforcement
+        target
+        conditions {
+          refName {
+            include
+            exclude
+          }
+        }
+        rules(first: 25) {
+          nodes {
+            type
+            parameters {
+              ... on PullRequestParameters {
+                requiredApprovingReviewCount
+                dismissStaleReviewsOnPush
+                requireCodeOwnerReview
+                requireLastPushApproval
+                requiredReviewThreadResolution
+              }
+              ... on RequiredStatusChecksParameters {
+                requiredStatusChecks {
+                  context
+                }
+                strictRequiredStatusChecksPolicy
+              }
+            }
+          }
+        }
+      }
+    }
     pullRequest(number: $number) {
       id
       isDraft
@@ -197,8 +299,18 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
       }
       additions
       deletions
-      commits {
+      commits(first: 100) {
         totalCount
+        nodes {
+          commit {
+            oid
+            abbreviatedOid
+            signature {
+              isValid
+              state
+            }
+          }
+        }
       }
       changedFiles
       headRefName
@@ -206,6 +318,19 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
       headRefOid
       baseRefName
       baseRefOid
+      baseRef {
+        branchProtectionRule {
+          requiredApprovingReviewCount
+          requiresApprovingReviews
+          requiresStatusChecks
+          requiredStatusCheckContexts
+          requiresLinearHistory
+          requiresCommitSignatures
+          requiresConversationResolution
+          dismissesStaleReviews
+          requiresCodeOwnerReviews
+        }
+      }
       baseRepository {
         name
         nameWithOwner
@@ -235,6 +360,11 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
         ...PullRequestTimelineItemsConnectionFragment
       }
       reviewDecision
+      latestOpinionatedReviews(first: 100) {
+        nodes {
+          state
+        }
+      }
       reviewThreads(last:100) {
         nodes {
           ...ReviewThreadInformationFragment
@@ -267,6 +397,23 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
       }
       statusCheckRollup {
         state
+        contexts(first: 100) {
+          nodes {
+            ... on CheckRun {
+              __typename
+              name
+              conclusion
+              status
+              isRequired(pullRequestNumber: $number)
+            }
+            ... on StatusContext {
+              __typename
+              context
+              state
+              isRequired(pullRequestNumber: $number)
+            }
+          }
+        }
       }
       mergeStateStatus
       mergeable

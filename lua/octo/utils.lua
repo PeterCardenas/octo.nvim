@@ -1723,6 +1723,13 @@ function M.get_pull_request_for_current_branch(cb)
                 local resp = M.aggregate_pages(output, "data.repository.pullRequest.timelineItems.nodes")
                 ---@type octo.PullRequest
                 local obj = resp.data.repository.pullRequest
+                local repo_data = resp.data.repository
+                if repo_data.rulesets then
+                  obj._rulesets = repo_data.rulesets
+                end
+                if repo_data.defaultBranchRef then
+                  obj._defaultBranchName = repo_data.defaultBranchRef.name
+                end
                 local PullRequest = require "octo.model.pull-request"
 
                 local opts = {

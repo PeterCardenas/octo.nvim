@@ -1187,6 +1187,11 @@ mutation($input: CreatePullRequestInput!) {
         ...PullRequestTimelineItemsConnectionFragment
       }
       reviewDecision
+      latestOpinionatedReviews(first: 100) {
+        nodes {
+          state
+        }
+      }
       reviewThreads(last:100) {
         nodes {
           ...ReviewThreadInformationFragment
