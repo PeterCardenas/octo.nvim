@@ -152,9 +152,9 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 
   -- https://docs.github.com/en/free-pro-team@latest/graphql/reference/objects#pullrequest
   M.pull_request = [[
-query($endCursor: String) {
-  repository(owner: "%s", name: "%s") {
-    pullRequest(number: %d) {
+query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
       id
       isDraft
       number
@@ -301,9 +301,9 @@ query($endCursor: String) {
 
   -- https://docs.github.com/en/free-pro-team@latest/graphql/reference/objects#issue
   M.issue = [[
-query($endCursor: String) {
-  repository(owner: "%s", name: "%s") {
-    issue(number: %d) {
+query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
       ...IssueInformationFragment
       participants(first:10) {
         nodes {

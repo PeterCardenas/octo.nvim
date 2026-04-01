@@ -96,12 +96,12 @@ function M.fetch_preview(owner, name, number, kind, on_success)
   local query, fields, jq
 
   if kind == "issue" then
-    query = graphql("issue_query", owner, name, number, _G.octo_pv2_fragment)
-    fields = {}
+    query = graphql("issue_query", _G.octo_pv2_fragment)
+    fields = { owner = owner, name = name, number = number }
     jq = ".data.repository.issue"
   elseif kind == "pull_request" then
-    query = graphql("pull_request_query", owner, name, number, _G.octo_pv2_fragment)
-    fields = {}
+    query = graphql("pull_request_query", _G.octo_pv2_fragment)
+    fields = { owner = owner, name = name, number = number }
     jq = ".data.repository.pullRequest"
   elseif kind == "discussion" then
     query = queries.discussion

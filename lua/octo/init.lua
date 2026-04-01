@@ -139,13 +139,13 @@ function M.load(repo, kind, id, hostname, cb)
   ---@type string, string, table<string, string|integer>
   local query, key, fields
   if kind == "pull" then
-    query = graphql("pull_request_query", owner, name, id, _G.octo_pv2_fragment)
+    query = graphql("pull_request_query", _G.octo_pv2_fragment)
     key = "pullRequest"
-    fields = {}
+    fields = { owner = owner, name = name, number = id }
   elseif kind == "issue" then
-    query = graphql("issue_query", owner, name, id, _G.octo_pv2_fragment)
+    query = graphql("issue_query", _G.octo_pv2_fragment)
     key = "issue"
-    fields = {}
+    fields = { owner = owner, name = name, number = id }
   elseif kind == "repo" then
     query = queries.repository
     fields = { owner = owner, name = name }

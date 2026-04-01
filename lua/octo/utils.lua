@@ -1710,13 +1710,15 @@ function M.get_pull_request_for_current_branch(cb)
         end
         local number = pr.number
         local id = pr.id
-        local query = graphql("pull_request_query", base_owner, base_name, number, _G.octo_pv2_fragment)
+        local query = graphql("pull_request_query", _G.octo_pv2_fragment)
         gh.api.graphql {
-          f = { query = query },
+          query = query,
+          fields = { owner = base_owner, name = base_name, number = number },
           paginate = true,
           jq = ".",
           opts = {
             cb = gh.create_callback {
+              failure = M.print_err,
               success = function(output)
                 local resp = M.aggregate_pages(output, "data.repository.pullRequest.timelineItems.nodes")
                 ---@type octo.PullRequest
