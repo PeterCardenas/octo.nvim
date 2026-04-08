@@ -3919,7 +3919,9 @@ function M.discussion_preview(obj, bufnr)
     M.write_discussion_answer(bufnr, obj, line)
   end
 
-  vim.bo[bufnr].filetype = "octo"
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd "set filetype=octo"
+  end)
 end
 
 ---@param obj any
@@ -3931,14 +3933,18 @@ function M.issue_preview(obj, bufnr)
   local reactions_line = vim.api.nvim_buf_line_count(bufnr) - 1
   M.write_block(bufnr, { "", "" }, reactions_line)
   M.write_reactions(bufnr, obj.reactionGroups, reactions_line)
-  vim.bo[bufnr].filetype = "octo"
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd "set filetype=octo"
+  end)
 end
 
 ---@param obj octo.Release
 ---@param bufnr integer
 function M.release_preview(obj, bufnr)
   M.write_release(bufnr, obj)
-  vim.bo[bufnr].filetype = "octo"
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd "set filetype=octo"
+  end)
 end
 
 ---@type string[]
