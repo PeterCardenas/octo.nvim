@@ -440,4 +440,30 @@ function M.notifications(formatted_notifications, cached_notification_infos)
   return previewer
 end
 
+function M.workflow_run(formatted_runs)
+  local previewer = M.bufferPreviewer:extend() ---@type fzf-lua.previewer.BufferOrFile
+
+  function previewer:new(o, opts, fzf_win)
+    M.bufferPreviewer.super.new(self, o, opts, fzf_win)
+    setmetatable(self, previewer)
+    return self
+  end
+
+  function previewer:populate_preview_buf(entry_str)
+    local tmpbuf = self:get_tmp_buffer()
+    local entry = formatted_runs[entry_str]
+
+    local wf_module = require "octo.workflow_runs"
+    wf_module.previewer(
+      { state = { bufnr = tmpbuf } },
+      { value = { id = entry.id } }
+    )
+
+    self:set_preview_buf(tmpbuf)
+    self:update_border(entry.display)
+  end
+
+  return previewer
+end
+
 return M
