@@ -741,7 +741,7 @@ function M.render(selected)
   M.buf = new_buf
   vim.api.nvim_set_current_buf(new_buf)
   populate_preview_buffer(selected.id, selected.repo, new_buf)
-  vim.api.nvim_buf_set_name(new_buf, "" .. selected.id)
+  vim.api.nvim_buf_set_name(new_buf, selected.name)
 end
 
 function M.previewer(self, entry)
