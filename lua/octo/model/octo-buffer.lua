@@ -96,6 +96,10 @@ end
 
 ---Clears the buffer
 function OctoBuffer:clear()
+  -- discard any queued fold operations from a previous render —
+  -- line numbers are stale after the buffer content is replaced.
+  folds.clear_pending(self.bufnr)
+
   -- clear buffer
   vim.api.nvim_buf_set_lines(self.bufnr, 0, -1, false, {})
 
@@ -218,13 +222,27 @@ end
 
 ---Configures the buffer
 function OctoBuffer:configure()
-  -- configure buffer
+  -- buffer-local options (work correctly with nvim_buf_call)
   vim.api.nvim_buf_call(self.bufnr, function()
     vim.cmd [[setlocal filetype=octo]]
     vim.cmd [[setlocal buftype=acwrite]]
     vim.cmd [[setlocal omnifunc=v:lua.octo_omnifunc]]
+  end)
+
+  -- window-local options must target a window that displays the buffer,
+  -- otherwise they apply to the wrong window during polling refresh.
+  local win ---@type integer|nil
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(w) == self.bufnr then
+      win = w
+      break
+    end
+  end
+
+  local function set_win_opts()
     vim.cmd [[setlocal conceallevel=2]]
     vim.cmd [[setlocal nonumber norelativenumber nocursorline wrap]]
+    vim.cmd [[setlocal foldmethod=manual]]
 
     if config.values.ui.use_signcolumn then
       vim.cmd [[setlocal signcolumn=yes]]
@@ -237,7 +255,13 @@ function OctoBuffer:configure()
     if config.values.ui.use_foldtext then
       vim.opt_local.foldtext = [[v:lua.require'octo.folds'.foldtext()]]
     end
-  end)
+  end
+
+  if win then
+    vim.api.nvim_win_call(win, set_win_opts)
+  else
+    vim.api.nvim_buf_call(self.bufnr, set_win_opts)
+  end
 
   self:apply_mappings()
 end

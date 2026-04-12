@@ -98,7 +98,6 @@ end
 function M.load_buffer(opts)
   opts = opts or {}
   local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
-  local cursor_pos = vim.api.nvim_win_get_cursor(0)
   local bufname = vim.fn.bufname(bufnr)
   local buffer_info = uri.parse(bufname)
   if buffer_info == nil then
@@ -107,19 +106,32 @@ function M.load_buffer(opts)
   end
   local repo, kind, id, hostname = buffer_info.repo, buffer_info.kind, buffer_info.id, buffer_info.hostname
 
+  -- Find a window showing this buffer so we can save/restore cursor and
+  -- ensure fold commands target the correct window during rendering.
+  local win ---@type integer|nil
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(w) == bufnr then
+      win = w
+      break
+    end
+  end
+  local cursor_pos = win and vim.api.nvim_win_get_cursor(win) or nil
+
   M.load(repo, kind, id, hostname, function(obj)
     vim.api.nvim_buf_call(bufnr, function()
       M.create_buffer(kind, obj, repo, false, hostname)
 
-      -- get size of newly created buffer
-      local lines = vim.api.nvim_buf_line_count(bufnr)
-
-      -- One to the left
-      local new_cursor_pos = {
-        math.min(cursor_pos[1], lines),
-        math.max(0, cursor_pos[2] - 1),
-      }
-      vim.api.nvim_win_set_cursor(0, new_cursor_pos)
+      if cursor_pos then
+        -- Refresh win reference — the window may have closed during the async load
+        if win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+          local lines = vim.api.nvim_buf_line_count(bufnr)
+          local new_cursor_pos = {
+            math.min(cursor_pos[1], lines),
+            math.max(0, cursor_pos[2] - 1),
+          }
+          vim.api.nvim_win_set_cursor(win, new_cursor_pos)
+        end
+      end
 
       if opts.verbose then
         utils.info(string.format("Loaded %s/%s/%d", repo, kind, id))

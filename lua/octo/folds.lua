@@ -7,6 +7,104 @@ local M = {}
 
 function M.setup() end
 
+-- Deferred fold state: when a buffer has no visible window, fold commands
+-- are queued here and replayed on the next BufWinEnter.
+---@type table<integer, fun()[]>
+local pending_folds = {}
+
+---@type table<integer, integer>  bufnr → augroup id
+local deferred_augroups = {}
+
+---Find a window displaying the given buffer.
+---Folds are per-window, so fold commands must run in a window that shows the buffer.
+---@param bufnr integer
+---@return integer|nil
+local function find_win_for_buf(bufnr)
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == bufnr then
+      return win
+    end
+  end
+  return nil
+end
+
+---Replay all queued fold commands for a buffer in the given window.
+---@param bufnr integer
+---@param win integer
+local function flush_pending_folds(bufnr, win)
+  local fns = pending_folds[bufnr]
+  pending_folds[bufnr] = nil
+  if not fns or #fns == 0 then
+    return
+  end
+  if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
+    return
+  end
+  vim.api.nvim_win_call(win, function()
+    for _, fn in ipairs(fns) do
+      pcall(fn)
+    end
+  end)
+end
+
+---Ensure BufWinEnter/BufWipeout autocmds exist for deferred fold replay.
+---Idempotent per buffer.
+---@param bufnr integer
+local function ensure_deferred_autocmds(bufnr)
+  if deferred_augroups[bufnr] then
+    return
+  end
+  local group = vim.api.nvim_create_augroup("octo_deferred_folds_" .. bufnr, { clear = true })
+  deferred_augroups[bufnr] = group
+
+  vim.api.nvim_create_autocmd("BufWinEnter", {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      flush_pending_folds(bufnr, win)
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      pending_folds[bufnr] = nil
+      deferred_augroups[bufnr] = nil
+      pcall(vim.api.nvim_del_augroup_by_id, group)
+    end,
+  })
+end
+
+---Execute a fold-related function in a window that displays the buffer.
+---If no window currently shows the buffer, the function is deferred until
+---BufWinEnter fires.
+---@param bufnr integer
+---@param fn fun()
+local function in_buf_win(bufnr, fn)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local win = find_win_for_buf(bufnr)
+  if win then
+    vim.api.nvim_win_call(win, fn)
+  else
+    if not pending_folds[bufnr] then
+      pending_folds[bufnr] = {}
+    end
+    table.insert(pending_folds[bufnr], fn)
+    ensure_deferred_autocmds(bufnr)
+  end
+end
+
+---Discard any queued fold operations for a buffer.
+---Call this before re-rendering so stale line numbers are never replayed.
+---@param bufnr integer
+function M.clear_pending(bufnr)
+  pending_folds[bufnr] = nil
+end
+
 ---@param bufnr integer
 ---@param start_line integer
 ---@param end_line integer
@@ -15,7 +113,7 @@ function M.create(bufnr, start_line, end_line, is_opened)
   if config.values.ui.use_foldtext then
     start_line = start_line - 1
   end
-  vim.api.nvim_buf_call(bufnr, function()
+  in_buf_win(bufnr, function()
     vim.cmd [[setlocal foldmethod=manual]]
     vim.cmd(string.format("%d,%dfold", start_line, end_line))
     if is_opened then
@@ -175,7 +273,7 @@ function M.create_details_folds(bufnr, start_line, end_line)
     end
 
     -- Create fold directly (not via M.create which applies use_foldtext offset)
-    vim.api.nvim_buf_call(bufnr, function()
+    in_buf_win(bufnr, function()
       vim.cmd [[setlocal foldmethod=manual]]
       vim.cmd(string.format("%d,%dfold", fold_start, fold_end))
       if block.is_open then
