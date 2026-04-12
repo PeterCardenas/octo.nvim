@@ -1625,7 +1625,19 @@ query($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
       issueOrPullRequest(number: $number) {
         ... on Issue { updatedAt }
-        ... on PullRequest { updatedAt }
+        ... on PullRequest {
+          updatedAt
+          mergeStateStatus
+          commits(last: 1) {
+            nodes {
+              commit {
+                statusCheckRollup {
+                  state
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

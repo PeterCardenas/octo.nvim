@@ -14,6 +14,8 @@ local M = {}
 ---@field kind string
 ---@field hostname string|nil
 ---@field last_updated_at string
+---@field last_merge_state string
+---@field last_check_state string
 ---@field remote_changed boolean
 
 ---@type table<integer, OctoPollingEntry>
@@ -67,7 +69,6 @@ local function start_timer(interval)
               number = tracking.number,
             },
             hostname = tracking.hostname,
-            jq = ".data.repository.issueOrPullRequest.updatedAt",
             opts = {
               cb = function(output, stderr)
                 if stderr and not utils.is_blank(stderr) then
@@ -77,8 +78,24 @@ local function start_timer(interval)
                   return
                 end
 
-                local remote_updated_at = vim.trim(output):gsub('"', "")
-                if remote_updated_at == tracking.last_updated_at then
+                local ok, resp = pcall(vim.json.decode, output)
+                if not ok or not resp then
+                  return
+                end
+                local node = vim.tbl_get(resp, "data", "repository", "issueOrPullRequest")
+                if not node then
+                  return
+                end
+
+                local remote_updated_at = node.updatedAt or ""
+                local remote_merge_state = node.mergeStateStatus or ""
+                local remote_check_state = vim.tbl_get(node, "commits", "nodes", 1, "commit", "statusCheckRollup", "state") or ""
+
+                if
+                  remote_updated_at == tracking.last_updated_at
+                  and remote_merge_state == tracking.last_merge_state
+                  and remote_check_state == tracking.last_check_state
+                then
                   return
                 end
 
@@ -103,6 +120,8 @@ local function start_timer(interval)
                 else
                   require("octo").load_buffer { bufnr = bufnr }
                   tracking.last_updated_at = remote_updated_at
+                  tracking.last_merge_state = remote_merge_state
+                  tracking.last_check_state = remote_check_state
                   tracking.remote_changed = false
                   if conf.notify_on_refresh then
                     utils.info(
@@ -190,6 +209,10 @@ function M.track_buffer(bufnr)
   local buffer_info = uri.parse(bufname)
   local hostname = buffer_info and buffer_info.hostname or nil
 
+  local node = octo_buf.node
+  local merge_state = (node and node.mergeStateStatus) or ""
+  local check_state = vim.tbl_get(node or {}, "statusCheckRollup", "state") or ""
+
   tracked_buffers[bufnr] = {
     owner = owner,
     name = name,
@@ -197,6 +220,8 @@ function M.track_buffer(bufnr)
     kind = octo_buf.kind,
     hostname = hostname,
     last_updated_at = octo_buf:get_updated_at() or "",
+    last_merge_state = merge_state,
+    last_check_state = check_state,
     remote_changed = false,
   }
 
