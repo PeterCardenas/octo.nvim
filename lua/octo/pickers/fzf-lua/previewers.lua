@@ -326,12 +326,15 @@ function M.repo(formatted_repos)
     local tmpbuf = self:get_tmp_buffer()
     local entry = formatted_repos[entry_str]
 
-    local buffer = OctoBuffer:new {
-      bufnr = tmpbuf,
-    }
-    buffer:configure()
     local repo_name_owner = vim.split(entry_str, " ")[1]
     local owner, name = utils.split_repo(repo_name_owner)
+
+    local buffer = OctoBuffer:new {
+      bufnr = tmpbuf,
+      repo = repo_name_owner,
+    }
+    buffer.kind = "repo"
+    buffer:configure()
 
     local function cb(output, _)
       -- when the entry changes `preview_bufnr` will also change (due to `set_preview_buf`)

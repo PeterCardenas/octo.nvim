@@ -12,7 +12,7 @@ local previewers = require "octo.pickers.fzf-lua.previewers"
 ---@param issue table
 ---@param max_id_length integer
 ---@param formatted_issues table<string, table> entry.ordinal -> entry
-local function handle_entry(fzf_cb, issue, max_id_length, formatted_issues)
+local function handle_issue_entry(fzf_cb, issue, max_id_length, formatted_issues)
   local entry = entry_maker.gen_from_issue(issue)
   if entry ~= nil then
     local owner, name = utils.split_repo(entry.repo)
@@ -25,10 +25,22 @@ local function handle_entry(fzf_cb, issue, max_id_length, formatted_issues)
   end
 end
 
+---@param fzf_cb fzf-lua.fzfCb
+---@param repo table
+---@param formatted_repos table<string, table> stripped_entry_str -> entry
+local function handle_repo_entry(fzf_cb, repo, formatted_repos)
+  local entry, entry_str = entry_maker.gen_from_repo(repo)
+  if entry ~= nil and entry_str ~= nil then
+    formatted_repos[fzf.utils.strip_ansi_coloring(entry_str)] = entry
+    fzf_cb(entry_str)
+  end
+end
+
 return function(opts)
   opts = opts or {}
   opts.type = opts.type or "ISSUE"
 
+  local is_repo_search = opts.type == "REPOSITORY"
   local formatted_items = {} ---@type table<string, table> entry.ordinal -> entry
 
   ---@type fzf-lua.shell.data2
@@ -79,18 +91,24 @@ return function(opts)
             return
           end
 
-          local issues = vim.json.decode(output)
+          local results = vim.json.decode(output)
 
-          local max_id_length = 1
-          for _, issue in ipairs(issues) do
-            local s = tostring(issue.number)
-            if #s > max_id_length then
-              max_id_length = #s
+          if is_repo_search then
+            for _, repo in ipairs(results) do
+              handle_repo_entry(fzf_cb, repo, formatted_items)
             end
-          end
+          else
+            local max_id_length = 1
+            for _, issue in ipairs(results) do
+              local s = tostring(issue.number)
+              if #s > max_id_length then
+                max_id_length = #s
+              end
+            end
 
-          for _, issue in ipairs(issues) do
-            handle_entry(fzf_cb, issue, max_id_length, formatted_items)
+            for _, issue in ipairs(results) do
+              handle_issue_entry(fzf_cb, issue, max_id_length, formatted_items)
+            end
           end
         end
 
@@ -99,17 +117,20 @@ return function(opts)
     )
   end
 
-  -- TODO this is still not as fast as I would like.
+  local fzf_opts = {
+    ["--info"] = "default",
+  }
+  if not is_repo_search then
+    fzf_opts["--delimiter"] = " "
+    fzf_opts["--with-nth"] = "4.."
+  end
+
   fzf.fzf_live(contents, {
     prompt = picker_utils.get_prompt(opts.prompt_title),
     exec_empty_query = true,
-    previewer = previewers.search(),
+    previewer = is_repo_search and previewers.repo(formatted_items) or previewers.search(),
     query_delay = 500,
-    fzf_opts = {
-      ["--info"] = "default",
-      ["--delimiter"] = " ",
-      ["--with-nth"] = "4..",
-    },
+    fzf_opts = fzf_opts,
     actions = fzf_actions.common_open_actions(formatted_items),
   })
 end

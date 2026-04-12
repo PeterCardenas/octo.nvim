@@ -33,7 +33,11 @@ function M.open(command, entry)
   elseif command == "tab" then
     vim.cmd [[:tab sb %]]
   end
-  utils.get(entry.kind, entry.value, entry.repo)
+  if entry.kind == "repo" then
+    utils.get(entry.kind, nil, entry.value)
+  else
+    utils.get(entry.kind, entry.value, entry.repo)
+  end
 end
 
 ---Gets a consistent prompt.
@@ -65,7 +69,9 @@ end
 function M.open_in_browser(entry)
   local number ---@type integer
   local repo = entry.repo
-  if entry.kind ~= "repo" then
+  if entry.kind == "repo" then
+    repo = entry.value
+  else
     number = entry.value
   end
   navigation.open_in_browser(entry.kind, repo, number)
@@ -75,7 +81,8 @@ end
 ---
 ---@param entry table
 function M.copy_url(entry)
-  utils.copy_url(entry.obj.url)
+  local url = entry.kind == "repo" and entry.repo.url or entry.obj.url
+  utils.copy_url(url)
 end
 
 ---@param s string
