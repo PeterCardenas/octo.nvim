@@ -1633,6 +1633,12 @@ query($owner: String!, $name: String!) {
               commit {
                 statusCheckRollup {
                   state
+                  contexts(first: 100) {
+                    nodes {
+                      ... on CheckRun { status conclusion }
+                      ... on StatusContext { state }
+                    }
+                  }
                 }
               }
             }

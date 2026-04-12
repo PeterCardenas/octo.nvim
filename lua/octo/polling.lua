@@ -15,7 +15,7 @@ local M = {}
 ---@field hostname string|nil
 ---@field last_updated_at string
 ---@field last_merge_state string
----@field last_check_state string
+---@field last_check_fingerprint string
 ---@field remote_changed boolean
 
 ---@type table<integer, OctoPollingEntry>
@@ -44,6 +44,27 @@ local function buffer_is_dirty(octo_buf)
     end
   end
   return false
+end
+
+---Compute a fingerprint from statusCheckRollup for change detection.
+---Includes the overall state plus each individual check's status, so the
+---fingerprint changes when any single check transitions (not just when the
+---aggregate rollup flips).
+---@param rollup table|nil  statusCheckRollup node
+---@return string
+local function check_fingerprint(rollup)
+  if not rollup then
+    return ""
+  end
+  local parts = { rollup.state or "" }
+  local nodes = vim.tbl_get(rollup, "contexts", "nodes")
+  if type(nodes) == "table" then
+    for _, node in ipairs(nodes) do
+      -- CheckRun has status+conclusion; StatusContext has state
+      parts[#parts + 1] = (node.status or "") .. (node.conclusion or "") .. (node.state or "")
+    end
+  end
+  return table.concat(parts, ",")
 end
 
 ---Start the timer loop
@@ -89,12 +110,13 @@ local function start_timer(interval)
 
                 local remote_updated_at = node.updatedAt or ""
                 local remote_merge_state = node.mergeStateStatus or ""
-                local remote_check_state = vim.tbl_get(node, "commits", "nodes", 1, "commit", "statusCheckRollup", "state") or ""
+                local remote_rollup = vim.tbl_get(node, "commits", "nodes", 1, "commit", "statusCheckRollup")
+                local remote_check_fp = check_fingerprint(remote_rollup)
 
                 if
                   remote_updated_at == tracking.last_updated_at
                   and remote_merge_state == tracking.last_merge_state
-                  and remote_check_state == tracking.last_check_state
+                  and remote_check_fp == tracking.last_check_fingerprint
                 then
                   return
                 end
@@ -121,7 +143,7 @@ local function start_timer(interval)
                   require("octo").load_buffer { bufnr = bufnr }
                   tracking.last_updated_at = remote_updated_at
                   tracking.last_merge_state = remote_merge_state
-                  tracking.last_check_state = remote_check_state
+                  tracking.last_check_fingerprint = remote_check_fp
                   tracking.remote_changed = false
                   if conf.notify_on_refresh then
                     utils.info(
@@ -211,7 +233,7 @@ function M.track_buffer(bufnr)
 
   local node = octo_buf.node
   local merge_state = (node and node.mergeStateStatus) or ""
-  local check_state = vim.tbl_get(node or {}, "statusCheckRollup", "state") or ""
+  local check_fp = check_fingerprint(node and node.statusCheckRollup)
 
   tracked_buffers[bufnr] = {
     owner = owner,
@@ -221,7 +243,7 @@ function M.track_buffer(bufnr)
     hostname = hostname,
     last_updated_at = octo_buf:get_updated_at() or "",
     last_merge_state = merge_state,
-    last_check_state = check_state,
+    last_check_fingerprint = check_fp,
     remote_changed = false,
   }
 
