@@ -606,3 +606,5 @@ If you like this plugin and would like to buy me a coffee, you can!
 ## 📜 License
 
 [MIT](https://choosealicense.com/licenses/mit/)
+
+<\!-- test file-level comments -->
