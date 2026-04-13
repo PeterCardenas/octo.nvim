@@ -727,6 +727,7 @@ fragment ReopenedEventFragment on ReopenedEvent {
   ---@class octo.fragments.PullRequestReview : octo.ReactionGroupsFragment
   ---@field __typename "PullRequestReview"
   ---@field id string
+  ---@field databaseId integer
   ---@field body string
   ---@field createdAt string
   ---@field viewerCanUpdate boolean
@@ -742,6 +743,7 @@ fragment ReopenedEventFragment on ReopenedEvent {
   M.pull_request_review = [[
 fragment PullRequestReviewFragment on PullRequestReview {
   id
+  databaseId
   body
   createdAt
   viewerCanUpdate
@@ -1467,6 +1469,7 @@ fragment IssueInformationFragment on Issue {
 
   ---@class octo.ReviewThreadCommentFragment : octo.ReactionGroupsFragment
   --- @field id string
+  --- @field databaseId integer
   --- @field body string
   --- @field diffHunk string
   --- @field createdAt string
@@ -1487,6 +1490,7 @@ fragment IssueInformationFragment on Issue {
   M.review_thread_comment = [[
 fragment ReviewThreadCommentFragment on PullRequestReviewComment {
   id
+  databaseId
   body
   diffHunk
   createdAt

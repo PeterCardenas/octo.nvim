@@ -1129,20 +1129,48 @@ function M.get_release(...)
   vim.cmd("edit " .. M.get_release_uri(...))
 end
 
+---@class octo.UrlAnchor
+---@field type "issuecomment"|"pullrequestreview"|"discussion_r"
+---@field id string The comment databaseId
+
+--- Extract the URL fragment anchor from a GitHub URL
 ---@param url string
----@return string?, string?, string?, string?
+---@return octo.UrlAnchor?
+local function parse_url_anchor(url)
+  local fragment = url:match "#(.+)$"
+  if not fragment then
+    return nil
+  end
+  local comment_id = fragment:match "^issuecomment%-(%d+)$"
+  if comment_id then
+    return { type = "issuecomment", id = comment_id }
+  end
+  local review_id = fragment:match "^pullrequestreview%-(%d+)$"
+  if review_id then
+    return { type = "pullrequestreview", id = review_id }
+  end
+  local discussion_id = fragment:match "^discussion_r(%d+)$"
+  if discussion_id then
+    return { type = "discussion_r", id = discussion_id }
+  end
+  return nil
+end
+
+---@param url string
+---@return string?, string?, string?, string?, octo.UrlAnchor?
 function M.parse_url(url)
+  local anchor = parse_url_anchor(url)
   local hostname, repo, kind, number = string.match(url, constants.URL_ISSUE_PATTERN)
   if repo and number and kind == "issues" then
-    return hostname, repo, number, "issue"
+    return hostname, repo, number, "issue", anchor
   elseif repo and number and kind == "pull" then
-    return hostname, repo, number, kind
+    return hostname, repo, number, kind, anchor
   elseif repo and number and kind == "discussions" then
-    return hostname, repo, number, "discussion"
+    return hostname, repo, number, "discussion", anchor
   elseif not repo then
     hostname, repo, kind, number = string.match(url, constants.URL_RELEASE_PATTERN)
     if repo and number and kind == "releases" then
-      return hostname, repo, number, "release"
+      return hostname, repo, number, "release", anchor
     end
   end
 end

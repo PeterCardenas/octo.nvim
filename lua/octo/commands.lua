@@ -1207,7 +1207,7 @@ function M.octo(object, action, ...)
 
   local o = M.commands[object]
   if not o then
-    local hostname, repo, number, kind = utils.parse_url(object)
+    local hostname, repo, number, kind, anchor = utils.parse_url(object)
     if repo and number and kind == "issue" then
       if hostname and hostname ~= "github.com" then
         vim.cmd(string.format("edit octo://%s/%s/issue/%s", hostname, repo, number))
@@ -1235,6 +1235,11 @@ function M.octo(object, action, ...)
     else
       utils.error("Incorrect argument: " .. object)
       return
+    end
+    -- Store anchor for post-load navigation (buffer loads asynchronously)
+    if anchor then
+      local bufnr = vim.api.nvim_get_current_buf()
+      vim.b[bufnr].octo_pending_anchor = anchor
     end
   else
     if type(o) == "function" then

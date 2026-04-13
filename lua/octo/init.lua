@@ -430,6 +430,26 @@ function M.create_buffer(kind, obj, repo, create, hostname)
   utils.clear_history()
   vim.bo[bufnr].modified = false
   require("octo.polling").track_buffer(bufnr)
+
+  -- Navigate to anchor if one was set by Octo <url>
+  local anchor = vim.b[bufnr].octo_pending_anchor
+  if anchor then
+    vim.b[bufnr].octo_pending_anchor = nil
+    vim.schedule(function()
+      M.navigate_to_anchor(bufnr, octo_buffer, anchor)
+    end)
+  end
+end
+
+--- Navigate to a URL anchor (comment) within an octo buffer
+---@param bufnr integer
+---@param octo_buffer OctoBuffer
+---@param anchor octo.UrlAnchor
+function M.navigate_to_anchor(bufnr, octo_buffer, anchor)
+  local db_id = tonumber(anchor.id)
+  if db_id then
+    octo_buffer:navigate_to_comment { databaseId = db_id }
+  end
 end
 
 return M
