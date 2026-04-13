@@ -120,7 +120,7 @@ end
 ---Add a state bubble
 ---@param state string State name
 ---@param state_highlight string State highlight group prefix (e.g., "OctoState")
----@param opts? table Options for bubble creation
+---@param opts? octo.ui.BubbleOpts Options for bubble creation
 ---@return TextChunkBuilder self for chaining
 function TextChunkBuilder:state_bubble(state, state_highlight, opts)
   local bubble = bubbles.make_bubble(state, state_highlight .. "Bubble", opts)

@@ -718,7 +718,13 @@ function M.write_repo(bufnr, repo)
   -- clear virtual texts
   vim.api.nvim_buf_clear_namespace(bufnr, constants.OCTO_REPO_VT_NS, 0, -1)
 
-  add_details_line(details, "Name", repo.nameWithOwner)
+  TextChunkBuilder:new()
+    :detail_label("Name")
+    :detail_value(repo.nameWithOwner)
+    :when_fn(repo.isArchived, function(b)
+      return b:state_bubble("Archived", "OctoStatePending", { left_margin_width = 2 })
+    end)
+    :write_detail_line(details)
   add_details_line(details, "Description", repo.description)
   local defaultBranchRefName ---@type string?
   if repo.defaultBranchRef == vim.NIL then
@@ -748,7 +754,6 @@ function M.write_repo(bufnr, repo)
       return nil
     end
   end)
-  add_details_line(details, "Archived", repo.isArchived, "boolean")
   add_details_line(details, "Disabled", repo.isDisabled, "boolean")
   add_details_line(details, "Empty", repo.isEmpty, "boolean")
   add_details_line(details, "Private", repo.isPrivate, "boolean")
