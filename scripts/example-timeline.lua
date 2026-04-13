@@ -29,16 +29,6 @@ local green = "#00af00"
 local blue = "#0000ff"
 
 local commit_message = "Fix all the bugs"
-local large_commit_message = [[
-This is a very large commit message that is intended to test how the timeline rendering handles large commit messages.
-
-It should be displayed properly without any issues, and the text
-should wrap correctly within the timeline item.
-This commit message goes on and on to ensure that it exceeds typical lengths and
-tests the robustness of the rendering logic in the octo.nvim plugin for Neovim.
-Let's add some more text to make sure it's sufficiently large. Here we go, adding even more text to this commit message to push it further. Now we should be good!
-
-]]
 
 ---@type octo.fragments.Issue
 local open_issue = {
@@ -328,7 +318,7 @@ writers.write_timeline_items(bufnr, {
         commit = {
           __typename = "Commit",
           abbreviatedOid = "abc1234",
-          message = commit_message,
+          messageHeadline = commit_message,
           repository = { nameWithOwner = repo },
         },
       },
@@ -347,7 +337,7 @@ writers.write_timeline_items(bufnr, {
         commit = {
           __typename = "Commit",
           abbreviatedOid = "abc1234",
-          message = large_commit_message,
+          messageHeadline = "This is a very large commit message that is intended to test how the timeline rendering handles large commit messages.",
           repository = { nameWithOwner = repo },
         },
       },
@@ -358,7 +348,7 @@ writers.write_timeline_items(bufnr, {
         commit = {
           __typename = "Commit",
           abbreviatedOid = "abc1234",
-          message = "Fix all the bugs",
+          messageHeadline = "Fix all the bugs",
           repository = { nameWithOwner = repo },
         },
       },

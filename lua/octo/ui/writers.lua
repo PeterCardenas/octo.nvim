@@ -2982,7 +2982,7 @@ local function write_reference_commit(bufnr, commit)
   local spaces = config.values.use_timeline_icons and 3 or 10
   TextChunkBuilder:new()
     :space(spaces)
-    :text(commit.message, "OctoTimelineItemHeading")
+    :text(commit.messageHeadline, "OctoTimelineItemHeading")
     :space()
     :text(commit.abbreviatedOid, "OctoTimelineItemHeading")
     :write_event(bufnr)

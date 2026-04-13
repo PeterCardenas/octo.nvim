@@ -334,7 +334,7 @@ fragment ConvertToDraftEventFragment on ConvertToDraftEvent {
   ---@field commit {
   ---  __typename: string,
   ---  abbreviatedOid: string,
-  ---  message: string,
+  ---  messageHeadline: string,
   ---  repository: {
   ---    nameWithOwner: string,
   ---  },
@@ -349,7 +349,7 @@ fragment ReferencedEventFragment on ReferencedEvent {
   commit {
     __typename
     abbreviatedOid
-    message
+    messageHeadline
     repository {
       nameWithOwner
     }
