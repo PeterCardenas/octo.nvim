@@ -1626,6 +1626,7 @@ function M.write_comment(bufnr, comment, kind, line)
       snippetEndLine = comment.end_line,
       lastEditedAt = comment.lastEditedAt ~= vim.NIL and comment.lastEditedAt or nil,
       includesCreatedEdit = comment.includesCreatedEdit,
+      subjectType = comment.subjectType,
     }
   )
 
@@ -2131,6 +2132,9 @@ function M.write_thread_snippet(bufnr, diffhunk, diffhunk_lang, start_line, comm
   return start_line, line
 end
 
+---@param bufnr integer
+---@param opts { start_line: integer, end_line: integer, commit: string, isOutdated: boolean, isResolved: boolean, path: string, subjectType: octo.SubjectType }
+---@param line? integer
 function M.write_review_thread_header(bufnr, opts, line)
   line = line or vim.api.nvim_buf_line_count(bufnr) - 1
 
@@ -2144,7 +2148,10 @@ function M.write_review_thread_header(bufnr, opts, line)
     { "THREAD: ", "OctoTimelineItemHeading" },
     { "[", "OctoSymbol" },
     { opts.path .. " ", "OctoDetailsLabel" },
-    { tostring(opts.start_line) .. ":" .. tostring(opts.end_line), "OctoDetailsValue" },
+    {
+      opts.subjectType == "FILE" and "file" or (tostring(opts.start_line) .. ":" .. tostring(opts.end_line)),
+      "OctoDetailsValue",
+    },
     { "] [Commit: ", "OctoSymbol" },
     { opts.commit, "OctoDetailsLabel" },
     { "] ", "OctoSymbol" },
@@ -3812,6 +3819,7 @@ function M.write_threads(bufnr, threads)
       -- augment comment details
       comment.path = thread.path
       comment.diffSide = thread.diffSide
+      comment.subjectType = thread.subjectType
 
       -- review thread header
       if utils.is_blank(comment.replyTo) then
@@ -3830,6 +3838,7 @@ function M.write_threads(bufnr, threads)
           isResolved = thread.isResolved,
           resolvedBy = thread.resolvedBy,
           commit = comment.originalCommit.abbreviatedOid,
+          subjectType = thread.subjectType,
         })
 
         -- write empty line
@@ -3867,6 +3876,7 @@ function M.write_threads(bufnr, threads)
       reviewId = thread.comments.nodes[1].pullRequestReview.id,
       path = thread.path,
       line = thread.originalStartLine ~= vim.NIL and thread.originalStartLine or thread.originalLine,
+      subjectType = thread.subjectType,
     }
   end
 

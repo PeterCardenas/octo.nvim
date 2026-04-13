@@ -9,6 +9,7 @@ local M = {}
 ---@field line number
 ---@field bufferStartLine? integer
 ---@field bufferEndLine? integer
+---@field subjectType? octo.SubjectType
 local ThreadMetadata = {}
 ThreadMetadata.__index = ThreadMetadata
 
@@ -23,6 +24,7 @@ function ThreadMetadata:new(opts)
     reviewId = opts.reviewId,
     path = opts.path,
     line = opts.line,
+    subjectType = opts.subjectType,
   }
   setmetatable(this, self)
   return this

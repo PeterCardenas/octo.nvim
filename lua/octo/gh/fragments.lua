@@ -1535,6 +1535,7 @@ fragment ReviewThreadCommentFragment on PullRequestReviewComment {
   --- @field isResolved boolean
   --- @field isCollapsed boolean
   --- @field isOutdated boolean
+  --- @field subjectType octo.SubjectType
 
   M.review_thread_information = [[
 fragment ReviewThreadInformationFragment on PullRequestReviewThread {
@@ -1552,6 +1553,7 @@ fragment ReviewThreadInformationFragment on PullRequestReviewThread {
   isResolved
   isCollapsed
   isOutdated
+  subjectType
 }
 ]]
 

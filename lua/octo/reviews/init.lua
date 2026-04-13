@@ -313,13 +313,22 @@ end
 function Review:update_threads(threads)
   self.threads = {}
   for _, thread in ipairs(threads) do
-    if thread.line == vim.NIL then
-      thread.line = thread.originalLine
-    end
-    if thread.startLine == vim.NIL then
-      thread.startLine = thread.line
+    if thread.subjectType == "FILE" then
+      -- File-level threads have no meaningful line numbers
+      thread.line = 0
+      thread.startLine = 0
+      thread.originalLine = 0
+      thread.originalStartLine = 0
       thread.startDiffSide = thread.diffSide
-      thread.originalStartLine = thread.originalLine
+    else
+      if thread.line == vim.NIL then
+        thread.line = thread.originalLine
+      end
+      if thread.startLine == vim.NIL then
+        thread.startLine = thread.line
+        thread.startDiffSide = thread.diffSide
+        thread.originalStartLine = thread.originalLine
+      end
     end
     if not thread.isOutdated then
       self.threads[thread.id] = thread
@@ -535,6 +544,72 @@ function Review:add_comment(isSuggestion)
   end
 end
 
+---Add a file-level review comment (not tied to a specific line).
+function Review:add_file_comment()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local split, path = utils.get_split_and_path(bufnr)
+  if not split or not path then
+    return
+  end
+
+  local file = self.layout:get_current_file()
+  if not file then
+    return
+  end
+
+  local review_level = self:get_level()
+  if review_level == "COMMIT" then
+    utils.error "File-level comments are not supported at the commit level"
+    return
+  end
+
+  self.layout:ensure_layout()
+
+  local alt_win = file:get_alternative_win(split)
+  if vim.api.nvim_win_is_valid(alt_win) then
+    local pr = file.pull_request
+
+    local commit = self.layout.right.commit
+    local commit_abbrev = self.layout.right:abbrev()
+
+    local threads = {
+      ReviewThread:stub {
+        line1 = nil,
+        line2 = nil,
+        file_path = file.path,
+        split = split,
+        diff_hunk = "",
+        commit = commit,
+        commit_abbrev = commit_abbrev,
+        review_id = self.id,
+        subjectType = "FILE",
+      },
+    }
+
+    thread_panel.show_review_threads(false)
+    local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
+    if thread_buffer then
+      table.insert(file.associated_bufs, thread_buffer.bufnr)
+      vim.api.nvim_win_set_buf(alt_win, thread_buffer.bufnr)
+      vim.api.nvim_set_current_win(alt_win)
+      thread_buffer:configure()
+      vim.cmd [[diffoff!]]
+      vim.cmd [[normal! vvGk]]
+      vim.cmd [[startinsert]]
+
+      vim.keymap.set("n", "q", function()
+        thread_panel.hide_thread_buffer(split, file)
+        local file_win = file:get_win(split)
+        if vim.api.nvim_win_is_valid(file_win) then
+          vim.api.nvim_set_current_win(file_win)
+        end
+      end, { buffer = thread_buffer.bufnr })
+    end
+  else
+    utils.error("Cannot find diff window " .. alt_win)
+  end
+end
+
 ---Get the review level, aka whether the review is at commit or PR level
 ---@return ReviewLevel
 function Review:get_level()
@@ -569,6 +644,21 @@ function M.add_review_comment(isSuggestion)
   end
 
   review:add_comment(isSuggestion)
+end
+
+function M.add_file_comment()
+  local review = M.get_current_review()
+
+  if not review then
+    error "Could not find review"
+  end
+
+  if review.id == -1 then
+    utils.error "Please start or resume a review first"
+    return
+  end
+
+  review:add_file_comment()
 end
 
 ---@param thread ReviewThread

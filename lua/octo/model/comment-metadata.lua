@@ -28,6 +28,7 @@ local M = {}
 ---@field bufferEndLine? integer
 ---@field lastEditedAt? string
 ---@field includesCreatedEdit? boolean
+---@field subjectType? octo.SubjectType
 local CommentMetadata = {}
 CommentMetadata.__index = CommentMetadata
 
@@ -62,6 +63,7 @@ function CommentMetadata:new(opts)
     snippetEndLine = opts.snippetEndLine,
     lastEditedAt = opts.lastEditedAt,
     includesCreatedEdit = opts.includesCreatedEdit,
+    subjectType = opts.subjectType,
   }
   setmetatable(this, self)
   return this

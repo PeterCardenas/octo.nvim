@@ -37,7 +37,9 @@ function M.show_review_threads(jump_to_buffer)
   -- get threads associated with current line
   local threads_at_cursor = {}
   for _, thread in ipairs(threads) do
-    if
+    if thread.subjectType == "FILE" then
+      -- file-level threads are not associated with a cursor position
+    elseif
       review_level == "PR"
       and utils.is_thread_placed_in_buffer(thread, bufnr)
       and thread.startLine <= line
@@ -135,7 +137,12 @@ function M.create_thread_buffer(threads, repo, number, side, path)
     path = "/" .. path
   end
   local line = threads[1].originalStartLine ~= vim.NIL and threads[1].originalStartLine or threads[1].originalLine
-  local bufname = string.format("octo://%s/review/%s/threads/%s%s:%d", repo, current_review.id, side, path, line)
+  local bufname
+  if threads[1].subjectType == "FILE" then
+    bufname = string.format("octo://%s/review/%s/threads/%s%s:file", repo, current_review.id, side, path)
+  else
+    bufname = string.format("octo://%s/review/%s/threads/%s%s:%d", repo, current_review.id, side, path, line)
+  end
   local existing_bufnr = vim.fn.bufnr(bufname)
 
   if existing_bufnr ~= -1 then

@@ -1587,6 +1587,10 @@ function M.comment_edits()
   }
 end
 
+---@param bufnr integer
+---@param thread octo.mutations.ResolveReviewThread.thread|octo.mutations.UnresolveReviewThread.thread
+---@param thread_id string
+---@param thread_line integer
 local function update_review_thread_header(bufnr, thread, thread_id, thread_line)
   local start_line = thread.originalStartLine ~= vim.NIL and thread.originalStartLine or thread.originalLine
   local end_line = thread.originalLine
@@ -1603,6 +1607,7 @@ local function update_review_thread_header(bufnr, thread, thread_id, thread_line
     commit = commit_id,
     isOutdated = thread.isOutdated,
     isResolved = thread.isResolved,
+    subjectType = thread.subjectType,
   }, thread_line - 2)
   local threads = thread.pullRequest.reviewThreads.nodes
   local review = reviews.get_current_review()
@@ -1630,6 +1635,7 @@ function M.resolve_thread()
     opts = {
       cb = gh.create_callback {
         success = function(output)
+          ---@type octo.mutations.ResolveReviewThread
           local resp = vim.json.decode(output)
           local thread = resp.data.resolveReviewThread.thread
           if thread.isResolved then
@@ -1660,6 +1666,7 @@ function M.unresolve_thread()
     opts = {
       cb = gh.create_callback {
         success = function(output)
+          ---@type octo.mutations.UnresolveReviewThread
           local resp = vim.json.decode(output)
           local thread = resp.data.unresolveReviewThread.thread
           if not thread.isResolved then

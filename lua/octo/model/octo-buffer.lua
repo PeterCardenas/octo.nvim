@@ -620,17 +620,27 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
   -- create new thread
   if review_level == "PR" then
     ---@type octo.mutations.AddPullRequestReviewThreadInput
-    local input = {
-      pullRequestReviewId = comment_metadata.reviewId,
-      body = comment_metadata.body,
-      path = comment_metadata.path,
-      side = comment_metadata.diffSide,
-      line = comment_metadata.snippetStartLine,
-    }
+    local input
+    if comment_metadata.subjectType == "FILE" then
+      input = {
+        pullRequestReviewId = comment_metadata.reviewId,
+        body = comment_metadata.body,
+        path = comment_metadata.path,
+        subjectType = "FILE",
+      }
+    else
+      input = {
+        pullRequestReviewId = comment_metadata.reviewId,
+        body = comment_metadata.body,
+        path = comment_metadata.path,
+        side = comment_metadata.diffSide,
+        line = comment_metadata.snippetStartLine,
+      }
 
-    if isMultiline then
-      input["startLine"] = comment_metadata.snippetStartLine
-      input["line"] = comment_metadata.snippetEndLine
+      if isMultiline then
+        input["startLine"] = comment_metadata.snippetStartLine
+        input["line"] = comment_metadata.snippetEndLine
+      end
     end
 
     gh.api.graphql {

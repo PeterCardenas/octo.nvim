@@ -30,6 +30,7 @@ local M = {}
 ---@field diffSide string
 ---@field isCollapsed boolean
 ---@field id string|-1
+---@field subjectType? octo.SubjectType
 ---@field comments { nodes: ReviewComment[] }
 
 local default_id = -1
@@ -47,6 +48,7 @@ ReviewThread.__index = ReviewThread
 --- commit: string,
 --- commit_abbrev: string,
 --- review_id: string|-1,
+--- subjectType: (octo.SubjectType)?,
 ---}
 ---@return ReviewThread
 function ReviewThread:stub(opts)
@@ -54,6 +56,7 @@ function ReviewThread:stub(opts)
   return {
     originalStartLine = opts.line1,
     originalLine = opts.line2,
+    subjectType = opts.subjectType or "LINE",
     path = opts.file_path,
     isOutdated = false,
     isResolved = false,

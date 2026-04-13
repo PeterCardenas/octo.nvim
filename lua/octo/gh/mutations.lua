@@ -27,6 +27,21 @@ mutation {
 }
 ]] .. fragments.reaction_groups
 
+  ---@class octo.mutations.ResolveReviewThread
+  ---@field data { resolveReviewThread: { thread: octo.mutations.ResolveReviewThread.thread } }
+
+  ---@class octo.mutations.ResolveReviewThread.pullRequest.reviewThreads.nodes : octo.ReviewThreadInformationFragment
+  ---@field comments { nodes: octo.ReviewThreadCommentFragment[] }
+
+  ---@class octo.mutations.ResolveReviewThread.thread
+  ---@field originalStartLine integer
+  ---@field originalLine integer
+  ---@field isOutdated boolean
+  ---@field isResolved boolean
+  ---@field subjectType octo.SubjectType
+  ---@field path string
+  ---@field pullRequest { reviewThreads: { nodes: octo.mutations.ResolveReviewThread.pullRequest.reviewThreads.nodes[] } }
+
   -- https://docs.github.com/en/free-pro-team@latest/graphql/reference/mutations#resolvereviewthread
   M.resolve_review_thread = [[
 mutation {
@@ -36,6 +51,7 @@ mutation {
       originalLine
       isOutdated
       isResolved
+      subjectType
       path
       pullRequest {
         reviewThreads(last:100) {
@@ -54,6 +70,21 @@ mutation {
 }
 ]] .. fragments.reaction_groups .. fragments.review_thread_information .. fragments.review_thread_comment
 
+  ---@class octo.mutations.UnresolveReviewThread
+  ---@field data { unresolveReviewThread: { thread: octo.mutations.UnresolveReviewThread.thread } }
+
+  ---@class octo.mutations.UnresolveReviewThread.thread
+  ---@field originalStartLine integer
+  ---@field originalLine integer
+  ---@field isOutdated boolean
+  ---@field isResolved boolean
+  ---@field subjectType octo.SubjectType
+  ---@field path string
+  ---@field pullRequest { reviewThreads: { nodes: octo.mutations.UnresolveReviewThread.pullRequest.reviewThreads.nodes[] } }
+
+  ---@class octo.mutations.UnresolveReviewThread.pullRequest.reviewThreads.nodes : octo.ReviewThreadInformationFragment
+  ---@field comments { nodes: octo.ReviewThreadCommentFragment[] }
+
   -- https://docs.github.com/en/free-pro-team@latest/graphql/reference/mutations#unresolvereviewthread
   M.unresolve_review_thread = [[
 mutation {
@@ -63,6 +94,7 @@ mutation {
       originalLine
       isOutdated
       isResolved
+      subjectType
       path
       pullRequest {
         reviewThreads(last:100) {
@@ -187,6 +219,8 @@ mutation {
 
   ---@alias DiffSide "LEFT" | "RIGHT"
 
+  ---@alias octo.SubjectType "FILE"|"LINE"
+
   ---https://docs.github.com/en/graphql/reference/input-objects#addpullrequestreviewthreadinput
   ---@class octo.mutations.AddPullRequestReviewThreadInput
   ---@field pullRequestReviewId string
@@ -196,6 +230,7 @@ mutation {
   ---@field side DiffSide?
   ---@field startLine integer?
   ---@field line integer?
+  ---@field subjectType (octo.SubjectType)?
 
   -- https://docs.github.com/en/graphql/reference/mutations#addpullrequestreviewthread
   M.add_pull_request_review_thread = [[

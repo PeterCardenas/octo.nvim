@@ -441,6 +441,9 @@ function FileEntry:place_signs()
     ---@type octo.ReviewThread[]
     local threads = vim.tbl_values(current_review.threads)
     for _, thread in ipairs(threads) do
+      if thread.subjectType == "FILE" then
+        goto continue_thread
+      end
       local startLine, endLine = thread.startLine, thread.line
       if review_level == "COMMIT" then
         startLine = thread.originalLine
@@ -489,6 +492,7 @@ function FileEntry:place_signs()
           break
         end
       end
+      ::continue_thread::
     end
   end
 end
