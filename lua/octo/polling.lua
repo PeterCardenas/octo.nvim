@@ -53,7 +53,7 @@ end
 ---@param rollup table|nil  statusCheckRollup node
 ---@return string
 local function check_fingerprint(rollup)
-  if not rollup then
+  if utils.is_blank(rollup) then
     return ""
   end
   local parts = { rollup.state or "" }
@@ -61,7 +61,11 @@ local function check_fingerprint(rollup)
   if type(nodes) == "table" then
     for _, node in ipairs(nodes) do
       -- CheckRun has status+conclusion; StatusContext has state
-      parts[#parts + 1] = (node.status or "") .. (node.conclusion or "") .. (node.state or "")
+      -- conclusion is null (vim.NIL) while a check is still in progress
+      local status = utils.is_blank(node.status) and "" or node.status
+      local conclusion = utils.is_blank(node.conclusion) and "" or node.conclusion
+      local state = utils.is_blank(node.state) and "" or node.state
+      parts[#parts + 1] = status .. conclusion .. state
     end
   end
   return table.concat(parts, ",")
