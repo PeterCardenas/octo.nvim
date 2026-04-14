@@ -176,7 +176,27 @@ function FilePanel:get_file_at_cursor()
   return self.files[utils.clamp(line - header_size, 1, #self.files)]
 end
 
-function FilePanel:highlight_file(file)
+---Mark the given file as selected (extmark only, does not move cursor).
+function FilePanel:mark_selected(file)
+  if not (self:is_open() and self:buf_loaded()) then
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
+  for i, f in ipairs(self.files) do
+    if f == file then
+      local line = i + header_size - 1
+      vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line, 0, {
+        end_line = line + 1,
+        hl_group = "OctoFilePanelSelectedFile",
+      })
+      break
+    end
+  end
+end
+
+---Move the file panel cursor to the given file's line.
+function FilePanel:set_cursor_to_file(file)
   if not (self:is_open() and self:buf_loaded()) then
     return
   end
@@ -184,12 +204,7 @@ function FilePanel:highlight_file(file)
   for i, f in ipairs(self.files) do
     if f == file then
       pcall(vim.api.nvim_win_set_cursor, self.winid, { i + header_size, 0 })
-      vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      local line = i + header_size - 1
-      vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line, 0, {
-        end_line = line + 1,
-        hl_group = "OctoFilePanelSelectedFile",
-      })
+      break
     end
   end
 end

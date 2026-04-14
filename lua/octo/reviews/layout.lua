@@ -135,8 +135,9 @@ function Layout:set_current_file(file, focus)
     self.files[self.selected_file_idx] = file
     file:load_buffers(self.left_winid, self.right_winid)
 
-    -- Highlight file in file panel
-    self.file_panel:highlight_file(self:get_current_file())
+    -- Mark and move cursor to selected file in file panel
+    self.file_panel:mark_selected(self:get_current_file())
+    self.file_panel:set_cursor_to_file(self:get_current_file())
 
     -- Set focus on specified window
     focus = focus or config.values.reviews.focus
