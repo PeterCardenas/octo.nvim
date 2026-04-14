@@ -28,7 +28,8 @@ FilePanel.winopts = {
   foldenable = false,
   spell = false,
   wrap = false,
-  cursorline = false,
+  cursorline = true,
+  cursorlineopt = "line",
   signcolumn = "yes",
   foldmethod = "manual",
   foldcolumn = "0",
@@ -38,8 +39,7 @@ FilePanel.winopts = {
   winhl = table.concat({
     "EndOfBuffer:OctoEndOfBuffer",
     "Normal:OctoNormal",
-    --'CursorLine:OctoCursorLine',
-    "VertSplit:OctoVertSplit",
+    "WinSeparator:OctoWinSeparator",
     "SignColumn:OctoNormal",
     "StatusLine:OctoStatusLine",
     "StatusLineNC:OctoStatuslineNC",
@@ -80,6 +80,7 @@ function FilePanel:is_focused()
   return self:is_open() and vim.api.nvim_get_current_win() == self.winid
 end
 
+---@param open_if_closed boolean
 function FilePanel:focus(open_if_closed)
   if self:is_open() then
     vim.api.nvim_set_current_win(self.winid)
@@ -106,11 +107,12 @@ function FilePanel:open()
   vim.cmd("resize " .. self.size)
   self.winid = vim.api.nvim_get_current_win()
 
+  vim.cmd("buffer " .. self.bufid)
+
   for k, v in pairs(FilePanel.winopts) do
-    vim.api.nvim_win_set_option(self.winid, k, v)
+    vim.api.nvim_set_option_value(k, v, { win = self.winid, scope = "local" })
   end
 
-  vim.cmd("buffer " .. self.bufid)
   vim.cmd ":wincmd ="
 end
 
@@ -145,7 +147,7 @@ function FilePanel:init_buffer()
   local bn = vim.api.nvim_create_buf(false, false)
 
   for k, v in pairs(FilePanel.bufopts) do
-    vim.api.nvim_buf_set_option(bn, k, v)
+    vim.api.nvim_set_option_value(k, v, { buf = bn })
   end
 
   local bufname = "OctoChangedFiles-" .. name_counter
@@ -174,7 +176,27 @@ function FilePanel:get_file_at_cursor()
   return self.files[utils.clamp(line - header_size, 1, #self.files)]
 end
 
-function FilePanel:highlight_file(file)
+---Mark the given file as selected (extmark only, does not move cursor).
+function FilePanel:mark_selected(file)
+  if not (self:is_open() and self:buf_loaded()) then
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
+  for i, f in ipairs(self.files) do
+    if f == file then
+      local line = i + header_size - 1
+      vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line, 0, {
+        end_line = line + 1,
+        hl_group = "OctoFilePanelSelectedFile",
+      })
+      break
+    end
+  end
+end
+
+---Move the file panel cursor to the given file's line.
+function FilePanel:set_cursor_to_file(file)
   if not (self:is_open() and self:buf_loaded()) then
     return
   end
@@ -182,8 +204,7 @@ function FilePanel:highlight_file(file)
   for i, f in ipairs(self.files) do
     if f == file then
       pcall(vim.api.nvim_win_set_cursor, self.winid, { i + header_size, 0 })
-      vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, "CursorLine", i + header_size - 1, 0, -1)
+      break
     end
   end
 end
@@ -198,8 +219,6 @@ function FilePanel:highlight_prev_file()
     if f == cur then
       local line = utils.clamp(i + header_size - 1, header_size + 1, #self.files + header_size)
       pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
-      vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, "CursorLine", line - 1, 0, -1)
     end
   end
 end
@@ -214,8 +233,6 @@ function FilePanel:highlight_next_file()
     if f == cur then
       local line = utils.clamp(i + header_size + 1, header_size, #self.files + header_size)
       pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
-      vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(self.bufid, constants.OCTO_FILE_PANEL_NS, "CursorLine", line - 1, 0, -1)
     end
   end
 end
@@ -233,7 +250,7 @@ function FilePanel:render()
   self.render_data:clear()
   local line_idx = 0
   local lines = self.render_data.lines
-  local add_hl = function(...)
+  local function add_hl(...)
     self.render_data:add_hl(...)
   end
 
@@ -263,7 +280,9 @@ function FilePanel:render()
   local max_path_length = 0
   for _, file in ipairs(self.files) do
     local diffstat = utils.diffstat(file.stats)
+    ---@type integer
     max_changes_length = math.max(max_changes_length, string.len(diffstat.total))
+    ---@type integer
     max_path_length = math.max(max_path_length, string.len(file.path))
   end
 
@@ -411,6 +430,8 @@ end
 
 M.FilePanel = FilePanel
 
+---@param path string
+---@return octo.ReviewThread[]
 function M.threads_for_path(path)
   local current_review = require("octo.reviews").get_current_review()
   if not current_review then
@@ -486,3 +507,4 @@ function M.prev_thread()
 end
 
 return M
+-- test file A

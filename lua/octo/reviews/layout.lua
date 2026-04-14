@@ -5,6 +5,7 @@ local FilePanel = require("octo.reviews.file-panel").FilePanel
 local utils = require "octo.utils"
 local file_entry = require "octo.reviews.file-entry"
 local config = require "octo.config"
+local constants = require "octo.constants"
 
 local M = {}
 
@@ -30,6 +31,11 @@ local Layout = {}
 Layout.__index = Layout
 
 ---Layout constructor
+---@param opt {
+---  left: Rev,
+---  right: Rev,
+---  files: FileEntry[],
+---}
 ---@return Layout
 function Layout:new(opt)
   local this = {
@@ -44,6 +50,7 @@ function Layout:new(opt)
   return this
 end
 
+---@param review Review
 function Layout:open(review)
   vim.cmd "tab split"
   self.tabpage = vim.api.nvim_get_current_tabpage()
@@ -74,8 +81,14 @@ end
 
 function Layout:init_layout()
   self.left_winid = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_hl_ns(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS)
+  vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffText", { background = "#5d425a" })
+  vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffChange", { link = "DiffDelete" })
   vim.cmd "belowright vsp"
   self.right_winid = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_hl_ns(self.right_winid, constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS)
+  vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffText", { background = "#39556f" })
+  vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffChange", { link = "DiffAdd" })
   self.file_panel:open()
 end
 
@@ -108,9 +121,9 @@ function Layout:set_current_file(file, focus)
   end
   if found then
     if not file:is_ready_to_render() then
-      local result = file:fetch()
+      local result = file:fetch(true)
       if not result then
-        vim.api.nvim_err_writeln("Timeout fetching " .. file.path)
+        utils.print_err("Timeout fetching " .. file.path)
         return
       end
     end
@@ -122,8 +135,8 @@ function Layout:set_current_file(file, focus)
     self.files[self.selected_file_idx] = file
     file:load_buffers(self.left_winid, self.right_winid)
 
-    -- Highlight file in file panel
-    self.file_panel:highlight_file(self:get_current_file())
+    -- Mark selected file in file panel (extmark only, no cursor move)
+    self.file_panel:mark_selected(self:get_current_file())
 
     -- Set focus on specified window
     focus = focus or config.values.reviews.focus
@@ -154,6 +167,7 @@ function Layout:select_prev_file()
     local prev_file_idx = (self.selected_file_idx - 2) % #self.files + 1
     local file = self.files[prev_file_idx]
     self:set_current_file(file)
+    self.file_panel:set_cursor_to_file(file)
   end
 end
 
@@ -164,6 +178,7 @@ function Layout:select_next_file()
     local next_file_idx = self.selected_file_idx % #self.files + 1
     local file = self.files[next_file_idx]
     self:set_current_file(file)
+    self.file_panel:set_cursor_to_file(file)
   end
 end
 
@@ -172,19 +187,68 @@ function Layout:select_first_file()
   if self.file_panel:is_open() then
     local file = self.files[1]
     self:set_current_file(file)
+    self.file_panel:set_cursor_to_file(file)
   end
 end
 
---- Select the last file entry
 function Layout:select_last_file()
   if self.file_panel:is_open() then
     local file = self.files[#self.files]
     self:set_current_file(file)
+    self.file_panel:set_cursor_to_file(file)
   end
 end
 
----Checks the state of the view layout.
----@return table
+--- Select the next unviewed file entry
+--- Skips VIEWED files, loops around to first unviewed if at end
+function Layout:select_next_unviewed_file()
+  if not self.file_panel:is_open() then
+    return
+  end
+
+  local start_idx = self.selected_file_idx
+  local total_files = #self.files
+
+  for i = 1, total_files do
+    local next_idx = (start_idx + i - 1) % total_files + 1
+    local file = self.files[next_idx]
+
+    if next_idx ~= self.selected_file_idx and file.viewed_state ~= "VIEWED" then
+      self:set_current_file(file)
+      self.file_panel:set_cursor_to_file(file)
+      return
+    end
+  end
+
+  -- Fallback: if all files are viewed, just go to next file
+  self:select_next_file()
+end
+
+--- Select the previous unviewed file entry
+--- Skips VIEWED files, loops around to last unviewed if at beginning
+function Layout:select_prev_unviewed_file()
+  if not self.file_panel:is_open() then
+    return
+  end
+
+  local start_idx = self.selected_file_idx
+  local total_files = #self.files
+
+  for i = 1, total_files do
+    local prev_idx = (start_idx - i - 1) % total_files + 1
+    local file = self.files[prev_idx]
+
+    if prev_idx ~= self.selected_file_idx and file.viewed_state ~= "VIEWED" then
+      self:set_current_file(file)
+      self.file_panel:set_cursor_to_file(file)
+      return
+    end
+  end
+
+  -- Fallback: if all files are viewed, just go to previous file
+  self:select_prev_file()
+end
+
 function Layout:validate_layout()
   local state = {
     tabpage = vim.api.nvim_tabpage_is_valid(self.tabpage),
@@ -196,7 +260,7 @@ function Layout:validate_layout()
 end
 
 ---Recover the layout after the user has messed it up.
----@param state table
+---@param state { tabpage: boolean, left_win: boolean, right_win: boolean }
 function Layout:recover_layout(state)
   self.ready = false
   if not state.tabpage then
@@ -256,14 +320,14 @@ function Layout:on_enter()
   end
 
   local file = self:get_current_file()
-  if file then
+  if file and config.values.use_local_fs then
     file:attach_buffers()
   end
 end
 
 function Layout:on_leave()
   local file = self:get_current_file()
-  if file then
+  if file and config.values.use_local_fs then
     file:detach_buffers()
   end
 end
@@ -280,7 +344,8 @@ function Layout:fix_foreign_windows()
   for _, id in ipairs(win_ids) do
     if not (id == self.file_panel.winid or id == self.left_winid or id == self.right_winid) then
       for k, v in pairs(win_reset_opts) do
-        vim.api.nvim_win_set_option(id, k, v)
+        ---@diagnostic disable-next-line: no-unknown
+        vim.wo[id][k] = v
       end
     end
   end
@@ -289,3 +354,4 @@ end
 M.Layout = Layout
 
 return M
+-- test file B
