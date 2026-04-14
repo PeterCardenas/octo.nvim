@@ -1193,9 +1193,9 @@ function M.changed_files()
               -- Show additions/deletions if available
               if item.additions and item.deletions then
                 ret[#ret + 1] = { " (", "Comment" }
-                ret[#ret + 1] = { string.format("+%d", item.additions), "GitSignsAdd" }
+                ret[#ret + 1] = { "+" .. utils.format_large_int(item.additions), "GitSignsAdd" }
                 ret[#ret + 1] = { "/", "Comment" }
-                ret[#ret + 1] = { string.format("-%d", item.deletions), "GitSignsDelete" }
+                ret[#ret + 1] = { "-" .. utils.format_large_int(item.deletions), "GitSignsDelete" }
                 ret[#ret + 1] = { ")", "Comment" }
               end
 
@@ -1217,7 +1217,11 @@ function M.changed_files()
               }
 
               if item.additions and item.deletions then
-                lines[#lines + 1] = string.format("Changes: +%d -%d", item.additions, item.deletions)
+                lines[#lines + 1] = string.format(
+                  "Changes: +%s -%s",
+                  utils.format_large_int(item.additions),
+                  utils.format_large_int(item.deletions)
+                )
                 lines[#lines + 1] = ""
               end
 

@@ -358,11 +358,11 @@ function M.repo(formatted_repos)
     ---@type string, string
     local stargazer, fork
     if config.values.picker_config.use_emojis then
-      stargazer = string.format("💫: %s", entry.repo.stargazerCount)
-      fork = string.format("🔱: %s", entry.repo.forkCount)
+      stargazer = string.format("💫: %s", utils.format_large_int(entry.repo.stargazerCount))
+      fork = string.format("🔱: %s", utils.format_large_int(entry.repo.forkCount))
     else
-      stargazer = string.format("s: %s", entry.repo.stargazerCount)
-      fork = string.format("f: %s", entry.repo.forkCount)
+      stargazer = string.format("s: %s", utils.format_large_int(entry.repo.stargazerCount))
+      fork = string.format("f: %s", utils.format_large_int(entry.repo.forkCount))
     end
     self:update_border(string.format("%s (%s, %s)", repo_name_owner, stargazer, fork))
   end
@@ -457,10 +457,7 @@ function M.workflow_run(formatted_runs)
     local entry = formatted_runs[entry_str]
 
     local wf_module = require "octo.workflow_runs"
-    wf_module.previewer(
-      { state = { bufnr = tmpbuf } },
-      { value = { id = entry.id } }
-    )
+    wf_module.previewer({ state = { bufnr = tmpbuf } }, { value = { id = entry.id } })
 
     self:set_preview_buf(tmpbuf)
     self:update_border(entry.display)

@@ -1327,8 +1327,8 @@ function M.repos(opts)
           local max_stargazerCount = -1
           for _, repo in ipairs(repos) do
             max_nameWithOwner = math.max(max_nameWithOwner, #repo.nameWithOwner)
-            max_forkCount = math.max(max_forkCount, #tostring(repo.forkCount))
-            max_stargazerCount = math.max(max_stargazerCount, #tostring(repo.stargazerCount))
+            max_forkCount = math.max(max_forkCount, #utils.format_large_int(repo.forkCount))
+            max_stargazerCount = math.max(max_stargazerCount, #utils.format_large_int(repo.stargazerCount))
           end
 
           create_repo_picker(repos, opts, {

@@ -173,8 +173,8 @@ function M.gen_from_git_changed_files(opts)
     items = {
       { width = 7 },
       { width = string.len "modified" },
-      { width = #tostring(opts.max_additions) + 1 },
-      { width = #tostring(opts.max_deletions) + 1 },
+      { width = #utils.format_large_int(opts.max_additions) + 1 },
+      { width = #utils.format_large_int(opts.max_deletions) + 1 },
       { remaining = true },
     },
   }
@@ -183,8 +183,8 @@ function M.gen_from_git_changed_files(opts)
     return displayer {
       { entry.value:sub(1, 7), "TelescopeResultsNumber" },
       { entry.change.status, "OctoDetailsLabel" },
-      { string.format("+%d", entry.change.additions), "OctoPullAdditions" },
-      { string.format("-%d", entry.change.deletions), "OctoPullDeletions" },
+      { "+" .. utils.format_large_int(entry.change.additions), "OctoPullAdditions" },
+      { "-" .. utils.format_large_int(entry.change.deletions), "OctoPullDeletions" },
       vim.split(entry.msg, "\n")[1],
     }
   end
@@ -503,9 +503,9 @@ function M.gen_from_repo(max_nameWithOwner, max_forkCount, max_stargazerCount, i
     local columns = {
       { string.sub(entry.obj.nameWithOwner, 1, 50), "TelescopeResultsNumber" },
       { "s:", "TelescopeResultsNumber" },
-      { entry.obj.stargazerCount },
+      { utils.format_large_int(entry.obj.stargazerCount) },
       { "f:", "TelescopeResultsNumber" },
-      { entry.obj.forkCount },
+      { utils.format_large_int(entry.obj.forkCount) },
       { access_str },
     }
 

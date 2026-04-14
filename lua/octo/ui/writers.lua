@@ -451,7 +451,8 @@ local function add_details_line(details, label, value, kind)
         end
       end
     else
-      vim.list_extend(vt, { { tostring(value), "OctoDetailsValue" } })
+      local display = type(value) == "number" and utils.format_large_int(value) or tostring(value)
+      vim.list_extend(vt, { { display, "OctoDetailsValue" } })
     end
     table.insert(details, vt)
   end
@@ -612,7 +613,7 @@ function M.write_upvotes(bufnr, obj, line)
 
   local upvotes_vt = {
     { upvote_symbol, "OctoDetailsLabel" },
-    { " " .. upvotes, "OctoDetailsValue" },
+    { " " .. utils.format_large_int(upvotes), "OctoDetailsValue" },
   }
   M.write_block(bufnr, { "" }, line)
   M.write_virtual_text(bufnr, constants.OCTO_REACTIONS_VT_NS, line, upvotes_vt)
@@ -661,7 +662,11 @@ function M.write_discussion_poll(bufnr, poll, start_line)
   local max_width = 0
   for _, option in ipairs(options) do
     local prefix = option.viewerHasVoted and "✓ " or "  "
-    local vote_text = string.format("%d %s", option.totalVoteCount, option.totalVoteCount == 1 and "vote" or "votes")
+    local vote_text = string.format(
+      "%s %s",
+      utils.format_large_int(option.totalVoteCount),
+      option.totalVoteCount == 1 and "vote" or "votes"
+    )
     local line_text = string.format("%s%s: %s", prefix, option.option, vote_text)
     max_width = math.max(max_width, vim.fn.strdisplaywidth(line_text) --[[@as integer]]) --[[@as integer]]
   end
@@ -673,7 +678,11 @@ function M.write_discussion_poll(bufnr, poll, start_line)
     local percentage = total_votes > 0 and math.floor((option.totalVoteCount / total_votes) * 100) or 0
 
     local prefix = option.viewerHasVoted and "✓ " or "  "
-    local vote_text = string.format("%d %s", option.totalVoteCount, option.totalVoteCount == 1 and "vote" or "votes")
+    local vote_text = string.format(
+      "%s %s",
+      utils.format_large_int(option.totalVoteCount),
+      option.totalVoteCount == 1 and "vote" or "votes"
+    )
     local option_text = string.format("%s%s: %s", prefix, option.option, vote_text)
 
     -- Calculate padding for alignment
@@ -1005,7 +1014,7 @@ function M.write_reactions(bufnr, reaction_groups, line)
       local icon = utils.reaction_map[group.content]
       local bubble = bubbles.make_reaction_bubble(icon, group.viewerHasReacted)
       vim.list_extend(reactions_vt, bubble)
-      table.insert(reactions_vt, { " " .. group.users.totalCount .. " ", "NormalFloat" })
+      table.insert(reactions_vt, { " " .. utils.format_large_int(group.users.totalCount) .. " ", "NormalFloat" })
     end
   end
   M.write_virtual_text(bufnr, constants.OCTO_REACTIONS_VT_NS, line - 1, reactions_vt)
@@ -1428,12 +1437,12 @@ function M.write_details(bufnr, issue, update, include_status)
     -- changes
     local changes_vt = {
       { "Commits: ", "OctoDetailsLabel" },
-      { tostring(issue.commits.totalCount), "OctoDetailsValue" },
+      { utils.format_large_int(issue.commits.totalCount), "OctoDetailsValue" },
       { " Changed files: ", "OctoDetailsLabel" },
-      { tostring(issue.changedFiles), "OctoDetailsValue" },
+      { utils.format_large_int(issue.changedFiles), "OctoDetailsValue" },
       { " (", "OctoDetailsLabel" },
-      { string.format("+%d ", issue.additions), "OctoDiffstatAdditions" },
-      { string.format("-%d ", issue.deletions), "OctoDiffstatDeletions" },
+      { "+" .. utils.format_large_int(issue.additions) .. " ", "OctoDiffstatAdditions" },
+      { "-" .. utils.format_large_int(issue.deletions) .. " ", "OctoDiffstatDeletions" },
     }
     local diffstat = utils.diffstat { additions = issue.additions, deletions = issue.deletions }
     if diffstat.additions > 0 then
@@ -2276,9 +2285,9 @@ function M.write_user_profile(bufnr, user, opts)
   local follow_chunk = {
     { " " },
     { "Followers: ", "OctoDetailsValue" },
-    { tostring(user.followers.totalCount) },
+    { utils.format_large_int(user.followers.totalCount) },
     { " Following: ", "OctoDetailsValue" },
-    { tostring(user.following.totalCount) },
+    { utils.format_large_int(user.following.totalCount) },
   }
   max_length = chunk_length(max_length, follow_chunk)
   table.insert(chunks, follow_chunk)
