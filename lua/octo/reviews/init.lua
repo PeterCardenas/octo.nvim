@@ -367,6 +367,13 @@ function Review:collect_submit_info()
     winid = winid,
     bufnr = bufnr,
   }
+  vim.api.nvim_create_autocmd("WinClosed", {
+    pattern = tostring(winid),
+    once = true,
+    callback = function()
+      self.submit_review_win = nil
+    end,
+  })
   vim.api.nvim_set_current_win(winid)
   vim.bo[bufnr].syntax = "octo"
   utils.apply_mappings("submit_win", bufnr)
