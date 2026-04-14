@@ -100,6 +100,12 @@ function OctoBuffer:clear()
   -- line numbers are stale after the buffer content is replaced.
   folds.clear_pending(self.bufnr)
 
+  -- clear details fold extmarks before wiping lines so that the
+  -- CursorMoved / on_key arrow-updater callbacks don't operate on
+  -- stale extmark positions during the reload window.
+  local details_ns = vim.api.nvim_create_namespace "octo_details_folds"
+  vim.api.nvim_buf_clear_namespace(self.bufnr, details_ns, 0, -1)
+
   -- clear buffer
   vim.api.nvim_buf_set_lines(self.bufnr, 0, -1, false, {})
 

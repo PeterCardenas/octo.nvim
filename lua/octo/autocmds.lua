@@ -103,6 +103,11 @@ function M.setup()
 end
 
 function M.update_signs(bufnr)
+  -- Clear existing sign-update autocommands for this buffer to prevent
+  -- duplication across configure() calls (e.g. :e triggers both
+  -- create_buffer and BufEnter, each calling configure()).
+  pcall(vim.api.nvim_clear_autocmds, { group = "octobuffer_autocmds", buffer = bufnr })
+
   define({ "TextChanged", "TextChangedI" }, {
     group = "octobuffer_autocmds",
     buffer = bufnr,

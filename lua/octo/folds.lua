@@ -326,13 +326,20 @@ end
 function M.update_details_arrows(bufnr)
   local details_ns = vim.api.nvim_create_namespace "octo_details_folds"
   local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, details_ns, 0, -1, { details = true })
+  if #extmarks == 0 then
+    return
+  end
   local arrow_closed = "▶"
   local arrow_open = "▼"
   local arrow_byte_len = #arrow_closed -- both are 3 bytes in UTF-8
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
 
   for _, extmark in ipairs(extmarks) do
     local id = extmark[1]
     local row = extmark[2]
+    if row >= line_count then
+      goto continue
+    end
     local details = extmark[4] ---@type vim.api.keyset.extmark_details?
     if not details then
       goto continue
