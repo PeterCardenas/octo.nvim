@@ -327,11 +327,22 @@ local function get_merge_blocking_lines(issue, checks_breakdown)
           :write_detail_line(lines)
       end
     end
-    if bpr.requiresCodeOwnerReviews and not reviews_satisfied(issue, required_count) then
-      TextChunkBuilder:new()
-        :text("  × ", "OctoStateDismissed")
-        :text("Requires code owner review", "OctoStateDismissed")
-        :write_detail_line(lines)
+    if bpr.requiresCodeOwnerReviews then
+      local has_pending_codeowner = false
+      if issue.reviewRequests and issue.reviewRequests.nodes then
+        for _, rr in ipairs(issue.reviewRequests.nodes) do
+          if rr.asCodeOwner then
+            has_pending_codeowner = true
+            break
+          end
+        end
+      end
+      if has_pending_codeowner then
+        TextChunkBuilder:new()
+          :text("  × ", "OctoStateDismissed")
+          :text("Requires code owner review", "OctoStateDismissed")
+          :write_detail_line(lines)
+      end
     end
   else
     -- No protection rule data at all — show generic blocked message

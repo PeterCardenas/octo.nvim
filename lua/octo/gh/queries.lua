@@ -210,7 +210,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   ---@field reviewThreads { nodes: octo.ReviewThread[] }
   ---@field labels octo.fragments.LabelConnection
   ---@field assignees octo.fragments.AssigneeConnection
-  ---@field reviewRequests { totalCount: integer, nodes: { requestedReviewer: { name: string }|{ login: string }|{ login: string, isViewer: boolean } }[] }
+  ---@field reviewRequests { totalCount: integer, nodes: { asCodeOwner: boolean, requestedReviewer: { name: string }|{ login: string }|{ login: string, isViewer: boolean } }[] }
   ---@field statusCheckRollup { state: octo.StatusState, contexts?: { nodes: octo.StatusCheckRollupContext[] } }
   ---@field mergeStateStatus octo.MergeStateStatus
   ---@field mergeable octo.MergeableState
@@ -384,6 +384,7 @@ query PullRequest($endCursor: String, $owner: String!, $name: String!, $number: 
       reviewRequests(first: 20) {
         totalCount
         nodes {
+          asCodeOwner
           requestedReviewer {
             ... on User {
               login
