@@ -1208,38 +1208,59 @@ function M.octo(object, action, ...)
   local o = M.commands[object]
   if not o then
     local hostname, repo, number, kind, anchor = utils.parse_url(object)
-    if repo and number and kind == "issue" then
-      if hostname and hostname ~= "github.com" then
-        vim.cmd(string.format("edit octo://%s/%s/issue/%s", hostname, repo, number))
-      else
-        utils.get_issue(number, repo)
-      end
-    elseif repo and number and kind == "pull" then
-      if hostname and hostname ~= "github.com" then
-        vim.cmd(string.format("edit octo://%s/%s/pull/%s", hostname, repo, number))
-      else
-        utils.get_pull_request(number, repo)
-      end
-    elseif repo and number and kind == "discussion" then
-      if hostname and hostname ~= "github.com" then
-        vim.cmd(string.format("edit octo://%s/%s/discussion/%s", hostname, repo, number))
-      else
-        utils.get_discussion(number, repo)
-      end
-    elseif repo and number and kind == "release" then
-      if hostname and hostname ~= "github.com" then
-        vim.cmd(string.format("edit octo://%s/%s/release/%s", hostname, repo, number))
-      else
-        utils.get_release(number, repo)
-      end
-    else
+    if not (repo and number) or not vim.tbl_contains({ "issue", "pull", "discussion", "release" }, kind) then
       utils.error("Incorrect argument: " .. object)
       return
     end
-    -- Store anchor for post-load navigation (buffer loads asynchronously)
-    if anchor then
-      local bufnr = vim.api.nvim_get_current_buf()
-      vim.b[bufnr].octo_pending_anchor = anchor
+
+    -- Compute target URI
+    local target_uri
+    if hostname and hostname ~= "github.com" then
+      target_uri = string.format("octo://%s/%s/%s/%s", hostname, repo, kind, number)
+    else
+      local uri_fns = {
+        issue = utils.get_issue_uri,
+        pull = utils.get_pull_request_uri,
+        discussion = utils.get_discussion_uri,
+        release = utils.get_release_uri,
+      }
+      target_uri = uri_fns[kind](number, repo)
+    end
+    if not target_uri then
+      return
+    end
+
+    -- Check if buffer already exists and is loaded
+    local existing_bufnr = utils.find_named_buffer(target_uri)
+    local octo_buffer = existing_bufnr and _G.octo_buffers[existing_bufnr]
+
+    if octo_buffer then
+      -- Buffer already loaded — focus existing window or switch to it
+      local win
+      local current_win = vim.api.nvim_get_current_win()
+      local wins = { current_win, unpack(vim.api.nvim_list_wins()) }
+      for _, w in ipairs(wins) do
+        if vim.api.nvim_win_get_buf(w) == existing_bufnr then
+          win = w
+          break
+        end
+      end
+      if win then
+        vim.api.nvim_set_current_win(win)
+      else
+        vim.api.nvim_set_current_buf(existing_bufnr)
+      end
+      if anchor then
+        require("octo").navigate_to_anchor(existing_bufnr, octo_buffer, anchor)
+      end
+    else
+      -- Buffer doesn't exist yet — create and load it
+      vim.cmd("edit " .. target_uri)
+      -- Store anchor for post-load navigation (buffer loads asynchronously)
+      if anchor then
+        local bufnr = vim.api.nvim_get_current_buf()
+        vim.b[bufnr].octo_pending_anchor = anchor
+      end
     end
   else
     if type(o) == "function" then
