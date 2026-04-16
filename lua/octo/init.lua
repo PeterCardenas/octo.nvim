@@ -427,6 +427,9 @@ function M.create_buffer(kind, obj, repo, create, hostname)
     octo_buffer:async_fetch_taggable_users()
     octo_buffer:async_fetch_issues()
   end
+  -- Keep comment boundary signs in sync after any buffer reload,
+  -- including polling refreshes while the window is unfocused.
+  octo_buffer:render_signs()
   utils.clear_history()
   vim.bo[bufnr].modified = false
   require("octo.polling").track_buffer(bufnr)
