@@ -641,6 +641,7 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
         path = comment_metadata.path,
         side = comment_metadata.diffSide,
         line = comment_metadata.snippetStartLine,
+        subjectType = "LINE",
       }
 
       if isMultiline then
