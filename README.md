@@ -349,6 +349,9 @@ require"octo".setup {
   },
   mappings_disable_default = false, -- disable default mappings if true, but will still adapt user mappings
   mappings = {
+    global = {
+      goto_issue = { lhs = "<localleader>gi", desc = "navigate to the issue under cursor" },
+    },
     discussion = {
       discussion_options = { lhs = "<CR>", desc = "show discussion options" },
       open_in_browser = { lhs = "<C-b>", desc = "open discussion in browser" },
@@ -573,6 +576,11 @@ require"octo".setup {
 }
 ```
 <!-- END_CONFIG -->
+
+`mappings.global` are installed globally instead of buffer-locally. By default,
+this includes `<localleader>gi`, so jumping to issue references works from
+regular repo buffers and review diffs too. Issue previews on `CursorHold` follow
+the same repo-context fallback.
 
 ## 🤖 Commands
 

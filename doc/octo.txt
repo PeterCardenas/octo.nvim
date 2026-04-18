@@ -645,6 +645,12 @@ I can't see my v2 projects in issues and/or pull requests!~
 
   Run `:checkhealth octo` for a full diagnosis.
 
+How can I jump to issue references outside Octo buffers?~
+  The default `<localleader>gi` mapping is installed globally through
+  `mappings.global.goto_issue`, so it works in review diffs and regular repo
+  buffers too. Issue previews on `CursorHold` use the same repo-context
+  fallback.
+
 How can I disable default key mappings?~
   set `mappings_disable_default = true` in user config.
 

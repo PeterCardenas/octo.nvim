@@ -222,6 +222,53 @@ describe("parse_url", function()
   end)
 end)
 
+describe("get_current_repo", function()
+  local original_review_module
+  local original_octo_buffers
+  local original_bufnr
+
+  before_each(function()
+    original_review_module = package.loaded["octo.reviews"]
+    original_octo_buffers = _G.octo_buffers
+    original_bufnr = vim.api.nvim_get_current_buf()
+  end)
+
+  after_each(function()
+    package.loaded["octo.reviews"] = original_review_module
+    _G.octo_buffers = original_octo_buffers
+    if vim.api.nvim_buf_is_valid(original_bufnr) then
+      vim.api.nvim_set_current_buf(original_bufnr)
+    end
+  end)
+
+  it("prefers the current octo buffer repo", function()
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    _G.octo_buffers = {
+      [bufnr] = { repo = "owner/buffer-repo" },
+    }
+
+    vim.api.nvim_set_current_buf(bufnr)
+
+    eq("owner/buffer-repo", this.get_current_repo())
+  end)
+
+  it("falls back to the current review repo", function()
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    _G.octo_buffers = {}
+    package.loaded["octo.reviews"] = {
+      get_current_review = function()
+        return {
+          pull_request = { repo = "owner/review-repo" },
+        }
+      end,
+    }
+
+    vim.api.nvim_set_current_buf(bufnr)
+
+    eq("owner/review-repo", this.get_current_repo())
+  end)
+end)
+
 describe("format_seconds", function()
   it("formats less than a minute", function()
     eq(this.format_seconds(45), "45s")
