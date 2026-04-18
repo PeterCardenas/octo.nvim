@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo:*)",
+      "Bash(git grep:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh run view:*)",
+      "Bash(just format:*)",
+      "Bash(just format-check:*)",
+      "Bash(just lint:*)",
+      "Bash(CHECKLEVEL=Information just typecheck:*)",
+      "Bash(just setup-deps:*)",
+      "Bash(just test:*)",
+      "Bash(just typecheck:*)",
+      "Bash(just validate:*)",
+      "Bash(lua-language-server:*)",
+      "Bash(nvim:*)",
+      "Bash(pre-commit run --all-files:*)",
+      "Bash(rg:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
