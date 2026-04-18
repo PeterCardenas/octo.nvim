@@ -636,6 +636,31 @@ M.reviews = {}
 
 M.Review = Review
 
+---@param review Review
+local function close_submit_review_win(review)
+  local submit_review_win = review.submit_review_win
+  if not submit_review_win then
+    return
+  end
+
+  review.submit_review_win = nil
+
+  if submit_review_win.winid and vim.api.nvim_win_is_valid(submit_review_win.winid) then
+    pcall(vim.api.nvim_win_close, submit_review_win.winid, true)
+  end
+end
+
+local function cleanup_invalid_reviews()
+  for key, review in pairs(M.reviews) do
+    local layout = review.layout
+    local tabpage = layout and layout.tabpage
+    if not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then
+      close_submit_review_win(review)
+      M.reviews[key] = nil
+    end
+  end
+end
+
 ---@param isSuggestion boolean
 function M.add_review_comment(isSuggestion)
   local review = M.get_current_review()
@@ -730,6 +755,10 @@ function M.on_win_leave()
   if current_review and current_review.layout then
     current_review.layout:on_win_leave()
   end
+end
+
+function M.cleanup_closed_tab(tabpage)
+  cleanup_invalid_reviews()
 end
 
 function M.close(tabpage)

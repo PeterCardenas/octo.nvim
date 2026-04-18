@@ -76,7 +76,7 @@ function M.setup()
     group = "octo_autocmds",
     pattern = { "*" },
     callback = function()
-      require("octo.reviews").close(tonumber(vim.fn.expand "<afile>"))
+      require("octo.reviews").cleanup_closed_tab(tonumber(vim.fn.expand "<afile>"))
     end,
   })
   define({ "TabEnter" }, {
