@@ -133,11 +133,7 @@ function M.go_to_file()
 end
 
 function M.go_to_issue()
-  local buffer = utils.get_current_buffer()
-  if not buffer then
-    return
-  end
-  local repo, number = utils.extract_issue_at_cursor(buffer.repo)
+  local repo, number = utils.extract_issue_at_cursor(utils.get_current_repo())
   if not repo or not number then
     return
   end

@@ -1276,7 +1276,7 @@ function M.extract_pattern_at_cursor(pattern, line, offset)
   return M.extract_pattern_at_cursor(pattern, line:sub(end_col + 1), offset + end_col)
 end
 
----@param current_repo string
+---@param current_repo string?
 function M.extract_issue_at_cursor(current_repo)
   ---@type string?, string?
   local repo, number = M.extract_pattern_at_cursor(constants.LONG_ISSUE_PATTERN)
@@ -1944,7 +1944,7 @@ end
 
 --- Apply mappings to a buffer
 ---@param kind string
----@param bufnr integer
+---@param bufnr? integer
 function M.apply_mappings(kind, bufnr)
   local mappings = require "octo.mappings"
   local conf = config.values
@@ -1958,7 +1958,10 @@ function M.apply_mappings(kind, bufnr)
       if M.is_blank(value.desc) then
         value.desc = ""
       end
-      local mapping_opts = { silent = true, noremap = true, buffer = bufnr, desc = value.desc }
+      local mapping_opts = { silent = true, noremap = true, desc = value.desc }
+      if bufnr then
+        mapping_opts.buffer = bufnr
+      end
       local mode = value.mode or "n"
       vim.keymap.set(mode, value.lhs, mappings[action], mapping_opts)
     end
@@ -2183,6 +2186,25 @@ end
 function M.get_current_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
   return octo_buffers[bufnr]
+end
+
+---@return string?
+function M.get_current_repo()
+  local buffer = M.get_current_buffer()
+  if buffer and buffer.repo then
+    return buffer.repo
+  end
+
+  local review = require("octo.reviews").get_current_review()
+  if review and review.pull_request and review.pull_request.repo then
+    return review.pull_request.repo
+  end
+
+  if not M.cwd_is_git() then
+    return
+  end
+
+  return M.get_remote_name()
 end
 
 ---@param discussion octo.Discussion

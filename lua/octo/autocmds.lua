@@ -58,7 +58,7 @@ function M.setup()
   })
   define({ "CursorHold" }, {
     group = "octo_autocmds",
-    pattern = { "octo://*" },
+    pattern = { "*" },
     callback = function()
       require("octo").on_cursor_hold()
     end,

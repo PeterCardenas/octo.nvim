@@ -44,6 +44,7 @@ function M.setup(user_config)
   folds.setup()
   autocmds.setup()
   commands.setup()
+  utils.apply_mappings "global"
   gh.setup()
 end
 
@@ -233,97 +234,104 @@ function M.render_signs()
 end
 
 function M.on_cursor_hold()
+  local bufnr = vim.api.nvim_get_current_buf()
   local buffer = utils.get_current_buffer()
-  if not buffer then
-    return
-  end
-
   local cursor = vim.api.nvim_win_get_cursor(0)
   local function is_stale()
-    local bufnr = vim.api.nvim_get_current_buf()
     local current_cursor = vim.api.nvim_win_get_cursor(0)
-    return buffer.bufnr ~= bufnr or cursor[1] ~= current_cursor[1]
-  end
-  -- reactions popup
-  local id = buffer:get_reactions_at_cursor()
-  if id then
-    gh.api.graphql {
-      query = queries.reactions_for_object,
-      F = { id = id },
-      opts = {
-        cb = function(output, stderr)
-          if is_stale() then
-            return
-          end
-          if stderr and not utils.is_blank(stderr) then
-            utils.print_err(stderr)
-          elseif output then
-            ---@type octo.queries.ReactionsForObject
-            local resp = vim.json.decode(output)
-            local reactions = {} ---@type table<string, string[]>
-            local reactionGroups = resp.data.node.reactionGroups
-            for _, reactionGroup in ipairs(reactionGroups) do
-              local users = reactionGroup.users.nodes
-              local logins = {} ---@type string[]
-              for _, user in ipairs(users) do
-                table.insert(logins, user.login)
-              end
-              if #logins > 0 then
-                reactions[reactionGroup.content] = logins
-              end
-            end
-            local popup_bufnr = vim.api.nvim_create_buf(false, true)
-            local lines_count, max_length = writers.write_reactions_summary(popup_bufnr, reactions)
-            window.create_popup {
-              bufnr = popup_bufnr,
-              width = 4 + max_length,
-              height = 2 + lines_count,
-            }
-          end
-        end,
-      },
-    }
-    return
+    return bufnr ~= vim.api.nvim_get_current_buf() or cursor[1] ~= current_cursor[1]
   end
 
-  -- user popup
-  local login = utils.extract_pattern_at_cursor(constants.USER_PATTERN)
-  if login then
-    if login:lower() == "copilot" then
-      return
-    end
-
-    gh.api.graphql {
-      query = queries.user_profile,
-      jq = ".data.user",
-      F = {
-        login = login --[[@as string]],
-      },
-      opts = {
-        cb = gh.create_callback {
-          failure = utils.print_err,
-          success = function(data)
+  if buffer then
+    -- reactions popup
+    local id = buffer:get_reactions_at_cursor()
+    if id then
+      gh.api.graphql {
+        query = queries.reactions_for_object,
+        F = { id = id },
+        opts = {
+          cb = function(output, stderr)
             if is_stale() then
               return
             end
-            ---@type octo.UserProfile
-            local user = vim.json.decode(data)
-            local popup_bufnr = vim.api.nvim_create_buf(false, true)
-            local lines, max_length = writers.write_user_profile(popup_bufnr, user)
-            window.create_popup {
-              bufnr = popup_bufnr,
-              width = 4 + max_length,
-              height = 2 + lines,
-            }
+            if stderr and not utils.is_blank(stderr) then
+              utils.print_err(stderr)
+            elseif output then
+              ---@type octo.queries.ReactionsForObject
+              local resp = vim.json.decode(output)
+              local reactions = {} ---@type table<string, string[]>
+              local reactionGroups = resp.data.node.reactionGroups
+              for _, reactionGroup in ipairs(reactionGroups) do
+                local users = reactionGroup.users.nodes
+                local logins = {} ---@type string[]
+                for _, user in ipairs(users) do
+                  table.insert(logins, user.login)
+                end
+                if #logins > 0 then
+                  reactions[reactionGroup.content] = logins
+                end
+              end
+              local popup_bufnr = vim.api.nvim_create_buf(false, true)
+              local lines_count, max_length = writers.write_reactions_summary(popup_bufnr, reactions)
+              window.create_popup {
+                bufnr = popup_bufnr,
+                width = 4 + max_length,
+                height = 2 + lines_count,
+              }
+            end
           end,
         },
-      },
-    }
-    return
+      }
+      return
+    end
+
+    -- user popup
+    local login = utils.extract_pattern_at_cursor(constants.USER_PATTERN)
+    if login then
+      if login:lower() == "copilot" then
+        return
+      end
+
+      gh.api.graphql {
+        query = queries.user_profile,
+        jq = ".data.user",
+        F = {
+          login = login --[[@as string]],
+        },
+        opts = {
+          cb = gh.create_callback {
+            failure = utils.print_err,
+            success = function(data)
+              if is_stale() then
+                return
+              end
+              ---@type octo.UserProfile
+              local user = vim.json.decode(data)
+              local popup_bufnr = vim.api.nvim_create_buf(false, true)
+              local lines, max_length = writers.write_user_profile(popup_bufnr, user)
+              window.create_popup {
+                bufnr = popup_bufnr,
+                width = 4 + max_length,
+                height = 2 + lines,
+              }
+            end,
+          },
+        },
+      }
+      return
+    end
   end
 
   -- link popup
-  local repo, number = utils.extract_issue_at_cursor(buffer.repo)
+  local repo, number = utils.extract_issue_at_cursor()
+  if not repo or not number then
+    number = utils.extract_pattern_at_cursor(constants.SHORT_ISSUE_PATTERN)
+      or utils.extract_pattern_at_cursor(constants.SHORT_ISSUE_LINE_BEGINNING_PATTERN)
+    if not number then
+      return
+    end
+    repo = utils.get_current_repo()
+  end
   if not repo or not number then
     return
   end

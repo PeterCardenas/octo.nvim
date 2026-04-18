@@ -1,7 +1,7 @@
 local vim = vim
 local M = {}
 
----@alias OctoMappingsWindow "issue" | "pull_request" | "review_thread" | "submit_win" | "review_diff" | "file_panel" | "repo" | "notification" | "runs" | "discussion"
+---@alias OctoMappingsWindow "global" | "issue" | "pull_request" | "review_thread" | "submit_win" | "review_diff" | "file_panel" | "repo" | "notification" | "runs" | "discussion" | "release"
 ---@alias OctoMappingsList { [string]: table}
 ---@alias OctoPickers "telescope" | "fzf-lua" | "snacks" | "default"
 ---@alias OctoSplit "right" | "left"
@@ -333,6 +333,9 @@ function M.get_default_values()
     },
     mappings_disable_default = false, -- disable default mappings if true, but will still adapt user mappings
     mappings = {
+      global = {
+        goto_issue = { lhs = "<localleader>gi", desc = "navigate to the issue under cursor" },
+      },
       discussion = {
         discussion_options = { lhs = "<CR>", desc = "show discussion options" },
         open_in_browser = { lhs = "<C-b>", desc = "open discussion in browser" },
@@ -816,6 +819,7 @@ function M.setup(opts)
     if opts.mappings_disable_default == true then
       -- clear default mappings before merging user mappings
       M.values.mappings = {
+        global = {},
         issue = {},
         discussion = {},
         pull_request = {},
