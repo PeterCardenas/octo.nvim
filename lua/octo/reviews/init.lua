@@ -297,7 +297,7 @@ function Review:discard(opts)
                     self.threads = {}
                     self.files = {}
                     utils.info "Pending review discarded"
-                    vim.cmd [[tabclose]]
+                    require("octo.reviews").close_review(self)
                   end,
                 },
               },
@@ -661,6 +661,18 @@ local function cleanup_invalid_reviews()
   end
 end
 
+---@param winid integer
+---@param bufnr integer
+---@return Review | nil
+local function get_review_for_submit_window(winid, bufnr)
+  for _, review in pairs(M.reviews) do
+    local submit_review_win = review.submit_review_win
+    if submit_review_win and (submit_review_win.winid == winid or submit_review_win.bufnr == bufnr) then
+      return review
+    end
+  end
+end
+
 ---@param isSuggestion boolean
 function M.add_review_comment(isSuggestion)
   local review = M.get_current_review()
@@ -720,38 +732,53 @@ function M.jump_to_pending_review_thread(thread)
   end
 end
 
---- Get the current review according to the tab page
+--- Get the review associated with a specific tabpage.
+--- @param tabpage? integer
+--- @return Review | nil
+function M.get_tab_review(tabpage)
+  tabpage = tabpage or vim.api.nvim_get_current_tabpage()
+  return M.reviews[tostring(tabpage)]
+end
+
+--- Get the current review from the review tab or submit float.
 --- @return Review | nil
 function M.get_current_review()
-  local current_tabpage = vim.api.nvim_get_current_tabpage()
-  return M.reviews[tostring(current_tabpage)]
+  local submit_review = get_review_for_submit_window(vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf())
+  if submit_review then
+    return submit_review
+  end
+
+  local current_review = M.get_tab_review()
+  if current_review then
+    return current_review
+  end
 end
 
 --- Get the diff Layout of the review if any
 --- @return Layout | nil
 function M.get_current_layout()
-  local current_review = M.get_current_review()
+  local current_review = M.get_tab_review()
   if current_review then
-    return M.get_current_review().layout
+    return current_review.layout
   end
 end
 
 function M.on_tab_enter()
-  local current_review = M.get_current_review()
+  local current_review = M.get_tab_review()
   if current_review and current_review.layout then
     current_review.layout:on_enter()
   end
 end
 
 function M.on_tab_leave()
-  local current_review = M.get_current_review()
+  local current_review = M.get_tab_review()
   if current_review and current_review.layout then
     current_review.layout:on_leave()
   end
 end
 
 function M.on_win_leave()
-  local current_review = M.get_current_review()
+  local current_review = M.get_tab_review()
   if current_review and current_review.layout then
     current_review.layout:on_win_leave()
   end
@@ -761,14 +788,35 @@ function M.cleanup_closed_tab(tabpage)
   cleanup_invalid_reviews()
 end
 
-function M.close(tabpage)
-  if tabpage then
-    local review = M.reviews[tostring(tabpage)]
-    if review and review.layout then
-      review.layout:close()
-    end
-    M.reviews[tostring(tabpage)] = nil
+---@param review Review
+function M.close_review(review)
+  if not review then
+    return
   end
+
+  close_submit_review_win(review)
+
+  local layout = review.layout
+  if not layout then
+    return
+  end
+
+  local tabpage = layout.tabpage
+  if tabpage and vim.api.nvim_tabpage_is_valid(tabpage) then
+    layout:close()
+  else
+    M.cleanup_closed_tab(tabpage)
+  end
+end
+
+function M.close_current_review()
+  local current_review = M.get_current_review()
+  if not current_review then
+    utils.error "Please start or resume a review first"
+    return
+  end
+
+  M.close_review(current_review)
 end
 
 --- Get the pull request associated with current buffer.

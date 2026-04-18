@@ -809,11 +809,7 @@ function M.setup()
         reviews.discard_review()
       end,
       close = function()
-        if reviews.get_current_review() then
-          reviews.get_current_review().layout:close()
-        else
-          utils.error "Please start or resume a review first"
-        end
+        reviews.close_current_review()
       end,
       commit = context.within_review(function(current_review)
         picker.review_commits(current_review, function(left, right)

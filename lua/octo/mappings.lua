@@ -431,8 +431,7 @@ return {
     reviews.add_file_comment()
   end,
   close_review_tab = function()
-    local tabpage = vim.api.nvim_get_current_tabpage()
-    reviews.close(tabpage)
+    reviews.close_current_review()
   end,
   next_thread = function()
     require("octo.reviews.file-panel").next_thread()
