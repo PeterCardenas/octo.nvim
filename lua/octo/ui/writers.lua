@@ -1635,6 +1635,7 @@ function M.write_comment(bufnr, comment, kind, line)
       viewerCanUpdate = comment.viewerCanUpdate,
       viewerCanDelete = comment.viewerCanDelete,
       viewerDidAuthor = comment.viewerDidAuthor,
+      state = comment.state,
       reactionGroups = comment.reactionGroups,
       kind = kind,
       replyTo = comment.replyTo,

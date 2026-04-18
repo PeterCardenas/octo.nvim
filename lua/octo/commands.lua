@@ -1332,8 +1332,8 @@ function M.add_pr_issue_or_review_thread_comment(body)
     comment.replyTo = _thread.replyTo
     comment.replyToRest = _thread.replyToRest
   elseif not utils.is_blank(_thread) and not buffer:isReviewThread() then
-    comment_kind = "PullRequestComment"
-    comment.state = ""
+    comment_kind = "PullRequestReviewComment"
+    comment.state = "SUBMITTED"
     comment.replyTo = _thread.replyTo
     comment.replyToRest = _thread.replyToRest
   elseif utils.is_blank(_thread) and not buffer:isReviewThread() then

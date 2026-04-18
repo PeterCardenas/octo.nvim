@@ -16,8 +16,9 @@ local M = {}
 ---@field viewerCanUpdate boolean
 ---@field viewerCanDelete boolean
 ---@field viewerDidAuthor boolean
+---@field state? string
 ---@field kind string
----@field replyTo { id: string }
+---@field replyTo string|{ id: string, url?: string }
 ---@field replyToRest? string
 ---@field reviewId string
 ---@field path string
@@ -49,6 +50,7 @@ function CommentMetadata:new(opts)
     viewerCanUpdate = opts.viewerCanUpdate,
     viewerCanDelete = opts.viewerCanDelete,
     viewerDidAuthor = opts.viewerDidAuthor,
+    state = opts.state,
     reactionLine = opts.reactionLine,
     reactionGroups = opts.reactionGroups,
     kind = opts.kind,

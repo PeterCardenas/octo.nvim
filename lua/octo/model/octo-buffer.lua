@@ -360,8 +360,14 @@ function OctoBuffer:save()
           self:do_add_discussion_comment(comment_metadata)
         elseif comment_metadata.kind == "PullRequestReviewComment" then
           if not utils.is_blank(comment_metadata.replyTo) then
-            -- comment is a reply to a thread comment
-            self:do_add_thread_comment(comment_metadata)
+            if comment_metadata.state == "SUBMITTED" then
+              -- submitted replies use the REST review-comment endpoint, but the
+              -- resulting object is still a review-thread comment.
+              self:do_add_pull_request_comment(comment_metadata)
+            else
+              -- comment is a reply to a thread comment in a pending review
+              self:do_add_thread_comment(comment_metadata)
+            end
           else
             -- comment starts a new thread of comments
             self:do_add_new_thread(comment_metadata)
@@ -843,9 +849,21 @@ function OctoBuffer:do_add_pull_request_comment(comment_metadata)
             local comments = self.commentsMetadata
             for i, c in ipairs(comments) do
               if tonumber(c.id) == -1 then
-                comments[i].id = resp.id
+                comments[i].id = resp.node_id or resp.id
+                comments[i].databaseId = resp.id
                 comments[i].savedBody = resp.body
                 comments[i].dirty = false
+                comments[i].kind = "PullRequestReviewComment"
+                comments[i].state = "SUBMITTED"
+                comments[i].replyTo = {
+                  id = comment_metadata.replyTo,
+                  url = string.format(
+                    "https://github.com/%s/pull/%d#discussion_r%s",
+                    self.repo,
+                    self.number,
+                    comment_metadata.replyToRest
+                  ),
+                }
                 break
               end
             end
