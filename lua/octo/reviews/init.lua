@@ -109,49 +109,56 @@ function Review:retrieve(callback)
   }
 end
 
+---@param review_nodes table[]
+---@return string | nil
+local function get_viewer_pending_review_id(review_nodes)
+  for _, review in ipairs(review_nodes) do
+    if review.viewerDidAuthor then
+      return review.id
+    end
+  end
+end
+
+---@param callback fun(review_id: string | nil, threads: octo.ReviewThread[]): nil
+function Review:retrieve_pending_state(callback)
+  self:retrieve(function(resp)
+    local pull_request = resp.data.repository.pullRequest
+    callback(get_viewer_pending_review_id(pull_request.reviews.nodes), pull_request.reviewThreads.nodes)
+  end)
+end
+
+---@param review Review
+---@param review_id string
+---@param threads octo.ReviewThread[]
+local function initiate_pending_review(review, review_id, threads)
+  review.id = review_id
+  review:update_threads(threads)
+  review:initiate()
+end
+
 -- Resumes an existing review
 function Review:resume()
-  self:retrieve(function(resp)
-    -- There can only be one pending review for a given user, stop at the first one
-    for _, review in ipairs(resp.data.repository.pullRequest.reviews.nodes) do
-      if review.viewerDidAuthor then
-        self.id = review.id
-        break
-      end
-    end
-
-    if self.id == default_id then
+  self:retrieve_pending_state(function(review_id, threads)
+    if not review_id then
       utils.error "No pending reviews found for viewer"
       return
     end
 
-    local threads = resp.data.repository.pullRequest.reviewThreads.nodes
-    self:update_threads(threads)
-    self:initiate()
+    initiate_pending_review(self, review_id, threads)
   end)
 end
 
 -- Resumes an existing review if there is any, else start one
 function Review:start_or_resume()
-  self:retrieve(function(resp)
-    -- There can only be one pending review for a given user
-    for _, review in ipairs(resp.data.repository.pullRequest.reviews.nodes) do
-      if review.viewerDidAuthor then
-        self.id = review.id
-        break
-      end
-    end
-
-    if self.id == default_id then
+  self:retrieve_pending_state(function(review_id, threads)
+    if not review_id then
       utils.info "No pending review, starting one"
       self:start()
       return
     end
 
     utils.info "Resuming review"
-    local threads = resp.data.repository.pullRequest.reviewThreads.nodes
-    self:update_threads(threads)
-    self:initiate()
+    initiate_pending_review(self, review_id, threads)
   end)
 end
 
@@ -222,6 +229,10 @@ function Review:initiate(opts)
   if not left.commit or not right.commit then
     utils.error "Cannot start review without commits"
     return
+  end
+
+  if self.id ~= default_id then
+    require("octo.reviews").close_browse_reviews_for_pull_request(pr)
   end
 
   -- create the layout
@@ -636,6 +647,110 @@ M.reviews = {}
 
 M.Review = Review
 
+---@class octo.ReviewTarget
+---@field id string
+---@field repo string
+---@field number integer
+
+---@param pull_request PullRequest
+---@return octo.ReviewTarget
+local function get_review_target(pull_request)
+  return {
+    id = pull_request.id,
+    repo = pull_request.repo,
+    number = pull_request.number,
+  }
+end
+
+---@param review Review
+---@param target octo.ReviewTarget
+---@return boolean
+local function review_matches_target(review, target)
+  local review_pr = review.pull_request
+  local matches_id = target.id and review_pr.id == target.id
+  local matches_number = review_pr.repo == target.repo and tonumber(review_pr.number) == tonumber(target.number)
+  return matches_id or matches_number
+end
+
+---@param target octo.ReviewTarget
+---@return Review[]
+local function get_reviews_for_target(target)
+  local matches = {}
+
+  for _, review in pairs(M.reviews) do
+    if review_matches_target(review, target) then
+      table.insert(matches, review)
+    end
+  end
+
+  return matches
+end
+
+---@param target octo.ReviewTarget
+---@return Review | nil, boolean
+local function get_review_for_target(target)
+  local matches = get_reviews_for_target(target)
+  if #matches <= 1 then
+    return matches[1], false
+  end
+
+  utils.error(string.format("Found multiple active reviews for PR #%s", target.number))
+  return nil, true
+end
+
+---@param pull_request PullRequest
+---@return Review | nil, boolean
+local function get_or_create_review_for_pull_request(pull_request)
+  local review, duplicate_reviews = get_review_for_target(get_review_target(pull_request))
+  if duplicate_reviews then
+    return nil, true
+  end
+
+  return review or Review:new(pull_request), false
+end
+
+---@param review Review
+---@return boolean
+local function focus_review(review)
+  if not review or not review.layout then
+    return false
+  end
+
+  review.layout:ensure_layout()
+  if review.layout.tabpage and vim.api.nvim_tabpage_is_valid(review.layout.tabpage) then
+    vim.api.nvim_set_current_tabpage(review.layout.tabpage)
+    return true
+  end
+
+  return false
+end
+
+---@param buffer OctoBuffer
+---@return Review | nil, boolean
+local function get_review_for_pull_request_buffer(buffer)
+  if not buffer:isPullRequest() then
+    return nil, false
+  end
+
+  return get_review_for_target {
+    id = buffer:pullRequest().id,
+    repo = buffer.repo,
+    number = buffer.number,
+  }
+end
+
+---@param winid integer
+---@param bufnr integer
+---@return Review | nil
+local function get_review_for_submit_window(winid, bufnr)
+  for _, review in pairs(M.reviews) do
+    local submit_review_win = review.submit_review_win
+    if submit_review_win and (submit_review_win.winid == winid or submit_review_win.bufnr == bufnr) then
+      return review
+    end
+  end
+end
+
 ---@param review Review
 local function close_submit_review_win(review)
   local submit_review_win = review.submit_review_win
@@ -661,16 +776,41 @@ local function cleanup_invalid_reviews()
   end
 end
 
----@param winid integer
----@param bufnr integer
----@return Review | nil
-local function get_review_for_submit_window(winid, bufnr)
-  for _, review in pairs(M.reviews) do
-    local submit_review_win = review.submit_review_win
-    if submit_review_win and (submit_review_win.winid == winid or submit_review_win.bufnr == bufnr) then
-      return review
-    end
+---@param review Review | nil
+---@return boolean
+local function is_browse_review(review)
+  return review ~= nil and review.id == default_id
+end
+
+---@param review Review
+---@return boolean
+local function focus_existing_review(review)
+  if not review then
+    return false
   end
+
+  if review.id ~= default_id then
+    if not focus_review(review) then
+      utils.error "A pending review is already active for this PR"
+    end
+    return true
+  end
+
+  return false
+end
+
+---@param review Review
+---@return Review | nil
+local function prepare_review_for_pending_action(review)
+  if focus_existing_review(review) then
+    return
+  end
+
+  if is_browse_review(review) and review.layout then
+    return Review:new(review.pull_request)
+  end
+
+  return review
 end
 
 ---@param isSuggestion boolean
@@ -740,12 +880,24 @@ function M.get_tab_review(tabpage)
   return M.reviews[tostring(tabpage)]
 end
 
---- Get the current review from the review tab or submit float.
+--- Get the current review from the review tab, submit float, or PR buffer.
 --- @return Review | nil
 function M.get_current_review()
   local submit_review = get_review_for_submit_window(vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf())
   if submit_review then
     return submit_review
+  end
+
+  local buffer = utils.get_current_buffer()
+  if buffer and buffer:isPullRequest() then
+    local review, duplicate_reviews = get_review_for_pull_request_buffer(buffer)
+    if duplicate_reviews then
+      return
+    end
+
+    -- PR buffers resolve review state by exact PR identity and must not fall
+    -- back to whichever review happens to own the current tabpage.
+    return review
   end
 
   local current_review = M.get_tab_review()
@@ -786,6 +938,15 @@ end
 
 function M.cleanup_closed_tab(tabpage)
   cleanup_invalid_reviews()
+end
+
+---@param pull_request PullRequest
+function M.close_browse_reviews_for_pull_request(pull_request)
+  for _, review in ipairs(get_reviews_for_target(get_review_target(pull_request))) do
+    if review.id == default_id then
+      M.close_review(review)
+    end
+  end
 end
 
 ---@param review Review
@@ -838,46 +999,64 @@ local function get_pr_from_buffer_or_current_branch(cb)
   end
 end
 
-function M.browse_review()
+---@param cb fun(review: Review): nil
+local function with_current_pr_review(cb)
   local current_review = M.get_current_review()
-
-  if current_review and current_review.id ~= -1 then
-    utils.error "Cannot browse when a review has been started"
+  if current_review then
+    cb(current_review)
     return
   end
 
   get_pr_from_buffer_or_current_branch(function(pull_request)
-    current_review = Review:new(pull_request)
-    current_review:browse()
+    if not pull_request then
+      return
+    end
+
+    local review, duplicate_reviews = get_or_create_review_for_pull_request(pull_request)
+    if duplicate_reviews or not review then
+      return
+    end
+
+    cb(review)
+  end)
+end
+
+---@param method "start" | "resume" | "start_or_resume"
+local function run_review_action(method)
+  with_current_pr_review(function(review)
+    local next_review = prepare_review_for_pending_action(review)
+    if next_review then
+      next_review[method](next_review)
+    end
+  end)
+end
+
+function M.browse_review()
+  with_current_pr_review(function(review)
+    if not is_browse_review(review) then
+      utils.error "Cannot browse when a review has been started"
+      return
+    end
+
+    if review.layout then
+      focus_review(review)
+      return
+    end
+
+    review:browse()
   end)
 end
 
 function M.start_review()
-  -- its possible we are already browsing a review with 'Octo review browse'
-  local current_review = M.get_current_review()
-  if current_review then
-    current_review:start()
-    return
-  end
-
-  get_pr_from_buffer_or_current_branch(function(pull_request)
-    current_review = Review:new(pull_request)
-    current_review:start()
-  end)
+  run_review_action "start"
 end
 
 function M.resume_review()
-  get_pr_from_buffer_or_current_branch(function(pull_request)
-    local current_review = Review:new(pull_request)
-    current_review:resume()
-  end)
+  run_review_action "resume"
 end
 
 function M.start_or_resume_review()
-  get_pr_from_buffer_or_current_branch(function(pull_request)
-    local current_review = Review:new(pull_request)
-    current_review:start_or_resume()
-  end)
+  run_review_action "start_or_resume"
 end
 
 function M.discard_review()
