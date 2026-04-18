@@ -1121,12 +1121,18 @@ function OctoBuffer:get_comment_at_line(line)
   for _, comment in ipairs(self.commentsMetadata) do
     local mark =
       vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
-    local start_line = mark[1] + 1
-    local end_line = mark[3]["end_row"] + 1
-    if start_line + 1 <= line and end_line - 2 >= line then
-      comment.bufferStartLine = start_line
-      comment.bufferEndLine = end_line
-      return comment
+    local extmark_start_line = mark[1] + 1
+    local extmark_end_line = mark[3]["end_row"] + 1
+    local body_start_line, body_end_line = utils.get_extmark_region(self.bufnr, mark)
+    if body_start_line and body_end_line then
+      body_start_line = body_start_line + 1
+      body_end_line = body_end_line + 1
+
+      if body_start_line <= line and body_end_line >= line then
+        comment.bufferStartLine = extmark_start_line
+        comment.bufferEndLine = extmark_end_line
+        return comment
+      end
     end
   end
 end
