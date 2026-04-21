@@ -4,7 +4,6 @@ local gh = require "octo.gh"
 local graphql = require "octo.gh.graphql"
 local queries = require "octo.gh.queries"
 local _, Job = pcall(require, "plenary.job")
-local release = require "octo.release"
 local notify = require "octo.notify"
 local uri = require "octo.uri"
 local vim = vim
@@ -1129,48 +1128,39 @@ function M.get_release(...)
   vim.cmd("edit " .. M.get_release_uri(...))
 end
 
----@class octo.UrlAnchor
----@field type "issuecomment"|"pullrequestreview"|"discussion_r"
----@field id string The comment databaseId
-
---- Extract the URL fragment anchor from a GitHub URL
----@param url string
----@return octo.UrlAnchor?
-local function parse_url_anchor(url)
-  local fragment = url:match "#(.+)$"
-  if not fragment then
+---@param comment_type string?
+---@param comment_id string?
+---@return integer?
+local function resolve_comment_id(comment_type, comment_id)
+  local comment_fragments = { "issuecomment-", "pullrequestreview-", "discussion_r" }
+  if not vim.tbl_contains(comment_fragments, comment_type) then
     return nil
   end
-  local comment_id = fragment:match "^issuecomment%-(%d+)$"
-  if comment_id then
-    return { type = "issuecomment", id = comment_id }
-  end
-  local review_id = fragment:match "^pullrequestreview%-(%d+)$"
-  if review_id then
-    return { type = "pullrequestreview", id = review_id }
-  end
-  local discussion_id = fragment:match "^discussion_r(%d+)$"
-  if discussion_id then
-    return { type = "discussion_r", id = discussion_id }
-  end
-  return nil
+  local id = tonumber(comment_id)
+  return id and math.floor(id)
 end
 
+---@alias octo.URLKind "issue"|"pull"|"discussion"|"release"
+
 ---@param url string
----@return string?, string?, string?, string?, octo.UrlAnchor?
+---@return string?, string?, string?, octo.URLKind?, integer?
 function M.parse_url(url)
-  local anchor = parse_url_anchor(url)
-  local hostname, repo, kind, number = string.match(url, constants.URL_ISSUE_PATTERN)
+  local hostname, repo, kind, number, comment_type, comment_id =
+    string.match(url, constants.URL_ISSUE_PATTERN_WITH_COMMENT)
+  local id = resolve_comment_id(comment_type, comment_id)
+  if not hostname then
+    hostname, repo, kind, number = string.match(url, constants.URL_ISSUE_PATTERN)
+  end
   if repo and number and kind == "issues" then
-    return hostname, repo, number, "issue", anchor
+    return hostname, repo, number, "issue", id
   elseif repo and number and kind == "pull" then
-    return hostname, repo, number, kind, anchor
+    return hostname, repo, number, kind, id
   elseif repo and number and kind == "discussions" then
-    return hostname, repo, number, "discussion", anchor
+    return hostname, repo, number, "discussion", id
   elseif not repo then
     hostname, repo, kind, number = string.match(url, constants.URL_RELEASE_PATTERN)
     if repo and number and kind == "releases" then
-      return hostname, repo, number, "release", anchor
+      return hostname, repo, number, "release"
     end
   end
 end
@@ -1293,13 +1283,26 @@ function M.extract_issue_at_cursor(current_repo)
     end
   end
   if not repo or not number then
+    ---@type string?, string?
+    local comment_type, comment_id
+    _, repo, _, number, comment_type, comment_id = M.extract_pattern_at_cursor(constants.URL_ISSUE_PATTERN_WITH_COMMENT)
+    local resolved_comment_id = resolve_comment_id(comment_type, comment_id)
+    if resolved_comment_id then
+      return repo, number, resolved_comment_id
+    end
     _, repo, _, number = M.extract_pattern_at_cursor(constants.URL_ISSUE_PATTERN)
   end
   if not repo or not number then
     local url = M.extract_pattern_at_cursor(constants.MARKDOWN_URL_PATTERN)
     if url then
-      ---@type string?, string?, string?, string?
-      _, repo, _, number = url:match(constants.URL_ISSUE_PATTERN)
+      ---@type octo.URLKind?, integer?
+      local kind, comment_id
+      _, repo, number, kind, comment_id = M.parse_url(url)
+      if kind == "release" then
+        return
+      else
+        return repo, number, comment_id
+      end
     end
   end
   local casted_number = tonumber(number)

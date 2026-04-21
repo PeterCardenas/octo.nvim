@@ -28,6 +28,7 @@ M.LONG_ISSUE_PATTERN = "([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(%d+)"
 M.SHORT_ISSUE_PATTERN = "[^%w%d]+#(%d+)"
 M.SHORT_ISSUE_LINE_BEGINNING_PATTERN = "^#(%d+)"
 M.URL_ISSUE_PATTERN = "[htps]+://([^/]+)/([^/]+/[^/]+)/([pulisedcton]+)/(%d+)"
+M.URL_ISSUE_PATTERN_WITH_COMMENT = M.URL_ISSUE_PATTERN .. "#([_cdeilmnopqrstuvw-]+)(%d+)"
 M.MARKDOWN_URL_PATTERN = "%[[^%]]+%]%(([^)]+)%)"
 M.URL_RELEASE_PATTERN = "[htps]+://([^/]+)/([^/]+/[^/]+)/(releases)/tag/([^/%s]+)"
 
