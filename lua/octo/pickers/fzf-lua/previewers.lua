@@ -47,13 +47,13 @@ function M.bufferPreviewer:update_border(title)
   self.win:update_preview_scrollbar()
 end
 
-function M.issue(formatted_issues)
+function M.issue(formatted_issues, title)
   ---@type octo.fzf-lua.Previewer
   local previewer = M.bufferPreviewer:extend()
 
   function previewer:new(o, opts, fzf_win)
     M.bufferPreviewer.super.new(self, o, opts, fzf_win)
-    self.title = "Issues"
+    self.title = title or "Issues"
     setmetatable(self, previewer)
     return self
   end
@@ -69,6 +69,8 @@ function M.issue(formatted_issues)
       query = graphql("issue_query", _G.octo_pv2_fragment)
     elseif entry.kind == "pull_request" then
       query = graphql("pull_request_query", _G.octo_pv2_fragment)
+    elseif entry.kind == "discussion" then
+      query = queries.discussion
     end
     gh.api.graphql {
       query = query,
@@ -83,18 +85,24 @@ function M.issue(formatted_issues)
                 obj = result.data.repository.issue
               elseif entry.kind == "pull_request" then
                 obj = result.data.repository.pullRequest
+              elseif entry.kind == "discussion" then
+                obj = result.data.repository.discussion
               end
 
               local state = utils.get_displayed_state(entry.kind == "issue", obj.state, obj.stateReason)
 
-              writers.write_title(tmpbuf, obj.title, 1)
-              writers.write_details(tmpbuf, obj, false, true) -- include_status = true for preview
-              writers.write_body(tmpbuf, obj)
-              writers.write_state(tmpbuf, state:upper(), number)
-              local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
-              writers.write_block(tmpbuf, { "", "" }, reactions_line)
-              writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
-              vim.bo[tmpbuf].filetype = "octo"
+              if entry.kind == "discussion" then
+                writers.discussion_preview(obj, tmpbuf)
+              else
+                writers.write_title(tmpbuf, obj.title, 1)
+                writers.write_details(tmpbuf, obj, false, true) -- include_status = true for preview
+                writers.write_body(tmpbuf, obj)
+                writers.write_state(tmpbuf, state:upper(), number)
+                local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
+                writers.write_block(tmpbuf, { "", "" }, reactions_line)
+                writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
+                vim.bo[tmpbuf].filetype = "octo"
+              end
             end
           end,
         },
@@ -132,6 +140,8 @@ function M.search()
       query = graphql("issue_query", _G.octo_pv2_fragment)
     elseif kind == "pull_request" then
       query = graphql("pull_request_query", _G.octo_pv2_fragment)
+    elseif kind == "discussion" then
+      query = queries.discussion
     end
     gh.api.graphql {
       query = query,
@@ -146,17 +156,23 @@ function M.search()
                 obj = result.data.repository.issue
               elseif kind == "pull_request" then
                 obj = result.data.repository.pullRequest
+              elseif kind == "discussion" then
+                obj = result.data.repository.discussion
               end
 
-              local state = utils.get_displayed_state(kind == "issue", obj.state, obj.stateReason)
+              if kind == "discussion" then
+                writers.discussion_preview(obj, tmpbuf)
+              else
+                local state = utils.get_displayed_state(kind == "issue", obj.state, obj.stateReason)
 
-              writers.write_title(tmpbuf, obj.title, 1)
-              writers.write_details(tmpbuf, obj, false, true) -- include_status = true for preview
-              writers.write_body(tmpbuf, obj)
-              writers.write_state(tmpbuf, state:upper(), number)
-              local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
-              writers.write_block(tmpbuf, { "", "" }, reactions_line)
-              writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
+                writers.write_title(tmpbuf, obj.title, 1)
+                writers.write_details(tmpbuf, obj, false, true) -- include_status = true for preview
+                writers.write_body(tmpbuf, obj)
+                writers.write_state(tmpbuf, state:upper(), number)
+                local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
+                writers.write_block(tmpbuf, { "", "" }, reactions_line)
+                writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
+              end
               vim.b[tmpbuf].bufpath =
                 string.format("octo://%s/%s/%s/%s", owner, name, kind == "pull_request" and "pull" or kind, number)
               vim.bo[tmpbuf].filetype = "octo"
