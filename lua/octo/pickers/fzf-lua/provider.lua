@@ -14,6 +14,7 @@ M.picker = {
   assignees = require "octo.pickers.fzf-lua.pickers.assignees",
   changed_files = require "octo.pickers.fzf-lua.pickers.changed_files",
   commits = require "octo.pickers.fzf-lua.pickers.commits",
+  discussions = require "octo.pickers.fzf-lua.pickers.discussions",
   gists = require "octo.pickers.fzf-lua.pickers.gists",
   issue_templates = require "octo.pickers.fzf-lua.pickers.issue_templates",
   issues = require "octo.pickers.fzf-lua.pickers.issues",
