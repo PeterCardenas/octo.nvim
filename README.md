@@ -56,6 +56,7 @@ Just edit the title, body, or comments as a regular buffer and use `:w(rite)` to
 - Add/Modify/Delete comments
 - Add/Remove label, reactions, assignees, project cards, reviewers, etc.
 - Add Review PRs
+- Surface PR merge diagnostics, including unstable optional-check failures
 - Interact with `GitHub CLI` from [`lua`](https://github.com/pwntester/octo.nvim/discussions/876) with `octo.gh` module.
 
 ## 🔥 Examples

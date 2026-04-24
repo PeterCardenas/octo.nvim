@@ -239,6 +239,85 @@ local function reviews_satisfied(issue, required_count)
   return count_approving_reviews(issue) >= required_count
 end
 
+---@class octo.MergeChecksDiagnosticOpts
+---@field show_required_pass? boolean
+---@field show_optional? boolean
+---@field show_skipped? boolean
+
+---@param lines table[]
+---@param icon string
+---@param message string
+---@param hl string
+local function add_merge_diagnostic_line(lines, icon, message, hl)
+  local prefix, icon_text = icon:match "^(%s*)(.*)$"
+  TextChunkBuilder:new():text(prefix):text(icon_text, hl):text(message, hl):write_detail_line(lines)
+end
+
+--- Render checks-derived merge diagnostics for merge state sub-lines.
+---@param checks_breakdown octo.ChecksBreakdown?
+---@param opts? octo.MergeChecksDiagnosticOpts
+---@return table[] sub_lines virtual text lines to insert
+local function get_merge_checks_diagnostic_lines(checks_breakdown, opts)
+  local lines = {}
+  if not checks_breakdown then
+    return lines
+  end
+
+  opts = opts or {}
+
+  if checks_breakdown.required_fail > 0 then
+    add_merge_diagnostic_line(
+      lines,
+      "  × ",
+      string.format("%d required check(s) failing", checks_breakdown.required_fail),
+      "OctoStateDismissed"
+    )
+  elseif checks_breakdown.required_pending > 0 then
+    add_merge_diagnostic_line(
+      lines,
+      "  ⏳ ",
+      string.format("%d required check(s) pending", checks_breakdown.required_pending),
+      "OctoStatePending"
+    )
+  elseif opts.show_required_pass and checks_breakdown.required_pass > 0 then
+    add_merge_diagnostic_line(
+      lines,
+      "  ✓ ",
+      string.format("%d required check(s) passing", checks_breakdown.required_pass),
+      "OctoStateApproved"
+    )
+  end
+
+  if opts.show_optional then
+    if checks_breakdown.optional_fail > 0 then
+      add_merge_diagnostic_line(
+        lines,
+        "  × ",
+        string.format("%d optional check(s) failing", checks_breakdown.optional_fail),
+        "OctoStateDismissed"
+      )
+    end
+
+    if checks_breakdown.optional_pending > 0 then
+      add_merge_diagnostic_line(
+        lines,
+        "  ⏳ ",
+        string.format("%d optional check(s) pending", checks_breakdown.optional_pending),
+        "OctoStatePending"
+      )
+    end
+  end
+
+  if opts.show_skipped then
+    local total_skip = checks_breakdown.required_skip + checks_breakdown.optional_skip
+    if total_skip > 0 then
+      add_merge_diagnostic_line(lines, "  - ", string.format("%d check(s) skipped", total_skip), "OctoGrey")
+    end
+  end
+
+  return lines
+end
+
 --- Render merge blocking context sub-lines when mergeStateStatus is BLOCKED.
 ---@param issue octo.PullRequest
 ---@param checks_breakdown octo.ChecksBreakdown?
@@ -270,17 +349,7 @@ local function get_merge_blocking_lines(issue, checks_breakdown)
         :write_detail_line(lines)
     end
     if bpr.requiresStatusChecks then
-      if checks_breakdown and checks_breakdown.required_fail > 0 then
-        TextChunkBuilder:new()
-          :text("  × ", "OctoStateDismissed")
-          :text(string.format("%d required check(s) failing", checks_breakdown.required_fail), "OctoStateDismissed")
-          :write_detail_line(lines)
-      elseif checks_breakdown and checks_breakdown.required_pending > 0 then
-        TextChunkBuilder:new()
-          :text("  ⏳ ", "OctoStatePending")
-          :text(string.format("%d required check(s) pending", checks_breakdown.required_pending), "OctoStatePending")
-          :write_detail_line(lines)
-      end
+      vim.list_extend(lines, get_merge_checks_diagnostic_lines(checks_breakdown))
     end
     if bpr.requiresCommitSignatures then
       local sigs = summarize_pr_commit_signatures(issue.commits)
@@ -1413,10 +1482,20 @@ function M.write_details(bufnr, issue, update, include_status)
 
       table.insert(details, merge_state_vt)
 
-      -- merge blocking context sub-lines
+      -- merge diagnostics sub-lines
       if issue.mergeStateStatus == "BLOCKED" then
         for _, line in
           ipairs(get_merge_blocking_lines(issue --[[@as octo.PullRequest]], checks_breakdown))
+        do
+          table.insert(details, line)
+        end
+      elseif issue.mergeStateStatus == "UNSTABLE" then
+        for _, line in
+          ipairs(get_merge_checks_diagnostic_lines(checks_breakdown, {
+            show_required_pass = true,
+            show_optional = true,
+            show_skipped = true,
+          }))
         do
           table.insert(details, line)
         end

@@ -8,6 +8,8 @@ INTRODUCTION                                    *octo*
 
 Edit and review GitHub issues, pull requests, and discussions from the comfort
 of your favorite editor.
+Pull request detail views summarize merge diagnostics, including unstable
+optional-check failures.
 
 Use `gO` to access the contents of this helpfile.
 
