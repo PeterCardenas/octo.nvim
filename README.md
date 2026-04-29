@@ -682,7 +682,7 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
 |    | mark                                                 | Mark the discussion comment as answer |
 |    | unmark                                                 | Unmark the discussion comment as answer |
 |    | reopen                                                 | Reopen the current discussion |
-|    | search                                                 | Search discussions |
+|    | search [repo] [key=value]                              | Search discussions |
 |    | subscription                                      | Change subscription state (subscribe, unsubscribe, or ignore) |
 |    | category                                                 | Change category of discussion |
 | parent   | add                                           | Add a parent issue to current issue |

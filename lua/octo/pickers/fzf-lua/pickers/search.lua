@@ -128,7 +128,7 @@ return function(opts)
   fzf.fzf_live(contents, {
     prompt = picker_utils.get_prompt(opts.prompt_title),
     exec_empty_query = true,
-    previewer = is_repo_search and previewers.repo(formatted_items) or previewers.search(),
+    previewer = is_repo_search and previewers.repo(formatted_items) or previewers.search(opts.type),
     query_delay = 500,
     fzf_opts = fzf_opts,
     actions = fzf_actions.common_open_actions(formatted_items),

@@ -208,12 +208,19 @@ function M.setup()
           },
         }
       end),
-      search = function(...)
-        local args = table.pack(...)
-        local prompt = table.concat(args, " ")
-        local repo = utils.get_remote_name()
-        prompt = "repo:" .. repo .. " " .. prompt
-        picker.search { prompt = prompt, type = "DISCUSSION" }
+      search = function(repo, ...)
+        local opts = M.process_varargs(repo, ...)
+        if utils.is_blank(opts.repo) then
+          utils.error "Cannot find repo"
+          return
+        end
+        local prompt = "is:discussion "
+        for k, v in pairs(opts) do
+          prompt = prompt .. k .. ":" .. v .. " "
+        end
+        opts.prompt = prompt
+        opts.type = "DISCUSSION"
+        picker.search(opts)
       end,
       close = context.within_discussion(function(buffer)
         --https://docs.github.com/en/graphql/reference/enums#discussionclosereason

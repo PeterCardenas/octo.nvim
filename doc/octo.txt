@@ -273,7 +273,8 @@ See |octo-command-examples| for examples.
   mark                  Mark the discussion comment as answered
   unmark                Mark the discussion comment as unanswered
   reopen                Reopen the discussion
-  search                Live discussion search.
+  search [repo] {key=val}
+                        Live discussion search.
   subscription          Change subscription state (subscribe, unsubscribe, or ignore).
   category              Change the category of the current discussion.
 

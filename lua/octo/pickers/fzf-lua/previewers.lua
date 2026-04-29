@@ -116,13 +116,19 @@ function M.issue(formatted_issues, title)
   return previewer
 end
 
-function M.search()
+---@param search_type? "ISSUE"|"DISCUSSION"|"REPOSITORY"
+function M.search(search_type)
   ---@type octo.fzf-lua.Previewer
   local previewer = M.bufferPreviewer:extend()
 
   function previewer:new(o, opts, fzf_win)
     M.bufferPreviewer.super.new(self, o, opts, fzf_win)
-    self.title = "Issues"
+    local TITLES = {
+      ISSUE = "Issues",
+      DISCUSSION = "Discussions",
+      REPOSITORY = "Repositories",
+    }
+    self.title = TITLES[search_type] or "unknown"
     setmetatable(self, previewer)
     return self
   end
