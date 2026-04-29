@@ -41,6 +41,11 @@ return function(opts)
   opts.type = opts.type or "ISSUE"
 
   local is_repo_search = opts.type == "REPOSITORY"
+  local TITLES = {
+    ISSUE = "Issues",
+    DISCUSSION = "Discussions",
+    REPOSITORY = "Repositories",
+  }
   local formatted_items = {} ---@type table<string, table> entry.ordinal -> entry
 
   ---@type fzf-lua.shell.data2
@@ -130,6 +135,10 @@ return function(opts)
     exec_empty_query = true,
     previewer = is_repo_search and previewers.repo(formatted_items) or previewers.search(opts.type),
     query_delay = 500,
+    winopts = {
+      title = TITLES[opts.type] or "Search",
+      title_pos = "center",
+    },
     fzf_opts = fzf_opts,
     actions = fzf_actions.common_open_actions(formatted_items),
   })

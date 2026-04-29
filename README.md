@@ -274,6 +274,10 @@ require"octo".setup {
     assigned = "  ",
     locked = "  ",
     review_requested = "  ",
+    commit_signature_verified = "  ",
+    commit_signature_unverified = "○  ",
+    commit_signature_invalid = "  ",
+    commit_signature_pending = "◌  ",
   },
   right_bubble_delimiter = "", -- bubble delimiter
   left_bubble_delimiter = "", -- bubble delimiter
@@ -511,6 +515,7 @@ require"octo".setup {
       discard_review = { lhs = "<localleader>vd", desc = "discard review" },
       add_review_comment = { lhs = "<localleader>ca", desc = "add a new review comment", mode = { "n", "x" } },
       add_review_suggestion = { lhs = "<localleader>sa", desc = "add a new review suggestion", mode = { "n", "x" } },
+      add_file_comment = { lhs = "<localleader>cf", desc = "add a new file-level review comment" },
       focus_files = { lhs = "<localleader>e", desc = "move focus to changed file panel" },
       toggle_files = { lhs = "<localleader>b", desc = "hide/show changed files panel" },
       next_thread = { lhs = "]t", desc = "move to next thread" },
@@ -624,6 +629,7 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
 |          | sha                                               | Copies the head commit SHA of the current PR to the system clipboard                                                                                   |
 |          | runs                                              | List all workflow runs for the PR                                                                                                                      |
 | repo     | list (3)                                          | List repos user owns, contributes or belong to                                                                                                         |
+|          | search [key=value]                                | Search repositories                                                                                                                                     |
 |          | fork                                              | Fork repo                                                                                                                                              |
 |          | browser                                           | Open current repo in the browser                                                                                                                       |
 |          | url                                               | Copies the URL of the current repo to the system clipboard                                                                                             |

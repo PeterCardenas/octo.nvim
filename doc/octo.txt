@@ -293,6 +293,8 @@ See |octo-command-examples| for examples.
 :Octo repo [action]                             *octo-commands-repo*
 
   list                  Lists repos the user owns, contributes, or belongs to.
+  search {key=val}
+                        Searches repositories.
   fork                  Fork repo.
   browser               Open current repo in the browser.
   url                   Copies the URL of the current repo to the system

@@ -722,11 +722,25 @@ function M.setup()
     repo = {
       search = function(...)
         local args = table.pack(...)
-        local prompt = table.concat(args, " ")
-        picker.search {
-          type = "REPOSITORY",
-          prompt = prompt,
-        }
+        local opts = {}
+        for i = 1, args.n do
+          local kv = vim.split(args[i], "=")
+          if #kv == 2 then
+            opts[kv[1]] = kv[2]
+          else
+            kv = vim.split(args[i], ":")
+            if #kv == 2 then
+              opts[kv[1]] = kv[2]
+            end
+          end
+        end
+        local prompt = "is:repository "
+        for k, v in pairs(opts) do
+          prompt = prompt .. k .. ":" .. v .. " "
+        end
+        opts.prompt = prompt
+        opts.type = "REPOSITORY"
+        picker.search(opts)
       end,
       unstar = context.within_repo(function(buffer)
         gh.api.graphql {
