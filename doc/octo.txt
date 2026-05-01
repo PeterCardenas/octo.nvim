@@ -240,6 +240,7 @@ See |octo-command-examples| for examples.
   reopen                Reopen the current PR.
   create                Creates a new PR for the current branch
   close                 Close the current PR.
+                        Prompts for an optional closing comment first.
   checkout              Checkout the PR.
   commits               List all PR commits.
   changes               Show all PR changes (diff hunks).

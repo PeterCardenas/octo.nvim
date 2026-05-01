@@ -594,7 +594,42 @@ function M.setup()
         require("octo.workflow_runs").list { branch = buffer:pullRequest().headRefName }
       end),
       close = function()
-        M.change_state "CLOSED"
+        local buffer = utils.get_current_buffer()
+        if not buffer or not buffer:isPullRequest() then
+          utils.error "Not a pull request buffer"
+          return
+        end
+
+        vim.ui.input({ prompt = "Enter closing comment (optional): " }, function(body)
+          if body == nil then
+            return
+          end
+
+          local close_opts = {
+            buffer:pullRequest().number,
+            repo = buffer.repo,
+            opts = {
+              cb = function(_, stderr, exit_code)
+                if exit_code == 0 then
+                  M.reload { bufnr = buffer.bufnr }
+                  return
+                end
+
+                if not utils.is_blank(stderr) then
+                  utils.error(stderr)
+                else
+                  utils.error "Failed to close pull request"
+                end
+              end,
+            },
+          }
+
+          if not utils.is_blank(body) then
+            close_opts.comment = body
+          end
+
+          gh.pr.close(close_opts)
+        end)
       end,
       reopen = function()
         M.change_state "OPEN"
@@ -1799,14 +1834,18 @@ function M.change_state(state)
     utils.info(kind .. " state changed to: " .. updated_state)
   end
 
-  gh.api.graphql {
-    query = query,
-    jq = jq,
-    fields = fields,
-    opts = {
-      cb = gh.create_callback { success = update_state },
-    },
-  }
+  local function submit_state_change()
+    gh.api.graphql {
+      query = query,
+      jq = jq,
+      fields = fields,
+      opts = {
+        cb = gh.create_callback { success = update_state },
+      },
+    }
+  end
+
+  submit_state_change()
 end
 
 function M.reference_in_new_issue()
