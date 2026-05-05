@@ -454,12 +454,9 @@ end
 
 --- Navigate to a URL anchor (comment) within an octo buffer
 ---@param octo_buffer OctoBuffer
----@param anchor octo.UrlAnchor
+---@param anchor integer
 function M.navigate_to_anchor(octo_buffer, anchor)
-  local db_id = tonumber(anchor.id)
-  if db_id then
-    octo_buffer:navigate_to_comment { databaseId = db_id }
-  end
+  octo_buffer:navigate_to_comment { databaseId = anchor }
 end
 
 return M
