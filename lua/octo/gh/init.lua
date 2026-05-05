@@ -38,6 +38,33 @@ local env_vars = {
   DBUS_SESSION_BUS_ADDRESS = vim.env["DBUS_SESSION_BUS_ADDRESS"],
 }
 
+---@param stdout string?
+---@param stderr string?
+---@return string?
+local function parse_user_name(stdout, stderr)
+  return string.match(stderr or "", "Logged in to [^%s]+ as ([^%s]+)")
+    or string.match(stderr or "", "Logged in to [^%s]+ account ([^%s]+)")
+    or string.match(stdout or "", "Logged in to [^%s]+ as ([^%s]+)")
+    or string.match(stdout or "", "Logged in to [^%s]+ account ([^%s]+)")
+end
+
+---@param stdout string?
+---@param stderr string?
+---@return string[]
+local function parse_scopes(stdout, stderr)
+  local all_scopes = string.match(stdout or "", " Token scopes: (.*)")
+    or string.match(stderr or "", " Token scopes: (.*)")
+    or ""
+
+  local parsed_scopes = {} ---@type string[]
+  for _, split_scope in ipairs(vim.split(all_scopes, ", ", { trimempty = true })) do
+    local scope = string.gsub(split_scope, "'", "")
+    table.insert(parsed_scopes, scope)
+  end
+
+  return parsed_scopes
+end
+
 local function get_env()
   local env = env_vars
   local gh_env = config.values.gh_env
@@ -71,16 +98,10 @@ function M.get_user_name(remote_hostname)
   job:sync(config.values.timeout)
   local stderr = table.concat(job:stderr_result(), "\n")
   local stdout = table.concat(job:result(), "\n")
-  -- Newer versions of the gh cli have a different message. See #467
-  local name_err = string.match(stderr, "Logged in to [^%s]+ as ([^%s]+)")
-    or string.match(stderr, "Logged in to [^%s]+ account ([^%s]+)")
-  local name_out = string.match(stdout, "Logged in to [^%s]+ as ([^%s]+)")
-    or string.match(stdout, "Logged in to [^%s]+ account ([^%s]+)")
+  local user_name = parse_user_name(stdout, stderr)
 
-  if name_err then
-    return name_err
-  elseif name_out then
-    return name_out
+  if user_name then
+    return user_name
   else
     require("octo.utils").error(stderr)
   end
@@ -112,12 +133,15 @@ function M.setup()
     env = get_env(),
     on_exit = vim.schedule_wrap(function(j_self, _, _)
       local use_proj_v2 = config.values.default_to_projects_v2
+      local stderr = table.concat(j_self:stderr_result(), "\n")
       local stdout = table.concat(j_self:result(), "\n")
-      local all_scopes = string.match(stdout, " Token scopes: (.*)") or ""
-      local split = vim.split(all_scopes, ", ")
-      for idx, split_scope in ipairs(split) do
-        scopes[idx] = string.gsub(split_scope, "'", "")
+      local user_name = parse_user_name(stdout, stderr)
+      scopes = parse_scopes(stdout, stderr)
+
+      if user_name and not vim.g.octo_viewer then
+        vim.g.octo_viewer = user_name
       end
+
       if use_proj_v2 then
         if M.has_scope { "read:project", "project" } then
           _G.octo_pv2_fragment = fragments.projects_v2
