@@ -448,7 +448,7 @@ function OctoBuffer:do_save_title_and_body()
               self.bodyMetadata = desc_metadata
             end
 
-            self:render_signs()
+            self:refresh_signs_after_save()
             utils.info "Saved!"
           end,
         },
@@ -489,7 +489,7 @@ function OctoBuffer:do_add_discussion_comment(comment_metadata)
             end
           end
 
-          self:render_signs()
+          self:refresh_signs_after_save()
         end,
       },
     },
@@ -522,7 +522,7 @@ function OctoBuffer:do_add_issue_comment(comment_metadata)
                 break
               end
             end
-            self:render_signs()
+            self:refresh_signs_after_save()
           end
         end,
       },
@@ -567,7 +567,7 @@ function OctoBuffer:do_add_thread_comment(comment_metadata)
               review:update_threads(threads)
             end
 
-            self:render_signs()
+            self:refresh_signs_after_save()
 
             -- update thread map
             local thread_id ---@type string
@@ -701,7 +701,7 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
               if review then
                 review:update_threads(review_threads)
               end
-              self:render_signs()
+              self:refresh_signs_after_save()
             end
           end,
         },
@@ -806,7 +806,7 @@ function OctoBuffer:do_add_new_thread(comment_metadata)
                     local threads = resp.comment.pullRequest.reviewThreads.nodes
                     review:update_threads(threads)
                   end
-                  self:render_signs()
+                  self:refresh_signs_after_save()
                 end
               else
                 utils.error "Failed to create thread"
@@ -867,7 +867,7 @@ function OctoBuffer:do_add_pull_request_comment(comment_metadata)
                 break
               end
             end
-            self:render_signs()
+            self:refresh_signs_after_save()
           end
         else
           utils.error "Failed to create thread"
@@ -926,7 +926,7 @@ function OctoBuffer:do_update_comment(comment_metadata)
                 break
               end
             end
-            self:render_signs()
+            self:refresh_signs_after_save()
           end
         end,
       },
@@ -956,6 +956,15 @@ function OctoBuffer:update_metadata()
     metadata.startLine = start_line
     metadata.endLine = end_line
     metadata.dirty = utils.trim(metadata.body) ~= utils.trim(metadata.savedBody) and true or false
+  end
+end
+
+---Refresh signs after an async save callback completes.
+function OctoBuffer:refresh_signs_after_save()
+  self:render_signs()
+
+  if config.values.ui.use_statuscolumn then
+    require("octo.ui.statuscolumn").redraw(self.bufnr)
   end
 end
 

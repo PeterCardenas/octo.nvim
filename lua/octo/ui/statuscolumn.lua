@@ -29,6 +29,21 @@ function M.add(bufnr, start_line, end_line, is_dirty)
   table.insert(comments[bufnr], { from = start_line, to = end_line, dirty = is_dirty })
 end
 
+---@param bufnr integer
+function M.redraw(bufnr)
+  local wins = vim.fn.win_findbuf(bufnr)
+  if #wins == 0 then
+    return
+  end
+
+  vim.api.nvim__redraw {
+    buf = bufnr,
+    statuscolumn = true,
+    valid = false,
+    flush = true,
+  }
+end
+
 --- Fixes octo's comment rendering to take wrapping into account
 ---@param buf number
 ---@param lnum number
