@@ -92,6 +92,9 @@ end
 ---@class ReloadOpts
 ---@field bufnr number
 ---@field verbose? boolean
+---@field respect_local_changes? boolean
+---@field on_local_changes? fun()
+---@field on_reload? fun()
 
 --- Load issue/pr/repo buffer
 ---@param opts? ReloadOpts
@@ -119,6 +122,14 @@ function M.load_buffer(opts)
   local cursor_pos = win and vim.api.nvim_win_get_cursor(win) or nil
 
   M.load(repo, kind, id, hostname, function(obj)
+    local octo_buf = octo_buffers[bufnr]
+    if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+      if opts.on_local_changes then
+        opts.on_local_changes()
+      end
+      return
+    end
+
     vim.api.nvim_buf_call(bufnr, function()
       M.create_buffer(kind, obj, repo, false, hostname)
 
@@ -138,6 +149,10 @@ function M.load_buffer(opts)
         utils.info(string.format("Loaded %s/%s/%d", repo, kind, id))
       end
     end)
+
+    if opts.on_reload then
+      opts.on_reload()
+    end
   end)
 end
 

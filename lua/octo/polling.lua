@@ -24,28 +24,6 @@ local tracked_buffers = {}
 ---@type uv.uv_timer_t|nil
 local timer = nil
 
----Check if an OctoBuffer has unsaved local edits
----@param octo_buf OctoBuffer
----@return boolean
-local function buffer_is_dirty(octo_buf)
-  octo_buf:update_metadata()
-
-  if octo_buf.titleMetadata and octo_buf.titleMetadata.dirty then
-    return true
-  end
-  if octo_buf.bodyMetadata and octo_buf.bodyMetadata.dirty then
-    return true
-  end
-  if octo_buf.commentsMetadata then
-    for _, comment in ipairs(octo_buf.commentsMetadata) do
-      if comment.dirty then
-        return true
-      end
-    end
-  end
-  return false
-end
-
 ---Compute a fingerprint from statusCheckRollup for change detection.
 ---Includes the overall state plus each individual check's status, so the
 ---fingerprint changes when any single check transitions (not just when the
@@ -131,7 +109,7 @@ local function start_timer(interval)
                 end
 
                 local conf = config.values.poll
-                if buffer_is_dirty(octo_buf) then
+                local function mark_remote_changed()
                   tracking.remote_changed = true
                   if conf.notify_on_change then
                     utils.info(
@@ -143,17 +121,27 @@ local function start_timer(interval)
                       )
                     )
                   end
+                end
+
+                if octo_buf:has_local_changes() then
+                  mark_remote_changed()
                 else
-                  require("octo").load_buffer { bufnr = bufnr }
-                  tracking.last_updated_at = remote_updated_at
-                  tracking.last_merge_state = remote_merge_state
-                  tracking.last_check_fingerprint = remote_check_fp
-                  tracking.remote_changed = false
-                  if conf.notify_on_refresh then
-                    utils.info(
-                      string.format("Auto-refreshed %s/%s #%d", tracking.owner, tracking.name, tracking.number)
-                    )
-                  end
+                  require("octo").load_buffer {
+                    bufnr = bufnr,
+                    respect_local_changes = true,
+                    on_local_changes = mark_remote_changed,
+                    on_reload = function()
+                      tracking.last_updated_at = remote_updated_at
+                      tracking.last_merge_state = remote_merge_state
+                      tracking.last_check_fingerprint = remote_check_fp
+                      tracking.remote_changed = false
+                      if conf.notify_on_refresh then
+                        utils.info(
+                          string.format("Auto-refreshed %s/%s #%d", tracking.owner, tracking.name, tracking.number)
+                        )
+                      end
+                    end,
+                  }
                 end
               end,
             },

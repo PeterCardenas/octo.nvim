@@ -959,6 +959,28 @@ function OctoBuffer:update_metadata()
   end
 end
 
+---Check whether the Octo buffer has unsaved local edits.
+---@return boolean
+function OctoBuffer:has_local_changes()
+  self:update_metadata()
+
+  if self.titleMetadata and self.titleMetadata.dirty then
+    return true
+  end
+  if self.bodyMetadata and self.bodyMetadata.dirty then
+    return true
+  end
+  if self.commentsMetadata then
+    for _, comment in ipairs(self.commentsMetadata) do
+      if comment.dirty then
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
 ---Refresh signs after an async save callback completes.
 function OctoBuffer:refresh_signs_after_save()
   self:render_signs()
