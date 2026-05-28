@@ -330,3 +330,23 @@ describe("string methods", function()
     end)
   end)
 end)
+
+describe("generate_position2line_map", function()
+  local cases = {
+    { "parses explicit single-line counts", "@@ -12,1 +12,1 @@" },
+    { "parses an omitted left-side count", "@@ -12 +12,1 @@" },
+    { "parses an omitted right-side count", "@@ -12,1 +12 @@" },
+    { "parses omitted single-line counts on both sides", "@@ -12 +12 @@" },
+  }
+
+  for _, case in ipairs(cases) do
+    it(case[1], function()
+      local map = this.generate_position2line_map(case[2] .. "\n-old line\n+new line")
+
+      eq(12, map.left_offset)
+      eq(12, map.right_offset)
+      eq(12, map.left_side_lines[2])
+      eq(12, map.right_side_lines[3])
+    end)
+  end
+end)

@@ -1874,8 +1874,10 @@ end
 function M.generate_position2line_map(diffhunk)
   local diffhunk_lines = vim.split(diffhunk, "\n")
   local diff_directive = diffhunk_lines[1]
-  ---@type integer, integer
-  local left_offset, right_offset = string.match(diff_directive, "@@%s*%-(%d+),%d+%s%+(%d+)")
+  -- Unified diff headers omit ",1" for single-line ranges, e.g. "@@ -12 +12 @@".
+  local left_offset, right_offset = string.match(diff_directive, "^@@%s*%-(%d+),?%d*%s%+(%d+),?%d*%s*@@")
+  left_offset = tonumber(left_offset) or 0
+  right_offset = tonumber(right_offset) or 0
   local right_side_lines = {} ---@type table<integer, integer>
   local left_side_lines = {} ---@type table<integer, integer>
   local right_side_line = right_offset
@@ -1894,12 +1896,6 @@ function M.generate_position2line_map(diffhunk)
       right_side_line = right_side_line + 1
       left_side_line = left_side_line + 1
     end
-  end
-  if left_offset == nil then
-    left_offset = 0
-  end
-  if right_offset == nil then
-    right_offset = 0
   end
   ---@type { left_side_lines: table<integer, integer>, right_side_lines: table<integer, integer>, right_offset: integer, left_offset: integer }
   return {
