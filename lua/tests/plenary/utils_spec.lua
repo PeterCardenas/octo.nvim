@@ -165,6 +165,25 @@ describe("get_flatten_pages", function()
     eq(actual, { { a = 1 }, { b = 2, name = "foo" }, { c = 3 }, { d = 4 } })
   end)
 end)
+describe("get_file_at_commit", function()
+  it("fetches file contents asynchronously", function()
+    local called = false
+    local lines
+
+    this.get_file_at_commit("AGENTS.md", "HEAD", function(result)
+      called = true
+      lines = result
+    end)
+
+    eq(false, called)
+    vim.wait(5000, function()
+      return called
+    end, 10)
+
+    eq(true, called)
+    eq("# Agents Guide", lines[1])
+  end)
+end)
 describe("parse_url", function()
   it("issues", function()
     local url = "https://github.com/pwntester/octo.nvim/issues/1"

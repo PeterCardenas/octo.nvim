@@ -513,23 +513,13 @@ end
 ---@param commit string
 ---@param cb fun(lines: string[])
 function M.get_file_at_commit(path, commit, cb)
-  if not Job then
-    return
-  end
-  ---@diagnostic disable-next-line: missing-fields
-  local job = Job:new {
-    enable_recording = true,
-    command = "git",
-    args = { "show", string.format("%s:%s", commit, path) },
-  }
-  ---@type string[]?
-  local result = job:sync()
-  if not result then
-    M.error "Failed to get file contents"
-    return
-  end
-  local output = table.concat(result, "\n")
-  cb(vim.split(output, "\n"))
+  vim.system(
+    { "git", "show", string.format("%s:%s", commit, path) },
+    { text = true },
+    vim.schedule_wrap(function(result)
+      cb(vim.split(result.stdout or "", "\n"))
+    end)
+  )
 end
 
 function M.in_pr_repo()
