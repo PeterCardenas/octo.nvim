@@ -6,6 +6,7 @@ describe("Commands module:", function()
   local original_get_current_buffer
   local original_pr
   local original_reload
+  local original_cmd
   local utils
   local gh
 
@@ -20,6 +21,7 @@ describe("Commands module:", function()
     original_get_current_buffer = utils.get_current_buffer
     original_pr = gh.pr
     original_reload = commands.reload
+    original_cmd = vim.cmd
   end)
 
   after_each(function()
@@ -27,6 +29,7 @@ describe("Commands module:", function()
     utils.get_current_buffer = original_get_current_buffer
     gh.pr = original_pr
     commands.reload = original_reload
+    vim.cmd = original_cmd
   end)
 
   local function pull_request_buffer()
@@ -40,6 +43,13 @@ describe("Commands module:", function()
         return { number = 7 }
       end,
     }
+  end
+
+  local function pull_request_buffer_with_name(name)
+    local buffer = pull_request_buffer()
+    buffer.bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buffer.bufnr, name)
+    return buffer
   end
 
   it("pr close passes comment when body is provided", function()
@@ -108,5 +118,52 @@ describe("Commands module:", function()
     commands.commands.pr.close()
 
     assert.are.same(false, called)
+  end)
+
+  it("pr diff opens the pull request diff URI", function()
+    local cmd
+
+    utils.get_current_buffer = function()
+      return pull_request_buffer()
+    end
+    vim.cmd = function(value)
+      cmd = value
+    end
+
+    commands.show_pr_diff()
+
+    assert.are.same("edit octo://owner/repo/pull/7/diff", cmd)
+  end)
+
+  it("pr diff preserves the GitHub Enterprise hostname", function()
+    local cmd
+    local buffer = pull_request_buffer_with_name "octo://github.enterprise.com/owner/repo/pull/7"
+
+    utils.get_current_buffer = function()
+      return buffer
+    end
+    vim.cmd = function(value)
+      cmd = value
+    end
+
+    commands.show_pr_diff()
+
+    assert.are.same("edit octo://github.enterprise.com/owner/repo/pull/7/diff", cmd)
+  end)
+
+  it("pr diff preserves dotless GitHub Enterprise hostnames", function()
+    local cmd
+    local buffer = pull_request_buffer_with_name "octo://ghe/owner/repo/pull/7"
+
+    utils.get_current_buffer = function()
+      return buffer
+    end
+    vim.cmd = function(value)
+      cmd = value
+    end
+
+    commands.show_pr_diff()
+
+    assert.are.same("edit octo://ghe/owner/repo/pull/7/diff", cmd)
   end)
 end)

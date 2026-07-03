@@ -7,6 +7,7 @@
 ---   Without hostname (GitHub.com):
 ---     octo://owner/repo/issue/42
 ---     octo://owner/repo/pull/123
+---     octo://owner/repo/pull/123/diff
 ---     octo://owner/repo/discussion/5
 ---     octo://owner/repo/release/v1.0.0
 ---     octo://owner/repo/repo
@@ -14,6 +15,7 @@
 ---   With hostname (GitHub Enterprise):
 ---     octo://github.enterprise.com/owner/repo/issue/42
 ---     octo://github.enterprise.com/owner/repo/pull/123
+---     octo://github.enterprise.com/owner/repo/pull/123/diff
 ---     octo://github.enterprise.com/owner/repo/discussion/5
 ---     octo://github.enterprise.com/owner/repo/release/v1.0.0
 ---     octo://github.enterprise.com/owner/repo/repo
@@ -21,6 +23,7 @@
 ---   Plural forms are normalized:
 ---     octo://owner/repo/issues/42  → kind = "issue"
 ---     octo://owner/repo/pulls/123  → kind = "pull"
+---     octo://owner/repo/pulls/123/diff → kind = "pull_diff"
 ---     octo://owner/repo/discussions/5 → kind = "discussion"
 ---
 --- Release tags support alphanumeric characters, dots, hyphens, and underscores:
@@ -35,6 +38,10 @@ local notify = require "octo.notify"
 local release = require "octo.release"
 
 local M = {}
+
+local function pack(...)
+  return { n = select("#", ...), ... }
+end
 
 ---@class BufferInfo
 ---@field repo string Full repository name (e.g., "owner/repo")
@@ -83,7 +90,7 @@ end
 ---@return string? repo
 ---@return integer? number
 function M.get_repo_number_from_varargs(...)
-  local args = table.pack(...)
+  local args = pack(...)
   return get_repo_id_from_args(args, true)
 end
 
@@ -125,6 +132,14 @@ function M.get_pull_request_uri(...)
   return string.format("octo://%s/pull/%s", repo, number)
 end
 
+--- Get the URI for a pull request diff
+---@param ... string|number PR number and optional repository
+---@return string URI in format "octo://owner/name/pull/number/diff"
+function M.get_pull_request_diff_uri(...)
+  local repo, number = M.get_repo_number_from_varargs(...)
+  return string.format("octo://%s/pull/%s/diff", repo, number)
+end
+
 --- Get the URI for a discussion
 ---@param ... string|number Discussion number and optional repository
 ---@return string URI in format "octo://owner/name/discussion/number"
@@ -151,7 +166,7 @@ end
 ---   get_release_uri(12345678, "pwntester/octo.nvim")  -- Release ID
 ---   -- Fetches tag name from API, returns: "octo://pwntester/octo.nvim/release/v1.0.0"
 function M.get_release_uri(...)
-  local args = table.pack(...)
+  local args = pack(...)
   local repo, tag_name_or_id = get_repo_id_from_args(args, false)
   local release_id = tonumber(tag_name_or_id)
   if not release_id then
@@ -185,13 +200,45 @@ end
 ---   parse("octo://invalid")
 ---   -- Returns: nil
 M.parse = function(bufname)
-  -- Try to parse with hostname: octo://hostname/owner/repo/kind/id
-  local hostname, repo, kind, id = string.match(bufname, "octo://([^/]+)/([^/]+/[^/]+)/([^/]+)/([0-9a-zA-Z.%-_]+)")
+  local path = string.match(bufname, "^octo://(.+)$")
+  if not path then
+    return
+  end
 
-  -- Fall back to without hostname: octo://owner/repo/kind/id
-  if not hostname then
-    repo, kind, id = string.match(bufname, "octo://(.+)/(.+)/([0-9a-zA-Z.%-_]+)")
-    hostname = nil
+  local segments = vim.split(path, "/", { plain = true })
+  local hostname, repo, kind, id ---@type string?, string?, string?, string?
+
+  if #segments == 3 and segments[3] == "repo" then
+    repo = string.format("%s/%s", segments[1], segments[2])
+    kind = "repo"
+    id = "repo"
+  elseif #segments == 4 then
+    if segments[4] == "repo" then
+      hostname = segments[1]
+      repo = string.format("%s/%s", segments[2], segments[3])
+      kind = "repo"
+      id = "repo"
+    else
+      repo = string.format("%s/%s", segments[1], segments[2])
+      kind = segments[3]
+      id = segments[4]
+    end
+  elseif #segments == 5 then
+    if (segments[3] == "pull" or segments[3] == "pulls") and segments[5] == "diff" then
+      repo = string.format("%s/%s", segments[1], segments[2])
+      kind = "pull_diff"
+      id = segments[4]
+    else
+      hostname = segments[1]
+      repo = string.format("%s/%s", segments[2], segments[3])
+      kind = segments[4]
+      id = segments[5]
+    end
+  elseif #segments == 6 and (segments[4] == "pull" or segments[4] == "pulls") and segments[6] == "diff" then
+    hostname = segments[1]
+    repo = string.format("%s/%s", segments[2], segments[3])
+    kind = "pull_diff"
+    id = segments[5]
   end
 
   -- Normalize plural forms to singular
@@ -199,24 +246,13 @@ M.parse = function(bufname)
     kind = "issue"
   elseif kind == "pulls" then
     kind = "pull"
+  elseif kind == "pull_diffs" then
+    kind = "pull_diff"
   elseif kind == "discussions" then
     kind = "discussion"
   end
 
-  if id == "repo" or not repo then
-    -- Try with hostname: octo://hostname/owner/repo/repo
-    hostname, repo = string.match(bufname, "octo://([^/]+)/([^/]+/[^/]+)/repo")
-    if not hostname then
-      -- Fall back without hostname: octo://owner/repo/repo
-      repo = string.match(bufname, "octo://(.+)/repo")
-      hostname = nil
-    end
-    if repo then
-      kind = "repo"
-    end
-  end
-
-  if (kind == "issue" or kind == "pull") and not repo and not id then
+  if (kind == "issue" or kind == "pull" or kind == "pull_diff" or kind == "discussion") and (not repo or not id) then
     return
   elseif kind == "repo" and not repo then
     return
@@ -224,6 +260,9 @@ M.parse = function(bufname)
 
   -- Return nil if we couldn't parse anything meaningful
   if not repo or not kind then
+    return
+  end
+  if not vim.tbl_contains({ "issue", "pull", "pull_diff", "discussion", "release", "repo" }, kind) then
     return
   end
 

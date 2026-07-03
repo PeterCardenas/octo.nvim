@@ -93,18 +93,22 @@ You can also use `octo://` URLs to open issues and PRs directly:
 " Open from the default GitHub instance (github.com or configured github_hostname)
 :e octo://owner/repo/issue/123
 :e octo://owner/repo/pull/456
+:e octo://owner/repo/pull/456/diff
 
 " Open from a specific GitHub Enterprise instance
 :e octo://ghe.example.com/owner/repo/issue/123
 :e octo://ghe.example.com/owner/repo/pull/456
+:e octo://ghe.example.com/owner/repo/pull/456/diff
 
 " Both singular and plural forms are supported
 :e octo://owner/repo/issues/123
 :e octo://owner/repo/pulls/456
+:e octo://owner/repo/pulls/456/diff
 ```
 
 The `octo://` URL format is especially useful for:
 - Opening issues/PRs from notes or wiki links without needing to be in the repository directory
+- Opening readonly PR unified diffs with `pull/{number}/diff` URIs
 - Working with multiple GitHub instances (e.g., GitHub.com and GitHub Enterprise) without setting `GH_HOST` globally
 - Creating quick links in your workflow that work regardless of your current directory
 
@@ -617,7 +621,7 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
 |          | checkout                                          | Checkout PR                                                                                                                                            |
 |          | commits                                           | List all PR commits                                                                                                                                    |
 |          | changes                                           | Show all PR changes (diff hunks)                                                                                                                       |
-|          | diff                                              | Show PR diff                                                                                                                                           |
+|          | diff                                              | Show PR diff in a readonly `octo://.../pull/{number}/diff` buffer                                                                                       |
 |          | merge [merge\|rebase\|squash] [delete\|nodelete]  | Merge current PR using the specified method                                                                                                            |
 |          | ready                                             | Mark a draft PR as ready for review                                                                                                                    |
 |          | draft                                             | Send a ready PR back to draft                                                                                                                          |

@@ -3,12 +3,12 @@ local constants = require "octo.constants"
 local context = require "octo.context"
 local navigation = require "octo.navigation"
 local gh = require "octo.gh"
-local headers = require "octo.gh.headers"
 local graphql = require "octo.gh.graphql"
 local queries = require "octo.gh.queries"
 local mutations = require "octo.gh.mutations"
 local picker = require "octo.picker"
 local reviews = require "octo.reviews"
+local uri = require "octo.uri"
 local window = require "octo.ui.window"
 local writers = require "octo.ui.writers"
 local utils = require "octo.utils"
@@ -28,19 +28,13 @@ OctoLastCmdOpts = nil
 local M = {}
 
 -- Helper function to extract hostname from octo:// buffer URL
-local function get_hostname_from_buffer()
-  local bufname = vim.fn.bufname()
-  if bufname:match "^octo://" then
-    -- Try to parse with hostname: octo://hostname/owner/repo/kind/id
-    -- vs without hostname: octo://owner/repo/kind/id
-    local first_segment = bufname:match "^octo://([^/]+)"
-
-    -- Check if this looks like a hostname (contains a dot) vs owner name
-    if first_segment and first_segment:match "%." then
-      return first_segment
-    end
+local function get_hostname_from_buffer(bufnr)
+  local ok, bufname = pcall(vim.api.nvim_buf_get_name, bufnr or vim.api.nvim_get_current_buf())
+  if not ok then
+    bufname = vim.fn.bufname()
   end
-  return nil
+  local info = uri.parse(bufname)
+  return info and info.hostname or nil
 end
 
 local function merge_tables(t1, t2)
@@ -2424,28 +2418,23 @@ end
 
 function M.show_pr_diff()
   local buffer = utils.get_current_buffer()
-  if not buffer or not buffer:isPullRequest() then
+  if not buffer or (not buffer:isPullRequest() and not buffer:isPullRequestDiff()) then
     return
   end
 
-  local url = string.format("/repos/%s/pulls/%s", buffer.repo, buffer.number)
-  gh.run {
-    args = { "api", "--paginate", url },
-    headers = { headers.diff },
-    cb = function(output, stderr)
-      if stderr and not utils.is_blank(stderr) then
-        utils.error(stderr)
-      elseif output then
-        local lines = vim.split(output, "\n")
-        local wbufnr = vim.api.nvim_create_buf(true, true)
-        vim.api.nvim_buf_set_lines(wbufnr, 0, -1, false, lines)
-        vim.api.nvim_set_current_buf(wbufnr)
-        vim.bo[wbufnr].filetype = "diff"
-        vim.bo[wbufnr].modifiable = false
-        vim.api.nvim_buf_set_name(wbufnr, "DIFF: " .. buffer:pullRequest().title)
-      end
-    end,
-  }
+  local number = buffer.number
+  if not number and buffer:isPullRequest() then
+    number = buffer:pullRequest().number
+  end
+
+  local hostname = get_hostname_from_buffer(buffer.bufnr)
+  local uri
+  if hostname then
+    uri = string.format("octo://%s/%s/pull/%s/diff", hostname, buffer.repo, number)
+  else
+    uri = utils.get_pull_request_diff_uri(number, buffer.repo)
+  end
+  vim.cmd("edit " .. uri)
 end
 
 local function get_reaction_line(bufnr, extmark)

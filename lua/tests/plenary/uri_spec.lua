@@ -71,6 +71,18 @@ describe("Uri module:", function()
       }, parsed)
     end)
 
+    it("parses a repo with a dotless hostname", function()
+      local uri_str = "octo://ghe/pwntester/octo.nvim/repo"
+      local parsed = uri.parse(uri_str)
+
+      eq({
+        hostname = "ghe",
+        repo = "pwntester/octo.nvim",
+        kind = "repo",
+        id = "repo",
+      }, parsed)
+    end)
+
     it("parses an issue with hostname", function()
       local uri_str = "octo://github.com/pwntester/octo.nvim/issue/42"
       local parsed = uri.parse(uri_str)
@@ -91,6 +103,41 @@ describe("Uri module:", function()
         hostname = "github.com",
         repo = "pwntester/octo.nvim",
         kind = "pull",
+        id = "42",
+      }, parsed)
+    end)
+
+    it("parses a pull request diff", function()
+      local uri_str = "octo://pwntester/octo.nvim/pull/42/diff"
+      local parsed = uri.parse(uri_str)
+
+      eq({
+        repo = "pwntester/octo.nvim",
+        kind = "pull_diff",
+        id = "42",
+      }, parsed)
+    end)
+
+    it("parses a pull request diff with hostname", function()
+      local uri_str = "octo://github.enterprise.com/pwntester/octo.nvim/pull/42/diff"
+      local parsed = uri.parse(uri_str)
+
+      eq({
+        hostname = "github.enterprise.com",
+        repo = "pwntester/octo.nvim",
+        kind = "pull_diff",
+        id = "42",
+      }, parsed)
+    end)
+
+    it("parses a pull request diff with a dotless hostname", function()
+      local uri_str = "octo://ghe/pwntester/octo.nvim/pull/42/diff"
+      local parsed = uri.parse(uri_str)
+
+      eq({
+        hostname = "ghe",
+        repo = "pwntester/octo.nvim",
+        kind = "pull_diff",
         id = "42",
       }, parsed)
     end)
@@ -149,6 +196,17 @@ describe("Uri module:", function()
       eq({
         repo = "pwntester/octo.nvim",
         kind = "pull",
+        id = "42",
+      }, parsed)
+    end)
+
+    it("normalizes plural pull diffs to singular", function()
+      local uri_str = "octo://pwntester/octo.nvim/pulls/42/diff"
+      local parsed = uri.parse(uri_str)
+
+      eq({
+        repo = "pwntester/octo.nvim",
+        kind = "pull_diff",
         id = "42",
       }, parsed)
     end)
@@ -240,6 +298,10 @@ describe("Uri module:", function()
         kind = "issue",
         id = "1",
       }, parsed)
+    end)
+
+    it("builds a pull request diff URI", function()
+      eq("octo://pwntester/octo.nvim/pull/42/diff", uri.get_pull_request_diff_uri(42, "pwntester/octo.nvim"))
     end)
   end)
 end)

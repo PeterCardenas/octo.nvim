@@ -1080,6 +1080,7 @@ end
 M.get_repo_uri = uri.get_repo_uri
 M.get_issue_uri = uri.get_issue_uri
 M.get_pull_request_uri = uri.get_pull_request_uri
+M.get_pull_request_diff_uri = uri.get_pull_request_diff_uri
 M.get_discussion_uri = uri.get_discussion_uri
 M.get_release_uri = uri.get_release_uri
 

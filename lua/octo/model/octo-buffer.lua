@@ -15,7 +15,7 @@ local vim = vim
 
 local M = {}
 
----@alias octo.NodeKind "issue" | "pull" | "discussion" | "repo" | "release"
+---@alias octo.NodeKind "issue" | "pull" | "pull_diff" | "discussion" | "repo" | "release"
 
 ---@class OctoBuffer
 ---@field bufnr integer
@@ -26,7 +26,7 @@ local M = {}
 ---@field bodyMetadata BodyMetadata
 ---@field commentsMetadata CommentMetadata[]
 ---@field threadsMetadata ThreadMetadata[]
----@field private node octo.PullRequest|octo.Issue|octo.Release|octo.Discussion|octo.Repository
+---@field private node octo.PullRequest|octo.Issue|octo.Release|octo.Discussion|octo.Repository|table
 ---@field taggable_users? string[] list of taggable users for the buffer. Trigger with @
 ---@field owner? string
 ---@field name? string
@@ -38,7 +38,7 @@ OctoBuffer.__index = OctoBuffer
 ---  bufnr: integer,
 ---  number: integer,
 ---  repo: string,
----  node: octo.PullRequest|octo.Issue|octo.Release|octo.Repository|octo.Discussion,
+---  node: octo.PullRequest|octo.Issue|octo.Release|octo.Repository|octo.Discussion|table,
 ---  kind: string,
 ---  commentsMetadata: CommentMetadata[],
 ---  threadsMetadata: ThreadMetadata[],
@@ -61,7 +61,9 @@ function OctoBuffer:new(opts)
     this.owner, this.name = utils.split_repo(this.repo)
   end
 
-  if this.node and this.node.commits then
+  if opts.kind == "pull_diff" then
+    this.kind = "pull_diff"
+  elseif this.node and this.node.commits then
     this.kind = "pull"
     this.taggable_users = { this.node.author.login, "copilot" }
   elseif this.node and this.number then
@@ -226,8 +228,36 @@ function OctoBuffer:render_threads(threads)
   self.ready = true
 end
 
+function OctoBuffer:render_pull_diff()
+  vim.bo[self.bufnr].readonly = false
+  vim.bo[self.bufnr].modifiable = true
+  self:clear()
+
+  local diff = self.node and self.node.diff or ""
+  local lines = vim.split(diff, "\n", { plain = true })
+  vim.api.nvim_buf_set_lines(self.bufnr, 0, -1, false, lines)
+
+  vim.bo[self.bufnr].filetype = "diff"
+  vim.bo[self.bufnr].modified = false
+  vim.bo[self.bufnr].modifiable = false
+  vim.bo[self.bufnr].readonly = true
+  self.ready = true
+end
+
 ---Configures the buffer
 function OctoBuffer:configure()
+  if self.kind == "pull_diff" then
+    vim.api.nvim_buf_call(self.bufnr, function()
+      vim.cmd [[setlocal filetype=diff]]
+      vim.cmd [[setlocal buftype=nofile]]
+      vim.cmd [[setlocal bufhidden=hide]]
+      vim.cmd [[setlocal noswapfile]]
+      vim.cmd [[setlocal readonly]]
+      vim.cmd [[setlocal nomodifiable]]
+    end)
+    return
+  end
+
   -- buffer-local options (work correctly with nvim_buf_call)
   vim.api.nvim_buf_call(self.bufnr, function()
     vim.cmd [[setlocal filetype=octo]]
@@ -339,6 +369,11 @@ end
 
 ---Syncs all the comments/title/body with GitHub
 function OctoBuffer:save()
+  if self.kind == "pull_diff" then
+    utils.info "Pull request diff buffers are read-only"
+    return
+  end
+
   local bufnr = vim.api.nvim_get_current_buf()
 
   -- collect comment metadata
@@ -962,6 +997,10 @@ end
 ---Check whether the Octo buffer has unsaved local edits.
 ---@return boolean
 function OctoBuffer:has_local_changes()
+  if self.kind == "pull_diff" then
+    return vim.bo[self.bufnr].modified
+  end
+
   self:update_metadata()
 
   if self.titleMetadata and self.titleMetadata.dirty then
@@ -992,6 +1031,10 @@ end
 
 ---Renders the signs in the signcolumn or statuscolumn
 function OctoBuffer:render_signs()
+  if self.kind == "pull_diff" then
+    return
+  end
+
   local use_signcolumn = config.values.ui.use_signcolumn
   local use_statuscolumn = config.values.ui.use_statuscolumn
   if not self.ready or (not use_statuscolumn and not use_signcolumn) then
@@ -1077,6 +1120,10 @@ end
 --- Checks if the buffer represents a Pull Request
 function OctoBuffer:isPullRequest()
   return self.kind == "pull"
+end
+
+function OctoBuffer:isPullRequestDiff()
+  return self.kind == "pull_diff"
 end
 
 function OctoBuffer:pullRequest()
@@ -1288,6 +1335,18 @@ function OctoBuffer:get_updated_at()
   if self.node and self.node.updatedAt then
     return self.node.updatedAt
   end
+end
+
+function OctoBuffer:get_diff_fingerprint()
+  if self.node and self.node.diffFingerprint then
+    return self.node.diffFingerprint
+  end
+  local base_ref_oid = self.node and self.node.baseRefOid or ""
+  local head_ref_oid = self.node and self.node.headRefOid or ""
+  if base_ref_oid ~= "" or head_ref_oid ~= "" then
+    return base_ref_oid .. "..." .. head_ref_oid
+  end
+  return ""
 end
 
 return M

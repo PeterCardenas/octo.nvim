@@ -16,7 +16,9 @@ local M = {}
 ---@field last_updated_at string
 ---@field last_merge_state string
 ---@field last_check_fingerprint string
+---@field last_diff_fingerprint string
 ---@field remote_changed boolean
+---@field loading boolean
 
 ---@type table<integer, OctoPollingEntry>
 local tracked_buffers = {}
@@ -49,6 +51,20 @@ local function check_fingerprint(rollup)
   return table.concat(parts, ",")
 end
 
+---@param node table|nil
+---@return string
+local function diff_fingerprint(node)
+  if utils.is_blank(node) then
+    return ""
+  end
+  local base_ref_oid = utils.is_blank(node.baseRefOid) and "" or node.baseRefOid
+  local head_ref_oid = utils.is_blank(node.headRefOid) and "" or node.headRefOid
+  if base_ref_oid == "" and head_ref_oid == "" then
+    return ""
+  end
+  return base_ref_oid .. "..." .. head_ref_oid
+end
+
 ---Start the timer loop
 ---@param interval number
 local function start_timer(interval)
@@ -63,54 +79,105 @@ local function start_timer(interval)
       for bufnr, tracking in pairs(tracked_buffers) do
         if not vim.api.nvim_buf_is_valid(bufnr) then
           tracked_buffers[bufnr] = nil
-        elseif tracking.kind == "issue" or tracking.kind == "pull" then
+        elseif
+          (tracking.kind == "issue" or tracking.kind == "pull" or tracking.kind == "pull_diff") and not tracking.loading
+        then
+          tracking.loading = true
+          local query = tracking.kind == "pull_diff" and queries.pull_diff_fingerprint or queries.updated_at
           gh.api.graphql {
-            query = queries.updated_at,
+            query = query,
             F = {
               owner = tracking.owner,
               name = tracking.name,
               number = tracking.number,
             },
-            hostname = tracking.hostname,
+            jq = ".",
             opts = {
+              hostname = tracking.hostname,
               cb = function(output, stderr)
+                local function finish()
+                  local current_tracking = tracked_buffers[bufnr]
+                  if current_tracking then
+                    current_tracking.loading = false
+                  end
+                end
+
                 if stderr and not utils.is_blank(stderr) then
+                  finish()
                   return
                 end
                 if not output or utils.is_blank(output) then
+                  finish()
                   return
                 end
 
                 local ok, resp = pcall(vim.json.decode, output)
                 if not ok or not resp then
+                  finish()
                   return
                 end
-                local node = vim.tbl_get(resp, "data", "repository", "issueOrPullRequest")
+                local node
+                if tracking.kind == "pull_diff" then
+                  node = vim.tbl_get(resp, "data", "repository", "pullRequest")
+                else
+                  node = vim.tbl_get(resp, "data", "repository", "issueOrPullRequest")
+                end
                 if not node then
+                  finish()
+                  return
+                end
+
+                local current_tracking = tracked_buffers[bufnr] or tracking
+                local function tracking_matches(candidate)
+                  return candidate
+                    and candidate.owner == tracking.owner
+                    and candidate.name == tracking.name
+                    and candidate.number == tracking.number
+                    and candidate.kind == tracking.kind
+                    and candidate.hostname == tracking.hostname
+                end
+
+                if not tracking_matches(current_tracking) then
+                  finish()
                   return
                 end
 
                 local remote_updated_at = node.updatedAt or ""
                 local remote_merge_state = node.mergeStateStatus or ""
+                local remote_diff_fp = diff_fingerprint(node)
                 local remote_rollup = vim.tbl_get(node, "commits", "nodes", 1, "commit", "statusCheckRollup")
                 local remote_check_fp = check_fingerprint(remote_rollup)
 
+                if tracking.kind == "pull_diff" and remote_diff_fp == current_tracking.last_diff_fingerprint then
+                  finish()
+                  return
+                end
+
                 if
-                  remote_updated_at == tracking.last_updated_at
-                  and remote_merge_state == tracking.last_merge_state
-                  and remote_check_fp == tracking.last_check_fingerprint
+                  tracking.kind ~= "pull_diff"
+                  and remote_updated_at == current_tracking.last_updated_at
+                  and remote_merge_state == current_tracking.last_merge_state
+                  and remote_check_fp == current_tracking.last_check_fingerprint
                 then
+                  finish()
                   return
                 end
 
                 local octo_buf = octo_buffers[bufnr]
                 if not octo_buf then
+                  finish()
                   return
                 end
 
                 local conf = config.values.poll
                 local function mark_remote_changed()
-                  tracking.remote_changed = true
+                  local latest_tracking = tracked_buffers[bufnr] or current_tracking
+                  if not tracking_matches(latest_tracking) then
+                    finish()
+                    return
+                  end
+                  latest_tracking.remote_changed = true
+                  latest_tracking.loading = false
                   if conf.notify_on_change then
                     utils.info(
                       string.format(
@@ -130,11 +197,19 @@ local function start_timer(interval)
                     bufnr = bufnr,
                     respect_local_changes = true,
                     on_local_changes = mark_remote_changed,
+                    on_error = finish,
                     on_reload = function()
-                      tracking.last_updated_at = remote_updated_at
-                      tracking.last_merge_state = remote_merge_state
-                      tracking.last_check_fingerprint = remote_check_fp
-                      tracking.remote_changed = false
+                      local latest_tracking = tracked_buffers[bufnr] or current_tracking
+                      if not tracking_matches(latest_tracking) then
+                        finish()
+                        return
+                      end
+                      latest_tracking.last_updated_at = remote_updated_at
+                      latest_tracking.last_merge_state = remote_merge_state
+                      latest_tracking.last_check_fingerprint = remote_check_fp
+                      latest_tracking.last_diff_fingerprint = remote_diff_fp
+                      latest_tracking.remote_changed = false
+                      latest_tracking.loading = false
                       if conf.notify_on_refresh then
                         utils.info(
                           string.format("Auto-refreshed %s/%s #%d", tracking.owner, tracking.name, tracking.number)
@@ -213,8 +288,8 @@ function M.track_buffer(bufnr)
     return
   end
 
-  -- Only track issues and pull requests
-  if octo_buf.kind ~= "issue" and octo_buf.kind ~= "pull" then
+  -- Only track issues, pull requests, and pull request diffs
+  if octo_buf.kind ~= "issue" and octo_buf.kind ~= "pull" and octo_buf.kind ~= "pull_diff" then
     return
   end
 
@@ -236,7 +311,9 @@ function M.track_buffer(bufnr)
     last_updated_at = octo_buf:get_updated_at() or "",
     last_merge_state = merge_state,
     last_check_fingerprint = check_fp,
+    last_diff_fingerprint = octo_buf:get_diff_fingerprint(),
     remote_changed = false,
+    loading = false,
   }
 
   -- Auto-start timer if enabled and this is the first tracked buffer

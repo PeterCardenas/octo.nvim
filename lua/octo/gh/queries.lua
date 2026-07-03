@@ -1628,6 +1628,8 @@ query($owner: String!, $name: String!) {
         ... on Issue { updatedAt }
         ... on PullRequest {
           updatedAt
+          baseRefOid
+          headRefOid
           mergeStateStatus
           commits(last: 1) {
             nodes {
@@ -1645,6 +1647,18 @@ query($owner: String!, $name: String!) {
             }
           }
         }
+      }
+    }
+  }
+  ]]
+
+  M.pull_diff_fingerprint = [[
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        updatedAt
+        baseRefOid
+        headRefOid
       }
     }
   }

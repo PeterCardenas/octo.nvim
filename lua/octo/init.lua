@@ -6,6 +6,7 @@ local commands = require "octo.commands"
 local completion = require "octo.completion"
 local folds = require "octo.folds"
 local gh = require "octo.gh"
+local headers = require "octo.gh.headers"
 local queries = require "octo.gh.queries"
 local graphql = require "octo.gh.graphql"
 local picker = require "octo.picker"
@@ -95,6 +96,7 @@ end
 ---@field respect_local_changes? boolean
 ---@field on_local_changes? fun()
 ---@field on_reload? fun()
+---@field on_error? fun()
 
 --- Load issue/pr/repo buffer
 ---@param opts? ReloadOpts
@@ -121,6 +123,62 @@ function M.load_buffer(opts)
   end
   local cursor_pos = win and vim.api.nvim_win_get_cursor(win) or nil
 
+  local function restore_cursor()
+    if cursor_pos then
+      -- Refresh win reference — the window may have closed during the async load
+      if win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+        local lines = vim.api.nvim_buf_line_count(bufnr)
+        local new_cursor_pos = {
+          math.min(cursor_pos[1], lines),
+          math.max(0, cursor_pos[2] - 1),
+        }
+        vim.api.nvim_win_set_cursor(win, new_cursor_pos)
+      end
+    end
+  end
+
+  if kind == "pull_diff" then
+    vim.api.nvim_buf_call(bufnr, function()
+      vim.cmd [[setlocal filetype=diff]]
+      vim.cmd [[setlocal buftype=nofile]]
+      vim.cmd [[setlocal bufhidden=hide]]
+      vim.cmd [[setlocal noswapfile]]
+      vim.cmd [[setlocal readonly]]
+      vim.cmd [[setlocal nomodifiable]]
+    end)
+
+    M.load_pull_diff(repo, id, hostname, function(obj)
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        if opts.on_error then
+          opts.on_error()
+        end
+        return
+      end
+
+      local octo_buf = octo_buffers[bufnr]
+      if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+        if opts.on_local_changes then
+          opts.on_local_changes()
+        end
+        return
+      end
+
+      vim.api.nvim_buf_call(bufnr, function()
+        M.create_pull_diff_buffer(obj, repo, false, hostname)
+        restore_cursor()
+
+        if opts.verbose then
+          utils.info(string.format("Loaded %s/%s/%s", repo, kind, id))
+        end
+      end)
+
+      if opts.on_reload then
+        opts.on_reload()
+      end
+    end, opts.on_error)
+    return
+  end
+
   M.load(repo, kind, id, hostname, function(obj)
     local octo_buf = octo_buffers[bufnr]
     if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
@@ -133,17 +191,7 @@ function M.load_buffer(opts)
     vim.api.nvim_buf_call(bufnr, function()
       M.create_buffer(kind, obj, repo, false, hostname)
 
-      if cursor_pos then
-        -- Refresh win reference — the window may have closed during the async load
-        if win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
-          local lines = vim.api.nvim_buf_line_count(bufnr)
-          local new_cursor_pos = {
-            math.min(cursor_pos[1], lines),
-            math.max(0, cursor_pos[2] - 1),
-          }
-          vim.api.nvim_win_set_cursor(win, new_cursor_pos)
-        end
-      end
+      restore_cursor()
 
       if opts.verbose then
         utils.info(string.format("Loaded %s/%s/%d", repo, kind, id))
@@ -154,6 +202,77 @@ function M.load_buffer(opts)
       opts.on_reload()
     end
   end)
+end
+
+---@param repo string
+---@param number integer|string
+---@param hostname string|nil
+---@param cb fun(obj: table): nil
+---@param on_error? fun()
+function M.load_pull_diff(repo, number, hostname, cb, on_error)
+  local owner, name = utils.split_repo(repo)
+  local function get_diff_fingerprint(pr)
+    if not pr then
+      return ""
+    end
+    local base_ref_oid = utils.is_blank(pr.baseRefOid) and "" or pr.baseRefOid
+    local head_ref_oid = utils.is_blank(pr.headRefOid) and "" or pr.headRefOid
+    if base_ref_oid == "" and head_ref_oid == "" then
+      return ""
+    end
+    return base_ref_oid .. "..." .. head_ref_oid
+  end
+
+  local function fetch_diff(fingerprint, updated_at)
+    gh.api.get {
+      "/repos/{repo}/pulls/{number}",
+      format = { repo = repo, number = number },
+      opts = {
+        headers = { headers.diff },
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function(stderr)
+            utils.print_err(stderr)
+            if on_error then
+              on_error()
+            end
+          end,
+          success = function(diff)
+            cb {
+              id = string.format("%s#%s:diff", repo, number),
+              number = tonumber(number),
+              diff = diff,
+              diffFingerprint = fingerprint,
+              updatedAt = updated_at,
+            }
+          end,
+        },
+      },
+    }
+  end
+
+  gh.api.graphql {
+    query = queries.pull_diff_fingerprint,
+    F = { owner = owner, name = name, number = tonumber(number) },
+    jq = ".",
+    opts = {
+      hostname = hostname,
+      cb = gh.create_callback {
+        failure = function()
+          fetch_diff("", nil)
+        end,
+        success = function(output)
+          local ok, resp = pcall(vim.json.decode, output)
+          local pr = ok and vim.tbl_get(resp, "data", "repository", "pullRequest") or nil
+          if type(pr) ~= "table" then
+            fetch_diff("", nil)
+            return
+          end
+          fetch_diff(get_diff_fingerprint(pr), pr.updatedAt)
+        end,
+      },
+    },
+  }
 end
 
 ---@param repo string
@@ -465,6 +584,37 @@ function M.create_buffer(kind, obj, repo, create, hostname)
       M.navigate_to_anchor(octo_buffer, anchor)
     end)
   end
+end
+
+---@param obj table
+---@param repo string repository full name like "owner/name"
+---@param create boolean whether to create a new buffer
+---@param hostname string|nil optional GitHub Enterprise hostname
+function M.create_pull_diff_buffer(obj, repo, create, hostname)
+  local bufnr ---@type integer
+  if create then
+    bufnr = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(bufnr)
+    if hostname then
+      vim.cmd(string.format("file octo://%s/%s/pull/%d/diff", hostname, repo, obj.number))
+    else
+      vim.cmd(string.format("file octo://%s/pull/%d/diff", repo, obj.number))
+    end
+  else
+    bufnr = vim.api.nvim_get_current_buf()
+  end
+
+  local octo_buffer = OctoBuffer:new {
+    bufnr = bufnr,
+    number = obj.number,
+    repo = repo,
+    node = obj,
+    kind = "pull_diff",
+  }
+
+  octo_buffer:configure()
+  octo_buffer:render_pull_diff()
+  require("octo.polling").track_buffer(bufnr)
 end
 
 --- Navigate to a URL anchor (comment) within an octo buffer
