@@ -223,7 +223,7 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
     return base_ref_oid .. "..." .. head_ref_oid
   end
 
-  local function fetch_diff(fingerprint, updated_at)
+  local function fetch_diff(fingerprint, updated_at, title)
     gh.api.get {
       "/repos/{repo}/pulls/{number}",
       format = { repo = repo, number = number },
@@ -241,6 +241,7 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
             cb {
               id = string.format("%s#%s:diff", repo, number),
               number = tonumber(number),
+              title = title,
               diff = diff,
               diffFingerprint = fingerprint,
               updatedAt = updated_at,
@@ -259,16 +260,16 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
       hostname = hostname,
       cb = gh.create_callback {
         failure = function()
-          fetch_diff("", nil)
+          fetch_diff("", nil, nil)
         end,
         success = function(output)
           local ok, resp = pcall(vim.json.decode, output)
           local pr = ok and vim.tbl_get(resp, "data", "repository", "pullRequest") or nil
           if type(pr) ~= "table" then
-            fetch_diff("", nil)
+            fetch_diff("", nil, nil)
             return
           end
-          fetch_diff(get_diff_fingerprint(pr), pr.updatedAt)
+          fetch_diff(get_diff_fingerprint(pr), pr.updatedAt, pr.title)
         end,
       },
     },

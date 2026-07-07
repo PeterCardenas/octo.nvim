@@ -63,6 +63,13 @@ function OctoBuffer:new(opts)
 
   if opts.kind == "pull_diff" then
     this.kind = "pull_diff"
+    if this.node and type(this.node.title) == "string" then
+      this.titleMetadata = TitleMetadata:new {
+        savedBody = this.node.title,
+        body = this.node.title,
+        dirty = false,
+      }
+    end
   elseif this.node and this.node.commits then
     this.kind = "pull"
     this.taggable_users = { this.node.author.login, "copilot" }

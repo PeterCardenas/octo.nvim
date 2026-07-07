@@ -69,6 +69,7 @@ describe("Octo module:", function()
           data = {
             repository = {
               pullRequest = {
+                title = "Add descriptive pull diff titles",
                 updatedAt = "2026-07-02T00:00:00Z",
                 baseRefOid = "base",
                 headRefOid = "head",
@@ -100,6 +101,7 @@ describe("Octo module:", function()
     assert.are.same("pull_diff", _G.octo_buffers[bufnr].kind)
     assert.are.same("owner/repo", _G.octo_buffers[bufnr].repo)
     assert.are.same(7, _G.octo_buffers[bufnr].number)
+    assert.are.same("Add descriptive pull diff titles", _G.octo_buffers[bufnr].titleMetadata.body)
     assert.are.same(tracked_bufnr, bufnr)
     assert.are.same({
       "diff --git a/file.lua b/file.lua",
