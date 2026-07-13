@@ -6,10 +6,11 @@ local define = vim.api.nvim_create_autocmd
 
 local M = {}
 
-create("octo_autocmds", { clear = true })
 create("octobuffer_autocmds", { clear = false })
 
 function M.setup()
+  create("octo_autocmds", { clear = true })
+
   define({ "BufEnter" }, {
     group = "octo_autocmds",
     pattern = { "octo://*" },
