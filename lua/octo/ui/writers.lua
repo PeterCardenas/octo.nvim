@@ -1666,8 +1666,8 @@ function M.write_comment(bufnr, comment, kind, line)
     end
   end
 
-  local comment_vt_ns = vim.api.nvim_create_namespace ""
-  M.write_virtual_text(bufnr, comment_vt_ns, line - 1, header_vt)
+  local comment_vt_ns = constants.OCTO_COMMENT_VT_NS
+  local vt_extmark = M.write_virtual_text(bufnr, comment_vt_ns, line - 1, header_vt)
 
   if kind == "PullRequestReview" and utils.is_blank(comment.body) then
     -- do not render empty review comments
@@ -1709,7 +1709,7 @@ function M.write_comment(bufnr, comment, kind, line)
       savedBody = comment_body,
       body = comment_body,
       extmark = comment_mark,
-      namespace = comment_vt_ns,
+      vtExtmark = vt_extmark,
       reactionLine = reaction_line,
       viewerCanUpdate = comment.viewerCanUpdate,
       viewerCanDelete = comment.viewerCanDelete,
@@ -1752,7 +1752,7 @@ function M.write_review_decision(bufnr, review)
   vim.list_extend(header_vt, state_bubble)
   table.insert(header_vt, { " " .. utils.format_date(review.createdAt), "OctoDate" })
 
-  local comment_vt_ns = vim.api.nvim_create_namespace ""
+  local comment_vt_ns = constants.OCTO_COMMENT_VT_NS
   M.write_virtual_text(bufnr, comment_vt_ns, line - 1, header_vt)
 end
 
@@ -4007,7 +4007,7 @@ end
 ---@param line integer The line number
 ---@param chunks [string, string][] The virtual text chunks
 function M.write_virtual_text(bufnr, ns, line, chunks)
-  pcall(
+  local ok, extmark_id = pcall(
     vim.api.nvim_buf_set_extmark,
     bufnr,
     ns,
@@ -4015,6 +4015,9 @@ function M.write_virtual_text(bufnr, ns, line, chunks)
     0,
     { virt_text = chunks, virt_text_pos = "overlay", hl_mode = "combine" }
   )
+  if ok then
+    return extmark_id
+  end
 end
 
 ---@param obj any

@@ -123,6 +123,18 @@ function OctoBuffer:clear()
   for _, m in ipairs(extmarks) do
     vim.api.nvim_buf_del_extmark(self.bufnr, constants.OCTO_COMMENT_NS, m[1])
   end
+
+  -- sweep shared virtual-text namespaces that are otherwise never cleared
+  -- per-comment (see OCTO_COMMENT_VT_NS / OCTO_THREAD_NS usage in writers.lua)
+  vim.api.nvim_buf_clear_namespace(self.bufnr, constants.OCTO_COMMENT_VT_NS, 0, -1)
+  vim.api.nvim_buf_clear_namespace(self.bufnr, constants.OCTO_THREAD_NS, 0, -1)
+
+  -- write_title and write_event never clear their own namespace before
+  -- (re-)writing, so every reload (e.g. poll refresh) accumulates orphaned
+  -- extmarks there too. clear() runs first in every render function, which
+  -- then fully repopulates, so sweeping here is safe.
+  vim.api.nvim_buf_clear_namespace(self.bufnr, constants.OCTO_TITLE_NS, 0, -1)
+  vim.api.nvim_buf_clear_namespace(self.bufnr, constants.OCTO_EVENT_VT_NS, 0, -1)
 end
 
 ---Writes a repo to the buffer

@@ -2,17 +2,20 @@ describe("Octo autocommands:", function()
   local autocmds
   local octo
   local original_save_buffer
+  local original_octo_buffers
   local bufnr
 
   before_each(function()
     autocmds = require "octo.autocmds"
     octo = require "octo"
     original_save_buffer = octo.save_buffer
+    original_octo_buffers = _G.octo_buffers
     vim.api.nvim_create_augroup("octo_autocmds", { clear = true })
   end)
 
   after_each(function()
     octo.save_buffer = original_save_buffer
+    _G.octo_buffers = original_octo_buffers
     if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
       pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
     end
@@ -39,5 +42,22 @@ describe("Octo autocommands:", function()
     end)
 
     assert.are.equal(1, save_count)
+  end)
+
+  it("evicts the global buffer cache entry on BufDelete and BufWipeout", function()
+    autocmds.setup()
+
+    -- octo buffers are created listed (see octo.create_buffer), so deleting
+    -- one fires both BufDelete and BufWipeout; use the same listedness here
+    -- so this test exercises both events, not just BufWipeout.
+    bufnr = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(bufnr, "octo://owner/repo/issue/2")
+    _G.octo_buffers = _G.octo_buffers or {}
+    _G.octo_buffers[bufnr] = { bufnr = bufnr }
+
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+
+    assert.is_nil(_G.octo_buffers[bufnr])
+    bufnr = nil
   end)
 end)

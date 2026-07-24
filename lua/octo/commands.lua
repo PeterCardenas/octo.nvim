@@ -1503,7 +1503,9 @@ function M.delete_comment()
     else
       vim.api.nvim_buf_set_lines(buffer.bufnr, start_line - 2, end_line - 1, false, {})
     end
-    vim.api.nvim_buf_clear_namespace(buffer.bufnr, comment.namespace, 0, -1)
+    if comment.vtExtmark then
+      vim.api.nvim_buf_del_extmark(buffer.bufnr, constants.OCTO_COMMENT_VT_NS, comment.vtExtmark)
+    end
     vim.api.nvim_buf_del_extmark(buffer.bufnr, constants.OCTO_COMMENT_NS, comment.extmark)
 
     local comments = buffer.commentsMetadata

@@ -40,6 +40,7 @@ function M.setup()
       -- Explicitly remove the vim.on_key callback for details fold arrow updates
       local on_key_ns = vim.api.nvim_create_namespace("octo_details_on_key_" .. ev.buf)
       vim.on_key(nil, on_key_ns)
+      _G.octo_buffers[ev.buf] = nil
     end,
   })
 

@@ -10,7 +10,7 @@ local M = {}
 ---@field extmark? integer
 ---@field startLine? integer
 ---@field endLine? integer
----@field namespace integer
+---@field vtExtmark? integer
 ---@field reactionGroups table[]
 ---@field reactionLine? integer
 ---@field viewerCanUpdate boolean
@@ -46,7 +46,7 @@ function CommentMetadata:new(opts)
     savedBody = opts.savedBody,
     body = opts.body,
     extmark = opts.extmark,
-    namespace = opts.namespace,
+    vtExtmark = opts.vtExtmark,
     viewerCanUpdate = opts.viewerCanUpdate,
     viewerCanDelete = opts.viewerCanDelete,
     viewerDidAuthor = opts.viewerDidAuthor,
