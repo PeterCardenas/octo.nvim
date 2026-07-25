@@ -216,13 +216,16 @@ function FileEntry:get_buf(split)
 end
 
 ---Fetch file content locally or from GitHub.
+---When called synchronously, returns whether the file is ready to render after
+---waiting. Callers rely on this to decide whether the diff buffers can be loaded.
 ---@param sync boolean
+---@return boolean ready
 function FileEntry:fetch(sync)
   local right_path = self.path
   local left_path = self.path
   local current_review = require("octo.reviews").get_current_review()
   if not current_review then
-    return
+    return false
   end
   local conf = config.values
   if self.left_fetching or self.right_fetching then
@@ -231,7 +234,7 @@ function FileEntry:fetch(sync)
         return self:is_ready_to_render()
       end)
     end
-    return
+    return self:is_ready_to_render()
   end
   self.left_fetching = true
   self.right_fetching = true
@@ -279,6 +282,7 @@ function FileEntry:fetch(sync)
       return self:is_ready_to_render()
     end)
   end
+  return self:is_ready_to_render()
 end
 
 ---Determines whether the file content has been loaded and the file is ready to render
