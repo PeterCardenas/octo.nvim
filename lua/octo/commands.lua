@@ -2418,9 +2418,26 @@ function M.merge_pr(...)
   gh.pr.merge(opts)
 end
 
+---@param number integer
+---@param repo string
+---@param hostname string? GitHub Enterprise hostname, nil for github.com
+local function edit_pull_request_diff(number, repo, hostname)
+  local diff_uri
+  if hostname then
+    diff_uri = string.format("octo://%s/%s/pull/%s/diff", hostname, repo, number)
+  else
+    diff_uri = utils.get_pull_request_diff_uri(number, repo)
+  end
+  vim.cmd("edit " .. diff_uri)
+end
+
 function M.show_pr_diff()
   local buffer = utils.get_current_buffer()
   if not buffer or (not buffer:isPullRequest() and not buffer:isPullRequestDiff()) then
+    -- Not in a pull request buffer, fall back to the current branch's pr
+    utils.get_pull_request_for_current_branch(function(pr)
+      edit_pull_request_diff(pr.number, pr.repo)
+    end)
     return
   end
 
@@ -2429,14 +2446,7 @@ function M.show_pr_diff()
     number = buffer:pullRequest().number
   end
 
-  local hostname = get_hostname_from_buffer(buffer.bufnr)
-  local uri
-  if hostname then
-    uri = string.format("octo://%s/%s/pull/%s/diff", hostname, buffer.repo, number)
-  else
-    uri = utils.get_pull_request_diff_uri(number, buffer.repo)
-  end
-  vim.cmd("edit " .. uri)
+  edit_pull_request_diff(number, buffer.repo, get_hostname_from_buffer(buffer.bufnr))
 end
 
 local function get_reaction_line(bufnr, extmark)

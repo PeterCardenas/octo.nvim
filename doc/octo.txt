@@ -246,7 +246,8 @@ See |octo-command-examples| for examples.
   changes               Show all PR changes (diff hunks).
   diff                  Show PR diff in a readonly
                         `octo://.../pull/{number}/diff`
-                        buffer.
+                        buffer. Outside a PR buffer, shows the diff of the
+                        pull request matching the current branch.
   merge [strategy]      Merge the current PR using the specified strategy.
                         Strategies: `merge`, `rebase`, `squash`, `delete`
   ready                 Mark a draft PR as ready for review.

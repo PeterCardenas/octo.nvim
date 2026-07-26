@@ -4,6 +4,7 @@ describe("Commands module:", function()
   local commands
   local original_input
   local original_get_current_buffer
+  local original_get_pull_request_for_current_branch
   local original_pr
   local original_reload
   local original_cmd
@@ -19,6 +20,7 @@ describe("Commands module:", function()
 
     original_input = vim.ui.input
     original_get_current_buffer = utils.get_current_buffer
+    original_get_pull_request_for_current_branch = utils.get_pull_request_for_current_branch
     original_pr = gh.pr
     original_reload = commands.reload
     original_cmd = vim.cmd
@@ -27,6 +29,7 @@ describe("Commands module:", function()
   after_each(function()
     vim.ui.input = original_input
     utils.get_current_buffer = original_get_current_buffer
+    utils.get_pull_request_for_current_branch = original_get_pull_request_for_current_branch
     gh.pr = original_pr
     commands.reload = original_reload
     vim.cmd = original_cmd
@@ -165,5 +168,50 @@ describe("Commands module:", function()
     commands.show_pr_diff()
 
     assert.are.same("edit octo://ghe/owner/repo/pull/7/diff", cmd)
+  end)
+
+  it("pr diff falls back to the current branch pull request outside octo buffers", function()
+    local cmd
+
+    utils.get_current_buffer = function()
+      return nil
+    end
+    utils.get_pull_request_for_current_branch = function(cb)
+      cb { number = 11, repo = "owner/repo" }
+    end
+    vim.cmd = function(value)
+      cmd = value
+    end
+
+    commands.show_pr_diff()
+
+    assert.are.same("edit octo://owner/repo/pull/11/diff", cmd)
+  end)
+
+  it("pr diff falls back to the current branch pull request in non-PR octo buffers", function()
+    local cmd
+
+    utils.get_current_buffer = function()
+      return {
+        repo = "owner/repo",
+        bufnr = 42,
+        isPullRequest = function()
+          return false
+        end,
+        isPullRequestDiff = function()
+          return false
+        end,
+      }
+    end
+    utils.get_pull_request_for_current_branch = function(cb)
+      cb { number = 11, repo = "other/repo" }
+    end
+    vim.cmd = function(value)
+      cmd = value
+    end
+
+    commands.show_pr_diff()
+
+    assert.are.same("edit octo://other/repo/pull/11/diff", cmd)
   end)
 end)
