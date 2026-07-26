@@ -350,6 +350,22 @@ describe("string methods", function()
   end)
 end)
 
+describe("path_dirname", function()
+  local cases = {
+    { "src/core/engine.lua", "src/core" },
+    { "README.md", "" },
+    { "a/b/c/d.txt", "a/b/c" },
+    { "docs/", "" },
+    { "nested/dir/", "nested" },
+  }
+
+  for _, case in ipairs(cases) do
+    it(("returns %q for %q"):format(case[2], case[1]), function()
+      eq(case[2], this.path_dirname(case[1]))
+    end)
+  end
+end)
+
 describe("generate_position2line_map", function()
   local cases = {
     { "parses explicit single-line counts", "@@ -12,1 +12,1 @@" },

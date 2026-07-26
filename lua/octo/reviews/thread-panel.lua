@@ -62,7 +62,7 @@ function M.show_review_threads(jump_to_buffer)
 
   -- render thread buffer if there are threads at the current line
   if #threads_at_cursor > 0 then
-    review.layout:ensure_layout()
+    review.layout:ensure_both_windows()
     local alt_win = file:get_alternative_win(split)
     if vim.api.nvim_win_is_valid(alt_win) then
       local thread_buffer = M.create_thread_buffer(threads_at_cursor, pr.repo, pr.number, split, file.path)
@@ -99,6 +99,10 @@ end
 function M.hide_thread_buffer(split, file)
   local alt_buf = file:get_alternative_buf(split)
   local alt_win = file:get_alternative_win(split)
+  -- A collapsed pane has no buffer to restore the diff into.
+  if not alt_buf then
+    return
+  end
   if vim.api.nvim_win_is_valid(alt_win) and vim.api.nvim_buf_is_valid(alt_buf) then
     local current_alt_bufnr = vim.api.nvim_win_get_buf(alt_win)
     if current_alt_bufnr ~= alt_buf then

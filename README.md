@@ -319,6 +319,8 @@ require"octo".setup {
   reviews = {
     auto_show_threads = true, -- automatically show comment threads on cursor move
     focus = "right", -- focus right buffer on diff open
+    jump_to_first_change = false, -- place the cursor on the first changed line when opening a file
+    hide_empty_pane = false, -- for added/deleted files, show only the side that has content
   },
   runs = {
     icons = {
@@ -339,8 +341,11 @@ require"octo".setup {
     use_branch_name_as_title = false, -- sets branch name to be the name for the PR
   },
   file_panel = {
-    size = 10, -- changed files panel rows
+    size = 10, -- changed files panel rows, used when `position` is "bottom" or "top"
     use_icons = true, -- use web-devicons in file panel (if false, nvim-web-devicons does not need to be installed)
+    position = "bottom", -- where to put the changed files panel: "bottom", "top", "left" or "right"
+    width = 35, -- changed files panel columns, used when `position` is "left" or "right"
+    listing_style = "list", -- "list" shows full paths, "tree" groups files under their directory
   },
   colors = { -- used for highlight groups (see Colors section below)
     white = "#ffffff",

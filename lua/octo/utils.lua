@@ -1537,6 +1537,19 @@ function M.path_basename(path)
   return path:sub(i + 1, #path)
 end
 
+---Get the directory portion of the given path, without a trailing separator.
+---Returns an empty string for paths that have no directory component.
+---@param path string
+---@return string
+function M.path_dirname(path)
+  path = M.path_remove_trailing(path)
+  local i = path:match("^.*()" .. path_sep)
+  if not i then
+    return ""
+  end
+  return path:sub(1, i - 1)
+end
+
 ---@param path string
 ---@return string?
 function M.path_extension(path)

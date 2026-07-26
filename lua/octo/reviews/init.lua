@@ -497,7 +497,7 @@ function Review:add_comment(isSuggestion)
     diff_hunk = "@@ " .. diff_hunk
   end
 
-  self.layout:ensure_layout()
+  self.layout:ensure_both_windows()
 
   local alt_win = file:get_alternative_win(split)
   if vim.api.nvim_win_is_valid(alt_win) then
@@ -581,7 +581,7 @@ function Review:add_file_comment()
     return
   end
 
-  self.layout:ensure_layout()
+  self.layout:ensure_both_windows()
 
   local alt_win = file:get_alternative_win(split)
   if vim.api.nvim_win_is_valid(alt_win) then

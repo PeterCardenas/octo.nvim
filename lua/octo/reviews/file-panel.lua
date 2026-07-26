@@ -8,7 +8,6 @@ local renderer = require "octo.reviews.renderer"
 local M = {}
 
 local name_counter = 1
-local header_size = 1
 
 ---@class FilePanel
 ---@field files FileEntry[]
@@ -16,6 +15,11 @@ local header_size = 1
 ---@field bufid integer
 ---@field winid integer
 ---@field render_data RenderData
+--- Maps a 0-indexed buffer line to the file rendered on it. Lines that hold
+--- headers, directory groups or footers are absent, so callers can tell
+--- "no file here" apart from "the last file".
+---@field line_to_file table<integer, FileEntry>
+---@field file_to_line table<FileEntry, integer>
 local FilePanel = {}
 FilePanel.__index = FilePanel
 
@@ -62,6 +66,8 @@ function FilePanel:new(files)
   local this = {
     files = files,
     size = conf.file_panel.size,
+    line_to_file = {},
+    file_to_line = {},
   }
 
   setmetatable(this, self)
@@ -99,12 +105,16 @@ function FilePanel:open()
 
   local conf = config.values
   self.size = conf.file_panel.size
-  --vim.cmd("wincmd H")
-  --vim.cmd("vsp")
-  --vim.cmd("vertical resize " .. self.width)
-  vim.cmd "sp"
-  vim.cmd "wincmd J"
-  vim.cmd("resize " .. self.size)
+  local position = conf.file_panel.position
+  if position == "left" or position == "right" then
+    vim.cmd "vsp"
+    vim.cmd(position == "left" and "wincmd H" or "wincmd L")
+    vim.cmd("vertical resize " .. conf.file_panel.width)
+  else
+    vim.cmd "sp"
+    vim.cmd(position == "top" and "wincmd K" or "wincmd J")
+    vim.cmd("resize " .. self.size)
+  end
   self.winid = vim.api.nvim_get_current_win()
 
   vim.cmd("buffer " .. self.bufid)
@@ -113,6 +123,8 @@ function FilePanel:open()
     vim.api.nvim_set_option_value(k, v, { win = self.winid, scope = "local" })
   end
 
+  -- Evens out the two diff windows. `winfixwidth`/`winfixheight` keep this from
+  -- undoing the panel size set above.
   vim.cmd ":wincmd ="
 end
 
@@ -166,14 +178,26 @@ function FilePanel:init_buffer()
   return bn
 end
 
+---Get the file rendered on the cursor line.
+---In "tree" listing style the cursor can sit on a directory group line, which
+---owns no file; in that case fall back to the nearest file below it so that
+---pressing <cr> on a directory still does something useful.
+---@return FileEntry|nil
 function FilePanel:get_file_at_cursor()
   if not (self:is_open() and self:buf_loaded()) then
     return
   end
 
   local cursor = vim.api.nvim_win_get_cursor(self.winid)
-  local line = cursor[1]
-  return self.files[utils.clamp(line - header_size, 1, #self.files)]
+  local line = cursor[1] - 1
+  local last_line = vim.api.nvim_buf_line_count(self.bufid) - 1
+  for candidate = line, last_line do
+    local file = self.line_to_file[candidate]
+    if file then
+      return file
+    end
+  end
+  return nil
 end
 
 ---Mark the given file as selected (extmark only, does not move cursor).
@@ -183,16 +207,14 @@ function FilePanel:mark_selected(file)
   end
 
   vim.api.nvim_buf_clear_namespace(self.bufid, constants.OCTO_FILE_PANEL_NS, 0, -1)
-  for i, f in ipairs(self.files) do
-    if f == file then
-      local line = i + header_size - 1
-      vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line, 0, {
-        end_line = line + 1,
-        hl_group = "OctoFilePanelSelectedFile",
-      })
-      break
-    end
+  local line = self.file_to_line[file]
+  if not line then
+    return
   end
+  vim.api.nvim_buf_set_extmark(self.bufid, constants.OCTO_FILE_PANEL_NS, line, 0, {
+    end_line = line + 1,
+    hl_group = "OctoFilePanelSelectedFile",
+  })
 end
 
 ---Move the file panel cursor to the given file's line.
@@ -201,40 +223,41 @@ function FilePanel:set_cursor_to_file(file)
     return
   end
 
-  for i, f in ipairs(self.files) do
-    if f == file then
-      pcall(vim.api.nvim_win_set_cursor, self.winid, { i + header_size, 0 })
-      break
+  local line = self.file_to_line[file]
+  if line then
+    pcall(vim.api.nvim_win_set_cursor, self.winid, { line + 1, 0 })
+  end
+end
+
+---Move the cursor to the file rendered before the one under the cursor.
+---Skips directory group lines so `j`/`k` always land on a file.
+---@param step -1|1
+function FilePanel:step_cursor(step)
+  if not (self:is_open() and self:buf_loaded()) or #self.files == 0 then
+    return
+  end
+
+  local cur = self:get_file_at_cursor()
+  local cur_line = cur and self.file_to_line[cur]
+  if not cur_line then
+    return
+  end
+
+  local last_line = vim.api.nvim_buf_line_count(self.bufid) - 1
+  for line = cur_line + step, step > 0 and last_line or 0, step do
+    if self.line_to_file[line] then
+      pcall(vim.api.nvim_win_set_cursor, self.winid, { line + 1, 0 })
+      return
     end
   end
 end
 
 function FilePanel:highlight_prev_file()
-  if not (self:is_open() and self:buf_loaded()) or #self.files == 0 then
-    return
-  end
-
-  local cur = self:get_file_at_cursor()
-  for i, f in ipairs(self.files) do
-    if f == cur then
-      local line = utils.clamp(i + header_size - 1, header_size + 1, #self.files + header_size)
-      pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
-    end
-  end
+  self:step_cursor(-1)
 end
 
 function FilePanel:highlight_next_file()
-  if not (self:is_open() and self:buf_loaded()) or #self.files == 0 then
-    return
-  end
-
-  local cur = self:get_file_at_cursor()
-  for i, f in ipairs(self.files) do
-    if f == cur then
-      local line = utils.clamp(i + header_size + 1, header_size, #self.files + header_size)
-      pcall(vim.api.nvim_win_set_cursor, self.winid, { line, 0 })
-    end
-  end
+  self:step_cursor(1)
 end
 
 function FilePanel:render()
@@ -248,6 +271,8 @@ function FilePanel:render()
   end
 
   self.render_data:clear()
+  self.line_to_file = {}
+  self.file_to_line = {}
   local line_idx = 0
   local lines = self.render_data.lines
   local function add_hl(...)
@@ -276,6 +301,19 @@ function FilePanel:render()
   table.insert(lines, s)
   line_idx = line_idx + 1
 
+  local tree = conf.file_panel.listing_style == "tree"
+
+  --- The path shown on a file's own line. In "tree" style the directory is
+  --- hoisted into a group line above it, so only the basename is repeated.
+  ---@param file FileEntry
+  ---@return string
+  local function display_path(file)
+    if not tree then
+      return file.path
+    end
+    return file.basename
+  end
+
   local max_changes_length = 0
   local max_path_length = 0
   for _, file in ipairs(self.files) do
@@ -283,10 +321,26 @@ function FilePanel:render()
     ---@type integer
     max_changes_length = math.max(max_changes_length, string.len(diffstat.total))
     ---@type integer
-    max_path_length = math.max(max_path_length, string.len(file.path))
+    max_path_length = math.max(max_path_length, string.len(display_path(file)))
   end
 
+  ---@type string|nil
+  local current_dir = nil
   for _, file in ipairs(self.files) do
+    if tree then
+      -- One header per directory. `Layout:sort_files_by_directory` guarantees
+      -- files of the same directory are adjacent, so a change of directory means
+      -- a new group.
+      local dir = utils.path_dirname(file.path)
+      if dir ~= current_dir then
+        current_dir = dir
+        local group = dir == "" and "." or dir
+        add_hl("OctoFilePanelPath", line_idx, 0, #group)
+        table.insert(lines, group)
+        line_idx = line_idx + 1
+      end
+    end
+
     local offset = 0
     s = ""
 
@@ -334,15 +388,16 @@ function FilePanel:render()
     offset = offset + #icon
 
     -- file path
-    add_hl("OctoFilePanelFileName", line_idx, offset, offset + #file.path)
-    s = s .. icon .. file.path
+    local path = display_path(file)
+    add_hl("OctoFilePanelFileName", line_idx, offset, offset + #path)
+    s = s .. icon .. path
 
     -- thread counts
     local active, resolved, outdated, pending = M.thread_counts(file.path)
     if active > 0 or resolved > 0 or pending > 0 or outdated > 0 then
       -- white space to align count columns
       offset = #s + 1
-      s = s .. string.rep(" ", max_path_length + 1 - string.len(file.path))
+      s = s .. string.rep(" ", max_path_length + 1 - string.len(path))
     end
     local segments = {
       { count = active, prefix = "active: ", center_hl = "OctoBubbleBlue", delimiter_hl = "OctoBubbleDelimiterBlue" },
@@ -398,6 +453,8 @@ function FilePanel:render()
       end
     end
 
+    self.line_to_file[line_idx] = file
+    self.file_to_line[file] = line_idx
     table.insert(lines, s)
     line_idx = line_idx + 1
   end

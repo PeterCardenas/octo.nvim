@@ -27,6 +27,10 @@ local win_reset_opts = {
 ---@field files FileEntry[]
 ---@field selected_file_idx integer
 ---@field ready boolean
+--- When `reviews.hide_empty_pane` is on and the selected file only exists on one
+--- side, this holds the side that is still visible and the other window is
+--- closed. `nil` means both diff windows are showing.
+---@field single_side OctoSplit|nil
 local Layout = {}
 Layout.__index = Layout
 
@@ -44,6 +48,7 @@ function Layout:new(opt)
     files = opt.files,
     selected_file_idx = 1,
     ready = false,
+    single_side = nil,
   }
   this.file_panel = FilePanel:new(this.files)
   setmetatable(this, self)
@@ -80,6 +85,8 @@ function Layout:close()
 end
 
 function Layout:init_layout()
+  -- Both diff windows exist again after this runs.
+  self.single_side = nil
   self.left_winid = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_hl_ns(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS)
   vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffText", { background = "#5d425a" })
@@ -100,6 +107,72 @@ function Layout:get_current_file()
     return self.files[utils.clamp(self.selected_file_idx, 1, #self.files)]
   end
   return nil
+end
+
+---Whether a fetched side holds no content. GitHub returns a single empty line
+---for the missing side of an added or deleted file.
+---@param lines string[]
+---@return boolean
+local function is_empty_side(lines)
+  return #lines == 0 or (#lines == 1 and lines[1] == "")
+end
+
+---The only side worth showing for the given file, or nil when both sides have
+---content and a real diff should be rendered.
+---@param file FileEntry
+---@return OctoSplit|nil
+local function sole_populated_side(file)
+  if not config.values.reviews.hide_empty_pane then
+    return nil
+  end
+  -- A file with no content on either side (for example a pure rename) still
+  -- reads better as a diff of the two placeholder buffers.
+  local left_empty = is_empty_side(file.left_lines)
+  local right_empty = is_empty_side(file.right_lines)
+  if left_empty == right_empty then
+    return nil
+  end
+  return left_empty and "right" or "left"
+end
+
+---Show only `side`, or both diff windows when `side` is nil.
+---Closing a window invalidates its id, so `single_side` records the intent and
+---`validate_layout` consults it; restoring then goes through the existing
+---layout recovery path.
+---@param side OctoSplit|nil
+function Layout:set_single_side(side)
+  if self.single_side == side then
+    return
+  end
+
+  if side then
+    local hidden_winid = side == "left" and self.right_winid or self.left_winid
+    self.single_side = side
+    if vim.api.nvim_win_is_valid(hidden_winid) and #vim.api.nvim_tabpage_list_wins(self.tabpage) > 1 then
+      pcall(vim.api.nvim_win_hide, hidden_winid)
+    end
+    return
+  end
+
+  self.single_side = nil
+  self:ensure_layout()
+end
+
+--- Place the cursor on the first changed line of the focused diff window.
+--- Vim's `]c` moves to the *next* change, so only use it when line 1 is not
+--- already part of one.
+---@param winid integer
+local function jump_to_first_change(winid)
+  if not vim.api.nvim_win_is_valid(winid) then
+    return
+  end
+  vim.api.nvim_win_call(winid, function()
+    pcall(vim.api.nvim_win_set_cursor, winid, { 1, 0 })
+    if vim.fn.diff_hlID(1, 1) <= 0 then
+      pcall(vim.cmd, "normal! ]c")
+    end
+    pcall(vim.cmd, "normal! zz")
+  end)
 end
 
 --- Sets the currently selected file
@@ -132,25 +205,59 @@ function Layout:set_current_file(file, focus)
       cur:detach_buffers()
     end
     vim.cmd [[diffoff!]]
+
+    -- Decided before loading buffers so the hidden window never receives one.
+    self:set_single_side(sole_populated_side(file))
+
     self.files[self.selected_file_idx] = file
-    file:load_buffers(self.left_winid, self.right_winid)
+    file:load_buffers(self.left_winid, self.right_winid, self.single_side)
 
     -- Mark and move cursor to selected file in file panel
     self.file_panel:mark_selected(self:get_current_file())
     self.file_panel:set_cursor_to_file(self:get_current_file())
 
     -- Set focus on specified window
-    focus = focus or config.values.reviews.focus
-    if focus == "right" then
-      vim.api.nvim_set_current_win(self.right_winid)
-    else
-      vim.api.nvim_set_current_win(self.left_winid)
+    focus = self.single_side or focus or config.values.reviews.focus
+    local focus_winid = focus == "right" and self.right_winid or self.left_winid
+    vim.api.nvim_set_current_win(focus_winid)
+
+    if config.values.reviews.jump_to_first_change and not self.single_side then
+      jump_to_first_change(focus_winid)
+    end
+  end
+end
+
+---Order files so that every directory forms a single contiguous run.
+---The panel renders `files` in order, so sorting here is what lets the "tree"
+---listing style emit one group header per directory, and keeps `]q`/`[q` walking
+---the panel from top to bottom.
+function Layout:sort_files_by_directory()
+  local current = self:get_current_file()
+
+  table.sort(self.files, function(a, b)
+    local a_dir, b_dir = utils.path_dirname(a.path), utils.path_dirname(b.path)
+    if a_dir ~= b_dir then
+      return a_dir < b_dir
+    end
+    return a.basename < b.basename
+  end)
+
+  -- Sorting invalidates the stored index, so recover the selection by identity.
+  if current then
+    for i, file in ipairs(self.files) do
+      if file == current then
+        self.selected_file_idx = i
+        break
+      end
     end
   end
 end
 
 ---Update the file list, including stats and status for all files.
 function Layout:update_files()
+  if config.values.file_panel.listing_style == "tree" then
+    self:sort_files_by_directory()
+  end
   self.file_panel.files = self.files
   self.file_panel:render()
   self.file_panel:redraw()
@@ -250,6 +357,12 @@ function Layout:validate_layout()
     left_win = vim.api.nvim_win_is_valid(self.left_winid),
     right_win = vim.api.nvim_win_is_valid(self.right_winid),
   }
+  -- A deliberately collapsed side is not a broken layout.
+  if self.single_side == "left" then
+    state.right_win = true
+  elseif self.single_side == "right" then
+    state.left_win = true
+  end
   state.valid = state.tabpage and state.left_win and state.right_win
   return state
 end
@@ -295,6 +408,27 @@ function Layout:ensure_layout()
   end
 end
 
+---Ensure both diff windows exist, undoing any `reviews.hide_empty_pane` collapse.
+---Comment editors and thread buffers render into the window opposite the diff,
+---so callers that need that window must restore the two window layout first.
+function Layout:ensure_both_windows()
+  -- Recovering a window leaves the file panel focused, but callers here are
+  -- acting on the diff buffer the user is sitting in, so restore their window.
+  local current_winid = vim.api.nvim_get_current_win()
+  self:set_single_side(nil)
+  self:ensure_layout()
+
+  -- The entry cached the windows it was loaded into, and the restored one is new.
+  local file = self:get_current_file()
+  if file then
+    file:set_windows(self.left_winid, self.right_winid)
+  end
+
+  if vim.api.nvim_win_is_valid(current_winid) then
+    vim.api.nvim_set_current_win(current_winid)
+  end
+end
+
 ---Ensures there are files to load, and loads the null buffer otherwise.
 ---@return boolean
 function Layout:file_safeguard()
@@ -303,6 +437,8 @@ function Layout:file_safeguard()
     if cur then
       cur:detach_buffers()
     end
+    -- Show the placeholder in the regular two window layout.
+    self:set_single_side(nil)
     file_entry.load_null_buffers(self.left_winid, self.right_winid)
     return true
   end

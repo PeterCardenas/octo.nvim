@@ -171,6 +171,15 @@ function FileEntry:destroy()
   end
 end
 
+---Point the entry at the given diff windows.
+---Used when the layout recreates a window without reloading the buffers.
+---@param left_winid integer
+---@param right_winid integer
+function FileEntry:set_windows(left_winid, right_winid)
+  self.left_winid = left_winid
+  self.right_winid = right_winid
+end
+
 ---Get the window id for the alternative side of the provided buffer
 ---@param split OctoSplit
 ---@return integer
@@ -294,7 +303,8 @@ end
 ---Load the buffers.
 ---@param left_winid integer
 ---@param right_winid integer
-function FileEntry:load_buffers(left_winid, right_winid)
+---@param single_side OctoSplit|nil only load this side; the other window is closed
+function FileEntry:load_buffers(left_winid, right_winid, single_side)
   local empty_files = #self.left_lines == 0 and #self.right_lines == 0
   local splits = {
     {
@@ -312,6 +322,11 @@ function FileEntry:load_buffers(left_winid, right_winid)
       binary = self.right_binary == true or empty_files,
     },
   }
+  if single_side then
+    splits = vim.tbl_filter(function(split)
+      return split.pos == single_side
+    end, splits)
+  end
 
   -- configure diff buffers
   for _, split in ipairs(splits) do
@@ -335,39 +350,53 @@ function FileEntry:load_buffers(left_winid, right_winid)
       table.insert(self.associated_bufs, split.bufid)
       ---@diagnostic disable-next-line: no-unknown
       self[split.pos .. "_bufid"] = split.bufid
-      ---@diagnostic disable-next-line: no-unknown
-      self[split.pos .. "_winid"] = split.winid
     end
+
+    -- Always refresh the window: the layout may have recreated it since the
+    -- buffers were first loaded, which would leave a stale id behind.
+    ---@diagnostic disable-next-line: no-unknown
+    self[split.pos .. "_winid"] = split.winid
 
     M._configure_buffer(split.bufid)
     vim.api.nvim_win_set_buf(split.winid, split.bufid)
   end
 
   -- Set this to disable LSPs from attempting to attach to this buffer
-  vim.api.nvim_set_option_value("buftype", "nofile", { buf = self.left_bufid })
+  if self.left_bufid then
+    vim.api.nvim_set_option_value("buftype", "nofile", { buf = self.left_bufid })
+  end
 
   -- show thread signs and virtual text
   self:place_signs()
 
   -- configure windows
-  M._configure_windows(left_winid, right_winid)
+  for _, split in ipairs(splits) do
+    M._configure_windows(split.winid)
+  end
 
-  self:show_diff()
+  self:show_diff(single_side)
 end
 
 -- activate the diff between right and left panels
-function FileEntry:show_diff()
-  for _, bufid in ipairs { self.left_bufid, self.right_bufid } do
+---@param single_side OctoSplit|nil when set, only that side is shown and there is nothing to diff
+function FileEntry:show_diff(single_side)
+  local bufids = { self.left_bufid, self.right_bufid }
+  if single_side then
+    bufids = { self:get_buf(single_side) }
+  end
+  for _, bufid in ipairs(bufids) do
     vim.api.nvim_buf_call(bufid, function()
       -- Only trigger ft detect event for non local files to avoid triggering ftplugins for nothing
       if vim.fn.bufname(bufid):match "octo://*" then
         pcall(vim.cmd.filetype, [[detect]])
       end
       pcall(vim.cmd.doau, [[BufEnter]])
-      pcall(vim.cmd.diffthis)
-      -- Scroll to trigger the scrollbind and sync the windows. This works more
-      -- consistently than calling `:syncbind`.
-      pcall(vim.cmd.exec, [["normal! \<c-y>"]])
+      if not single_side then
+        pcall(vim.cmd.diffthis)
+        -- Scroll to trigger the scrollbind and sync the windows. This works more
+        -- consistently than calling `:syncbind`.
+        pcall(vim.cmd.exec, [["normal! \<c-y>"]])
+      end
     end)
   end
 end
@@ -429,6 +458,10 @@ function FileEntry:place_signs()
     },
   }
   for _, split in ipairs(splits) do
+    -- The buffer for a collapsed side is never created, so there is nothing to sign.
+    if not split.bufnr then
+      goto continue_split
+    end
     signs.unplace(split.bufnr)
     vim.api.nvim_buf_clear_namespace(split.bufnr, constants.OCTO_REVIEW_COMMENTS_NS, 0, -1)
 
@@ -503,6 +536,7 @@ function FileEntry:place_signs()
       end
       ::continue_thread::
     end
+    ::continue_split::
   end
 end
 
@@ -604,11 +638,10 @@ function M._get_null_buffer()
   return M._null_buffer[msg]
 end
 
-function M._configure_windows(left_winid, right_winid)
-  for _, id in ipairs { left_winid, right_winid } do
-    for k, v in pairs(FileEntry.winopts) do
-      vim.api.nvim_set_option_value(k, v, { win = id, scope = "local" })
-    end
+---@param winid integer
+function M._configure_windows(winid)
+  for k, v in pairs(FileEntry.winopts) do
+    vim.api.nvim_set_option_value(k, v, { win = winid, scope = "local" })
   end
 end
 

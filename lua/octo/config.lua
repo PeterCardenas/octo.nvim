@@ -60,9 +60,15 @@ local M = {}
 ---@field dark_blue string
 ---@field purple string
 
+---@alias OctoFilePanelPosition "bottom" | "top" | "left" | "right"
+---@alias OctoFilePanelListingStyle "list" | "tree"
+
 ---@class OctoConfigFilePanel
 ---@field size number
 ---@field use_icons boolean
+---@field position OctoFilePanelPosition
+---@field width number
+---@field listing_style OctoFilePanelListingStyle
 
 ---@class OctoConfigUi
 ---@field use_signcolumn boolean
@@ -75,6 +81,8 @@ local M = {}
 ---@class OctoConfigReviews
 ---@field auto_show_threads boolean
 ---@field focus OctoSplit
+---@field jump_to_first_change boolean
+---@field hide_empty_pane boolean
 
 ---@class OctoConfigDiscussions
 ---@field order_by OctoConfigOrderBy
@@ -294,6 +302,8 @@ function M.get_default_values()
     reviews = {
       auto_show_threads = true, -- automatically show comment threads on cursor move
       focus = "right", -- focus right buffer on diff open
+      jump_to_first_change = false, -- place the cursor on the first changed line when opening a file
+      hide_empty_pane = false, -- for added/deleted files, show only the side that has content
     },
     runs = {
       icons = {
@@ -314,8 +324,11 @@ function M.get_default_values()
       use_branch_name_as_title = false, -- sets branch name to be the name for the PR
     },
     file_panel = {
-      size = 10, -- changed files panel rows
+      size = 10, -- changed files panel rows, used when `position` is "bottom" or "top"
       use_icons = true, -- use web-devicons in file panel (if false, nvim-web-devicons does not need to be installed)
+      position = "bottom", -- where to put the changed files panel: "bottom", "top", "left" or "right"
+      width = 35, -- changed files panel columns, used when `position` is "left" or "right"
+      listing_style = "list", -- "list" shows full paths, "tree" groups files under their directory
     },
     colors = { -- used for highlight groups (see Colors section below)
       white = "#ffffff",
@@ -699,6 +712,8 @@ function M.validate_config()
 
     validate_type(config.reviews.auto_show_threads, "reviews.auto_show_threads", "boolean")
     validate_string_enum(config.reviews.focus, "reviews.focus", { "right", "left" })
+    validate_type(config.reviews.jump_to_first_change, "reviews.jump_to_first_change", "boolean")
+    validate_type(config.reviews.hide_empty_pane, "reviews.hide_empty_pane", "boolean")
   end
 
   local function validate_pull_requests()
@@ -803,6 +818,9 @@ function M.validate_config()
     if validate_type(config.file_panel, "file_panel", "table") then
       validate_type(config.file_panel.size, "file_panel.size", "number")
       validate_type(config.file_panel.use_icons, "file_panel.use_icons", "boolean")
+      validate_type(config.file_panel.width, "file_panel.width", "number")
+      validate_string_enum(config.file_panel.position, "file_panel.position", { "bottom", "top", "left", "right" })
+      validate_string_enum(config.file_panel.listing_style, "file_panel.listing_style", { "list", "tree" })
     end
     validate_aliases()
     validate_pickers()
