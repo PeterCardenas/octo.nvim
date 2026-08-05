@@ -1008,10 +1008,19 @@ end
 ---@param cb fun(results: any[], page: any): nil
 function M.callback_per_page(text, cb)
   local results = {}
-  local page_output = vim.split(text, "\n")
-  for _, page in ipairs(page_output) do
-    local decoded_page = vim.json.decode(page)
-    cb(results, decoded_page)
+  local page = ""
+  for _, line in ipairs(vim.split(text, "\n")) do
+    if not M.is_blank(line) then
+      page = page .. line
+      local ok, decoded_page = pcall(vim.json.decode, page)
+      if ok then
+        cb(results, decoded_page)
+        page = ""
+      end
+    end
+  end
+  if not M.is_blank(page) then
+    cb(results, vim.json.decode(page))
   end
   return results
 end

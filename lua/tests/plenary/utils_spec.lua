@@ -137,6 +137,22 @@ describe("get_pages", function()
     local actual = this.get_pages(text)
     eq(actual, { { 1, 2, 3 }, { 4, 5, 6 }, { 7, 8, 9 } })
   end)
+  it("handles pretty-printed pages", function()
+    local text = vim.trim [[
+      {
+        "data": {"page": 1}
+      }
+      {
+        "data": {"page": 2}
+      }
+    ]]
+
+    local actual = this.get_pages(text)
+    eq(actual, {
+      { data = { page = 1 } },
+      { data = { page = 2 } },
+    })
+  end)
 end)
 describe("get_flatten_pages", function()
   it("handles empty single page", function()
