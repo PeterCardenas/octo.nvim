@@ -655,9 +655,13 @@ function M.checkout_pr(pr_number)
   gh.pr.checkout {
     pr_number,
     opts = {
-      cb = gh.create_callback {
-        success = branch_switch_message,
-      },
+      cb = function(_, stderr, status)
+        if status == 0 then
+          branch_switch_message()
+        else
+          M.error(stderr)
+        end
+      end,
     },
   }
 end

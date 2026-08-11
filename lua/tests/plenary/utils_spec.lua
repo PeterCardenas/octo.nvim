@@ -1,6 +1,75 @@
 ---@diagnostic disable
 local this = require "octo.utils"
+local gh = require "octo.gh"
 local eq = assert.are.same
+
+describe("checkout_pr:", function()
+  local original_pr
+  local original_info
+  local original_error
+  local original_system
+
+  before_each(function()
+    original_pr = gh.pr
+    original_info = this.info
+    original_error = this.error
+    original_system = vim.fn.system
+  end)
+
+  after_each(function()
+    gh.pr = original_pr
+    this.info = original_info
+    this.error = original_error
+    vim.fn.system = original_system
+  end)
+
+  it("reports checkout success without an error", function()
+    local info_messages = {}
+    local error_messages = {}
+
+    gh.pr = {
+      checkout = function(opts)
+        opts.opts.cb("", "", 0)
+      end,
+    }
+    vim.fn.system = function()
+      return "feature\n"
+    end
+    this.info = function(message)
+      table.insert(info_messages, message)
+    end
+    this.error = function(message)
+      table.insert(error_messages, message)
+    end
+
+    this.checkout_pr(1515)
+
+    eq({ "Switched to feature" }, info_messages)
+    eq({}, error_messages)
+  end)
+
+  it("reports checkout failure without an info message", function()
+    local info_messages = {}
+    local error_messages = {}
+
+    gh.pr = {
+      checkout = function(opts)
+        opts.opts.cb("", "checkout failed", 1)
+      end,
+    }
+    this.info = function(message)
+      table.insert(info_messages, message)
+    end
+    this.error = function(message)
+      table.insert(error_messages, message)
+    end
+
+    this.checkout_pr(1515)
+
+    eq({}, info_messages)
+    eq({ "checkout failed" }, error_messages)
+  end)
+end)
 
 describe("Utils module:", function()
   describe("setup", function() --------------------------------------------------
