@@ -2149,7 +2149,7 @@ function M.save_pr(opts)
       return { { 0, #input, "String" } }
     end,
   }
-  if opts.info.isFork and opts.candidates[repo_idx] == opts.info.parent.nameWithOwner then
+  if opts.info.isFork and utils.repos_equal(opts.candidates[repo_idx], opts.info.parent.nameWithOwner) then
     head_ref_name = vim.g.octo_viewer .. ":" .. head_ref_name
   end
   vim.fn.inputrestore()

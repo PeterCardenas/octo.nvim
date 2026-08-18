@@ -116,9 +116,8 @@ local function start_timer(interval)
               hostname = tracking.hostname,
               cb = function(output, stderr)
                 local function finish()
-                  local current_tracking = tracked_buffers[bufnr]
-                  if current_tracking then
-                    current_tracking.loading = false
+                  if tracked_buffers[bufnr] == tracking then
+                    tracking.loading = false
                   end
                 end
 
@@ -147,17 +146,9 @@ local function start_timer(interval)
                   return
                 end
 
-                local current_tracking = tracked_buffers[bufnr] or tracking
-                local function tracking_matches(candidate)
-                  return candidate
-                    and candidate.owner == tracking.owner
-                    and candidate.name == tracking.name
-                    and candidate.number == tracking.number
-                    and candidate.kind == tracking.kind
-                    and candidate.hostname == tracking.hostname
-                end
+                local current_tracking = tracked_buffers[bufnr]
 
-                if not tracking_matches(current_tracking) then
+                if current_tracking ~= tracking then
                   finish()
                   return
                 end
@@ -191,8 +182,8 @@ local function start_timer(interval)
 
                 local conf = config.values.poll
                 local function mark_remote_changed()
-                  local latest_tracking = tracked_buffers[bufnr] or current_tracking
-                  if not tracking_matches(latest_tracking) then
+                  local latest_tracking = tracked_buffers[bufnr]
+                  if latest_tracking ~= tracking then
                     finish()
                     return
                   end
@@ -219,8 +210,8 @@ local function start_timer(interval)
                     on_local_changes = mark_remote_changed,
                     on_error = finish,
                     on_reload = function()
-                      local latest_tracking = tracked_buffers[bufnr] or current_tracking
-                      if not tracking_matches(latest_tracking) then
+                      local latest_tracking = tracked_buffers[bufnr]
+                      if latest_tracking ~= tracking then
                         finish()
                         return
                       end

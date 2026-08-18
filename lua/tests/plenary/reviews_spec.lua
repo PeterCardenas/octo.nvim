@@ -16,6 +16,28 @@ describe("Reviews module:", function()
     reviews.reviews = original_reviews
   end)
 
+  it("matches pull request repositories case-insensitively", function()
+    local closed = false
+    reviews.reviews.review = {
+      id = -1,
+      pull_request = { id = "stored_pr", repo = "pwntester/Octo.nvim", number = 1 },
+      layout = {
+        tabpage = vim.api.nvim_get_current_tabpage(),
+        close = function()
+          closed = true
+        end,
+      },
+    }
+
+    reviews.close_browse_reviews_for_pull_request {
+      id = "target_pr",
+      repo = "PWNTESTER/octo.NVIM",
+      number = 1,
+    }
+
+    eq(true, closed)
+  end)
+
   it("cleans up a review whose tab handle differs from its closed tab number", function()
     vim.cmd "tabnew"
     vim.cmd "tabnew"

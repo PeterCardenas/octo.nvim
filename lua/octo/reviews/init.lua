@@ -668,7 +668,8 @@ end
 local function review_matches_target(review, target)
   local review_pr = review.pull_request
   local matches_id = target.id and review_pr.id == target.id
-  local matches_number = review_pr.repo == target.repo and tonumber(review_pr.number) == tonumber(target.number)
+  local matches_number = utils.repos_equal(review_pr.repo, target.repo)
+    and tonumber(review_pr.number) == tonumber(target.number)
   return matches_id or matches_number
 end
 

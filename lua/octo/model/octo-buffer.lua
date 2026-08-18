@@ -378,7 +378,7 @@ function OctoBuffer:async_fetch_issues()
         success = function(data)
           ---@type { number: integer, title: string }[]
           local issues_metadata = vim.json.decode(data)
-          octo_repo_issues[self.repo] = issues_metadata
+          octo_repo_issues[utils.repo_identity(self.repo)] = issues_metadata
         end,
         failure = function() end,
       },

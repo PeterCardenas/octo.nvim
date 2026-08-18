@@ -522,6 +522,19 @@ function M.get_file_at_commit(path, commit, cb)
   )
 end
 
+---@param repo string
+---@return string
+function M.repo_identity(repo)
+  return repo:lower()
+end
+
+---@param left string?
+---@param right string?
+---@return boolean
+function M.repos_equal(left, right)
+  return left ~= nil and right ~= nil and M.repo_identity(left) == M.repo_identity(right)
+end
+
 function M.in_pr_repo()
   local buffer = M.get_current_buffer()
   if not buffer then
@@ -534,7 +547,11 @@ function M.in_pr_repo()
   end
 
   local local_repo = M.get_remote_name()
-  if buffer:pullRequest().baseRepository.nameWithOwner ~= local_repo then
+  if not local_repo then
+    M.error "No remote repository found"
+    return false
+  end
+  if not M.repos_equal(buffer:pullRequest().baseRepository.nameWithOwner, local_repo) then
     M.error(
       string.format(
         "Not in PR repo. Expected %s, got %s",
@@ -563,9 +580,9 @@ function M.in_pr_branch_locally_tracked(pr)
   local local_branch = table.concat(local_branch_with_local_remote, "/", 2)
 
   -- Github repos are case insensitive, ignore case when comparing to local remotes
-  local local_repo = M.get_remote_name({ local_remote }):lower()
+  local local_repo = M.get_remote_name { local_remote }
 
-  if local_repo == pr.head_repo:lower() and local_branch == pr.head_ref_name then
+  if M.repos_equal(local_repo, pr.head_repo) and local_branch == pr.head_ref_name then
     return true
   end
 
@@ -928,8 +945,9 @@ end
 ---Gets repo internal GitHub ID
 ---@param repo string
 function M.get_repo_id(repo)
-  if repo_id_cache[repo] then
-    return repo_id_cache[repo]
+  local cache_key = M.repo_identity(repo)
+  if repo_id_cache[cache_key] then
+    return repo_id_cache[cache_key]
   end
 
   local owner, name = M.split_repo(repo)
@@ -939,7 +957,7 @@ function M.get_repo_id(repo)
     jq = ".data.repository.id",
     opts = { mode = "sync" },
   }
-  repo_id_cache[repo] = id
+  repo_id_cache[cache_key] = id
   return id
 end
 
@@ -954,8 +972,9 @@ end
 ---Gets repo info
 ---@param repo string
 function M.get_repo_info(repo)
-  if repo_info_cache[repo] then
-    return repo_info_cache[repo]
+  local cache_key = M.repo_identity(repo)
+  if repo_info_cache[cache_key] then
+    return repo_info_cache[cache_key]
   end
 
   local owner, name = M.split_repo(repo)
@@ -971,15 +990,16 @@ function M.get_repo_info(repo)
   end
   ---@type octo.Repository
   local info = vim.json.decode(output)
-  repo_info_cache[repo] = info
+  repo_info_cache[cache_key] = info
   return info
 end
 
 ---Gets repo's templates
 ---@param repo string
 function M.get_repo_templates(repo)
-  if repo_templates_cache[repo] then
-    return repo_templates_cache[repo]
+  local cache_key = M.repo_identity(repo)
+  if repo_templates_cache[cache_key] then
+    return repo_templates_cache[cache_key]
   end
 
   local owner, name = M.split_repo(repo)
@@ -1004,7 +1024,7 @@ function M.get_repo_templates(repo)
     body = "",
   })
 
-  repo_templates_cache[repo] = templates
+  repo_templates_cache[cache_key] = templates
   return templates
 end
 

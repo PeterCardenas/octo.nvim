@@ -100,11 +100,13 @@ describe("Polling module:", function()
     local original_poll_enabled
     local original_poll_interval
     local original_graphql
+    local original_new_timer
 
     before_each(function()
       original_poll_enabled = config.values.poll.enabled
       original_poll_interval = config.values.poll.interval
       original_graphql = gh.api.graphql
+      original_new_timer = vim.uv.new_timer
       config.values.poll.enabled = true
       config.values.poll.interval = 15
     end)
@@ -115,6 +117,7 @@ describe("Polling module:", function()
       -- real gh.api.graphql after this test ends.
       polling.stop()
       gh.api.graphql = original_graphql
+      vim.uv.new_timer = original_new_timer
       config.values.poll.enabled = original_poll_enabled
       config.values.poll.interval = original_poll_interval
     end)
@@ -134,6 +137,48 @@ describe("Polling module:", function()
       assert.is_true(vim.wait(2000, function()
         return call_count > 0
       end, 20))
+    end)
+
+    it("keeps the new tracking entry loading after a stale callback", function()
+      local bufnr = create_diff_buffer { number = 7 }
+      vim.api.nvim_win_set_buf(0, bufnr)
+
+      local timer_callback
+      vim.uv.new_timer = function()
+        return {
+          start = function(_, _, _, callback)
+            timer_callback = callback
+          end,
+          stop = function() end,
+          close = function() end,
+          is_closing = function()
+            return false
+          end,
+        }
+      end
+
+      local requests = {}
+      gh.api.graphql = function(opts)
+        requests[#requests + 1] = opts
+      end
+
+      polling.track_buffer(bufnr)
+      polling.start()
+      timer_callback()
+      assert.is_true(vim.wait(100, function()
+        return #requests == 1
+      end))
+
+      polling.track_buffer(bufnr)
+      -- Model the replacement resource's in-flight request while retaining the
+      -- first request callback as the stale completion. The resource metadata
+      -- is intentionally unchanged; only the tracking entry is replaced.
+      polling.status().buffers[bufnr].loading = true
+
+      requests[1].opts.cb('{"data":{"repository":{"pullRequest":{"updatedAt":"2026-07-03T00:00:00Z"}}}}', nil)
+      vim.wait(100)
+
+      assert.is_true(polling.status().buffers[bufnr].loading)
     end)
 
     it("issues no graphql request for a buffer not shown in any window", function()

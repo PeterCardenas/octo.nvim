@@ -454,3 +454,111 @@ describe("generate_position2line_map", function()
     end)
   end
 end)
+
+describe("repo_identity", function()
+  local original_buffer
+  local original_remote
+  local original_error
+  local original_graphql
+
+  before_each(function()
+    original_buffer = this.get_current_buffer
+    original_remote = this.get_remote_name
+    original_error = this.error
+    original_graphql = gh.api.graphql
+  end)
+
+  after_each(function()
+    this.get_current_buffer = original_buffer
+    this.get_remote_name = original_remote
+    this.error = original_error
+    gh.api.graphql = original_graphql
+  end)
+
+  it("normalizes repository owner and name without changing the input", function()
+    local repo = "PWNTESTER/Octo.nvim"
+    eq("pwntester/octo.nvim", this.repo_identity(repo))
+    eq("PWNTESTER/Octo.nvim", repo)
+  end)
+
+  it("compares repository identities without regard to casing", function()
+    assert.is_true(this.repos_equal("PWNTESTER/Octo.nvim", "pwntester/octo.nvim"))
+    assert.is_false(this.repos_equal("PWNTESTER/Octo.nvim", "other/octo.nvim"))
+    assert.is_false(this.repos_equal(nil, "pwntester/octo.nvim"))
+    assert.is_false(this.repos_equal("pwntester/octo.nvim", nil))
+    assert.is_false(this.repos_equal(nil, nil))
+  end)
+
+  it("matches the current PR repository without regard to casing", function()
+    local buffer = {
+      isPullRequest = function()
+        return true
+      end,
+      pullRequest = function()
+        return { baseRepository = { nameWithOwner = "Owner/Repo" } }
+      end,
+    }
+    this.get_current_buffer = function()
+      return buffer
+    end
+    this.get_remote_name = function()
+      return "oWnEr/rEpO"
+    end
+    this.error = function() end
+    assert.is_true(this.in_pr_repo())
+    this.get_remote_name = function()
+      return "other/repo"
+    end
+    assert.is_false(this.in_pr_repo())
+  end)
+
+  it("reports when no local remote repository is resolved", function()
+    local errors = {}
+    local buffer = {
+      isPullRequest = function()
+        return true
+      end,
+      pullRequest = function()
+        return { baseRepository = { nameWithOwner = "Owner/Repo" } }
+      end,
+    }
+    this.get_current_buffer = function()
+      return buffer
+    end
+    this.get_remote_name = function()
+      return nil
+    end
+    this.error = function(message)
+      table.insert(errors, message)
+    end
+
+    assert.is_false(this.in_pr_repo())
+    eq({ "No remote repository found" }, errors)
+  end)
+
+  it("shares each repository cache across casing while preserving API casing", function()
+    local utils_path = vim.api.nvim_get_runtime_file("lua/octo/utils.lua", false)[1]
+    local isolated_utils = assert(loadfile(utils_path))()
+    local calls = {}
+    gh.api.graphql = function(opts)
+      table.insert(calls, opts.fields)
+      if #calls == 1 then
+        return "id"
+      end
+      if #calls == 2 then
+        return vim.json.encode { name = "Repo" }
+      end
+      return vim.json.encode { issueTemplates = {} }
+    end
+    local variants = { "CacheOwner/CacheRepo", "cAcHeOwNeR/cAcHeRePo" }
+    for _, repo in ipairs(variants) do
+      isolated_utils.get_repo_id(repo)
+      isolated_utils.get_repo_info(repo)
+      isolated_utils.get_repo_templates(repo)
+    end
+    eq(3, #calls)
+    eq({ owner = "CacheOwner", name = "CacheRepo" }, calls[1])
+    eq({ owner = "CacheOwner", name = "CacheRepo" }, calls[2])
+    eq({ owner = "CacheOwner", name = "CacheRepo" }, calls[3])
+  end)
+end)

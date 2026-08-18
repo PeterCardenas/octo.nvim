@@ -81,7 +81,7 @@ function M.setup()
         end
       else
         if vim.startswith(base, "#") then
-          local issues = octo_repo_issues[buffer.repo] or {}
+          local issues = octo_repo_issues[utils.repo_identity(buffer.repo)] or {}
           for _, i in ipairs(issues) do
             if vim.startswith("#" .. tostring(i.number), base) then
               table.insert(entries, {
