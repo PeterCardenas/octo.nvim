@@ -587,6 +587,11 @@ require"octo".setup {
 ```
 <!-- END_CONFIG -->
 
+To control polling at runtime, use `require('octo.polling').set_enabled(boolean)`.
+This stops the timer and prevents newly tracked buffers from restarting it when
+false. Set `poll.should_poll_buffer = function(bufnr) return ... end` to skip
+individual buffers (for example, those hidden in Neovim).
+
 `mappings.global` are installed globally instead of buffer-locally. By default,
 this includes `<localleader>gi`, so jumping to issue references works from
 regular repo buffers and review diffs too. Issue previews on `CursorHold` follow

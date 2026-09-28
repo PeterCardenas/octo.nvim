@@ -63,50 +63,61 @@ describe("Polling module:", function()
     assert.are.same("base..head", status.buffers[bufnr].last_diff_fingerprint)
   end)
 
-  describe("should_poll_buffer", function()
-    it("is pollable when shown in a window of the current tab page", function()
+  describe("set_enabled", function()
+    it("stops polling and prevents buffer tracking from restarting it", function()
+      local original_enabled = config.values.poll.enabled
+      config.values.poll.enabled = true
       local bufnr = create_diff_buffer()
-      vim.api.nvim_win_set_buf(0, bufnr)
+      polling.track_buffer(bufnr)
+      assert.is_true(polling.status().running)
 
-      assert.is_true(polling.should_poll_buffer(bufnr))
+      polling.set_enabled(false)
+      polling.track_buffer(bufnr)
+      assert.is_false(polling.status().running)
+      assert.is_false(polling.status().enabled)
+      config.values.poll.enabled = original_enabled
     end)
 
-    it("is skipped when not shown in any window", function()
-      local bufnr = create_diff_buffer()
-      -- Buffer is tracked but never displayed in a window.
+    it("preserves toggle after a manual stop", function()
+      local original_enabled = config.values.poll.enabled
+      config.values.poll.enabled = true
+      polling.track_buffer(create_diff_buffer())
+      polling.stop()
 
-      assert.is_false(polling.should_poll_buffer(bufnr))
+      polling.toggle()
+      assert.is_true(polling.status().running)
+      polling.set_enabled(false)
+      config.values.poll.enabled = original_enabled
     end)
 
-    it("is skipped when shown only in a different tab page", function()
+    it("resumes polling for already tracked buffers", function()
+      local original_enabled = config.values.poll.enabled
+      config.values.poll.enabled = false
       local bufnr = create_diff_buffer()
-      vim.api.nvim_win_set_buf(0, bufnr)
+      polling.track_buffer(bufnr)
+      assert.is_false(polling.status().running)
 
-      vim.cmd "tabnew"
-      local new_tab_bufnr = vim.api.nvim_get_current_buf()
-
-      assert.is_false(polling.should_poll_buffer(bufnr))
-
-      vim.cmd "tabclose"
-      pcall(vim.api.nvim_buf_delete, new_tab_bufnr, { force = true })
+      polling.set_enabled(true)
+      assert.is_true(polling.status().running)
+      assert.is_true(polling.status().enabled)
+      polling.stop()
+      config.values.poll.enabled = original_enabled
     end)
   end)
 
-  -- Integration coverage for the visibility gate: drives the real repeating
-  -- timer (via track_buffer/start) rather than calling should_poll_buffer
-  -- directly, so a regression in start_timer's condition would be caught
-  -- even if should_poll_buffer itself stayed correct.
-  describe("start_timer visibility gate", function()
+  describe("start_timer", function()
     local original_poll_enabled
     local original_poll_interval
     local original_graphql
     local original_new_timer
+    local original_should_poll_buffer
 
     before_each(function()
       original_poll_enabled = config.values.poll.enabled
       original_poll_interval = config.values.poll.interval
       original_graphql = gh.api.graphql
       original_new_timer = vim.uv.new_timer
+      original_should_poll_buffer = config.values.poll.should_poll_buffer
       config.values.poll.enabled = true
       config.values.poll.interval = 15
     end)
@@ -118,6 +129,7 @@ describe("Polling module:", function()
       polling.stop()
       gh.api.graphql = original_graphql
       vim.uv.new_timer = original_new_timer
+      config.values.poll.should_poll_buffer = original_should_poll_buffer
       config.values.poll.enabled = original_poll_enabled
       config.values.poll.interval = original_poll_interval
     end)
@@ -181,35 +193,36 @@ describe("Polling module:", function()
       assert.is_true(polling.status().buffers[bufnr].loading)
     end)
 
-    it("issues no graphql request for a buffer not shown in any window", function()
-      -- Track a hidden buffer alongside a visible "sentinel" buffer so this
-      -- test proves a tick actually landed (via the sentinel) rather than
-      -- passing vacuously if timer delivery were broken. Each tracked buffer
-      -- can produce at most one graphql call here (the stub never invokes
-      -- opts.cb, so `tracking.loading` latches true after the first call),
-      -- so call counts are keyed per-buffer via the query's `number`
-      -- variable (F.number), which octo/polling.lua sets from tracking.number
-      -- and is therefore genuinely distinguishing across buffers.
+    it("skips only buffers rejected by the configured predicate", function()
       local hidden_bufnr = create_diff_buffer { number = 7 }
-      local sentinel_bufnr = create_diff_buffer { number = 8 }
-      vim.api.nvim_win_set_buf(0, sentinel_bufnr)
-      -- hidden_bufnr is never displayed in any window.
-
-      local call_counts_by_number = {}
+      local visible_bufnr = create_diff_buffer { number = 8 }
+      local calls = {}
+      config.values.poll.should_poll_buffer = function(bufnr)
+        return bufnr ~= hidden_bufnr
+      end
       gh.api.graphql = function(opts)
-        local number = opts.F.number
-        call_counts_by_number[number] = (call_counts_by_number[number] or 0) + 1
+        calls[opts.F.number] = (calls[opts.F.number] or 0) + 1
       end
 
       polling.track_buffer(hidden_bufnr)
-      polling.track_buffer(sentinel_bufnr)
-      polling.start()
-
+      polling.track_buffer(visible_bufnr)
       assert.is_true(vim.wait(2000, function()
-        return (call_counts_by_number[8] or 0) > 0
+        return (calls[8] or 0) > 0
       end, 20))
+      assert.are.same(0, calls[7] or 0)
+    end)
 
-      assert.are.same(0, call_counts_by_number[7] or 0)
+    it("polls a tracked buffer even when another buffer is displayed", function()
+      local bufnr = create_diff_buffer()
+      local call_count = 0
+      gh.api.graphql = function()
+        call_count = call_count + 1
+      end
+
+      polling.track_buffer(bufnr)
+      assert.is_true(vim.wait(2000, function()
+        return call_count > 0
+      end, 20))
     end)
   end)
 end)

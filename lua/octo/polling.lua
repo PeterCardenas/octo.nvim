@@ -65,22 +65,6 @@ local function diff_fingerprint(node)
   return base_ref_oid .. "..." .. head_ref_oid
 end
 
----Whether a buffer is displayed in a window of the current tab page.
----@param bufnr integer
----@return boolean
-local function is_buffer_visible_in_current_tab(bufnr)
-  return utils.getwin4buf(bufnr) ~= -1
-end
-
----Whether a tracked buffer should be polled on this tick. Hidden/background
----buffers (not shown in any window of the current tab page) are skipped so
----they don't keep issuing GitHub API requests while the user isn't looking.
----@param bufnr integer
----@return boolean
-function M.should_poll_buffer(bufnr)
-  return is_buffer_visible_in_current_tab(bufnr)
-end
-
 ---Start the timer loop
 ---@param interval number
 local function start_timer(interval)
@@ -96,11 +80,9 @@ local function start_timer(interval)
         if not vim.api.nvim_buf_is_valid(bufnr) then
           tracked_buffers[bufnr] = nil
         elseif
-          -- Skip buffers not shown in a window of the current tab page so
-          -- hidden/background buffers don't keep issuing GitHub API requests.
-          M.should_poll_buffer(bufnr)
-          and (tracking.kind == "issue" or tracking.kind == "pull" or tracking.kind == "pull_diff")
+          (tracking.kind == "issue" or tracking.kind == "pull" or tracking.kind == "pull_diff")
           and not tracking.loading
+          and (not config.values.poll.should_poll_buffer or config.values.poll.should_poll_buffer(bufnr))
         then
           tracking.loading = true
           local query = tracking.kind == "pull_diff" and queries.pull_diff_fingerprint or queries.updated_at
@@ -275,15 +257,20 @@ function M.stop()
   end
 end
 
+---Enable or disable polling, including future auto-starts when buffers are tracked.
+---@param enabled boolean
+function M.set_enabled(enabled)
+  config.values.poll.enabled = enabled
+  if enabled then
+    M.start()
+  else
+    M.stop()
+  end
+end
+
 ---Toggle polling on/off (also updates the runtime config)
 function M.toggle()
-  if timer then
-    config.values.poll.enabled = false
-    M.stop()
-  else
-    config.values.poll.enabled = true
-    M.start()
-  end
+  M.set_enabled(timer == nil)
 end
 
 ---Register a buffer for polling

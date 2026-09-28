@@ -328,11 +328,19 @@ See |octo-command-examples| for examples.
   - If the buffer has unsaved local edits, the reload is skipped and
     the user is notified. Use `:Octo poll apply` to force-reload.
 
+  Lua callers can use `require('octo.polling').set_enabled(boolean)` to
+  stop or resume polling without allowing a newly tracked buffer to restart
+  a stopped timer. Polling checks all tracked buffers; callers wanting to
+  restrict polling by visibility can set `poll.should_poll_buffer = function(bufnr)
+  return ... end` to skip individual buffers and manage the enabled state
+  for terminal-pane visibility.
+
   Configure polling via the `poll` config table:
     `enabled`             (boolean, default false) Auto-start on buffer open
     `interval`            (number, default 10000) Polling interval in ms
     `notify_on_refresh`   (boolean, default true) Notify on auto-refresh
     `notify_on_change`    (boolean, default true) Notify when dirty skip
+    `should_poll_buffer`   (function(bufnr), optional) Gate each tracked buffer
 
 
 :Octo gist [action]                             *octo-commands-gist*

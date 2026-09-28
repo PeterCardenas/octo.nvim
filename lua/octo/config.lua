@@ -106,6 +106,7 @@ local M = {}
 ---@field projects_v2 boolean
 
 ---@class OctoConfigPoll
+---@field should_poll_buffer? fun(bufnr: integer): boolean
 ---@field enabled boolean
 ---@field interval number
 ---@field notify_on_refresh boolean
@@ -736,6 +737,9 @@ function M.validate_config()
     validate_type(config.poll.interval, "poll.interval", "number")
     validate_type(config.poll.notify_on_refresh, "poll.notify_on_refresh", "boolean")
     validate_type(config.poll.notify_on_change, "poll.notify_on_change", "boolean")
+    if config.poll.should_poll_buffer ~= nil then
+      validate_type(config.poll.should_poll_buffer, "poll.should_poll_buffer", "function")
+    end
   end
 
   local function validate_debug()
