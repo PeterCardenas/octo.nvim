@@ -34,8 +34,14 @@ If any check fails, follow the advice shown in the report.
 
 LUA API                                         *octo-lua-api*
 
-The plugin exposes a Lua API to iteract with GitHub CLI which powers the
+The plugin exposes a Lua API to interact with GitHub CLI which powers the
 plugin.
+
+`require("octo.utils").open_buffer(repo, number, { winid = winid })` resolves
+an issue, pull request, or discussion by number and opens it in the given
+window after the asynchronous lookup. The window must still exist when the
+lookup completes; otherwise Octo reports an error. Omit the third argument
+to open in the current window (the existing behavior).
 
 The `octo.gh` module is meant to mirror the GitHub CLI as closely as possible.
 For example, >lua

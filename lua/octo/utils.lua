@@ -310,7 +310,8 @@ end
 
 ---@param repo string
 ---@param number integer
-function M.open_buffer(repo, number)
+---@param opts? { winid?: integer }
+function M.open_buffer(repo, number, opts)
   local owner, name = M.split_repo(repo)
   -- Combined query: issueOrPullRequest covers issues+PRs; discussion is a
   -- separate field. GitHub returns a partial error when discussion is not
@@ -334,14 +335,25 @@ function M.open_buffer(repo, number)
         local repo_data = decoded.data.repository
         local iop = repo_data.issueOrPullRequest
         local discussion = repo_data.discussion
-        if not M.is_blank(iop) and iop.__typename == "Issue" then
-          M.get_issue(number, repo)
-        elseif not M.is_blank(iop) and iop.__typename == "PullRequest" then
-          M.get_pull_request(number, repo)
-        elseif not M.is_blank(discussion) and discussion.__typename == "Discussion" then
-          M.get_discussion(number, repo)
+        local function open_resolved_buffer()
+          if not M.is_blank(iop) and iop.__typename == "Issue" then
+            M.get_issue(number, repo)
+          elseif not M.is_blank(iop) and iop.__typename == "PullRequest" then
+            M.get_pull_request(number, repo)
+          elseif not M.is_blank(discussion) and discussion.__typename == "Discussion" then
+            M.get_discussion(number, repo)
+          else
+            M.error("No issue, PR, or discussion found with number: " .. number)
+          end
+        end
+        if opts and opts.winid then
+          if not vim.api.nvim_win_is_valid(opts.winid) then
+            M.error "Target window closed before opening issue or PR"
+            return
+          end
+          vim.api.nvim_win_call(opts.winid, open_resolved_buffer)
         else
-          M.error("No issue, PR, or discussion found with number: " .. number)
+          open_resolved_buffer()
         end
       end,
     },

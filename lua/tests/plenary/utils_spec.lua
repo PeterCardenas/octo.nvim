@@ -71,6 +71,69 @@ describe("checkout_pr:", function()
   end)
 end)
 
+describe("open_buffer target window", function()
+  local original_graphql
+  local original_get_issue
+  local original_error
+  local editor_win
+  local source_win
+
+  before_each(function()
+    vim.cmd "tabnew"
+    editor_win = vim.api.nvim_get_current_win()
+    vim.cmd "vsplit"
+    source_win = vim.api.nvim_get_current_win()
+    original_graphql = gh.api.graphql
+    original_get_issue = this.get_issue
+    original_error = this.error
+  end)
+
+  after_each(function()
+    gh.api.graphql = original_graphql
+    this.get_issue = original_get_issue
+    this.error = original_error
+    vim.cmd "tabclose!"
+  end)
+
+  it("opens in the requested window even when focus changes before the lookup completes", function()
+    local respond
+    local opened_in
+    gh.api.graphql = function(opts)
+      respond = opts.opts.cb
+    end
+    this.get_issue = function()
+      opened_in = vim.api.nvim_get_current_win()
+    end
+
+    this.open_buffer("owner/repo", 1, { winid = editor_win })
+    vim.api.nvim_set_current_win(source_win)
+    respond(vim.json.encode { data = { repository = { issueOrPullRequest = { __typename = "Issue" } } } }, "")
+    eq(editor_win, opened_in)
+    eq(source_win, vim.api.nvim_get_current_win())
+  end)
+
+  it("does not open in another window after the requested window closes", function()
+    local respond
+    local opened = false
+    local errors = {}
+    gh.api.graphql = function(opts)
+      respond = opts.opts.cb
+    end
+    this.get_issue = function()
+      opened = true
+    end
+    this.error = function(message)
+      table.insert(errors, message)
+    end
+
+    this.open_buffer("owner/repo", 1, { winid = editor_win })
+    vim.api.nvim_win_close(editor_win, true)
+    respond(vim.json.encode { data = { repository = { issueOrPullRequest = { __typename = "Issue" } } } }, "")
+    eq(false, opened)
+    assert.is_true(#errors > 0)
+  end)
+end)
+
 describe("Utils module:", function()
   describe("setup", function() --------------------------------------------------
     it("parse_remote_url supports all schemes and aliases.", function()

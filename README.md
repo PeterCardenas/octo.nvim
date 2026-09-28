@@ -187,6 +187,12 @@ For a basic installation using [`lazy.nvim`](https://lazy.folke.io/), try:
 ```
 
 
+To open a referenced issue, PR, or discussion in a particular editor window
+from another plugin, call
+`require("octo.utils").open_buffer(repo, number, { winid = winid })`.
+Octo retains that window through its asynchronous lookup and reports an error
+if it closes. Without `winid`, it opens in the current window as before.
+
 ## 🔧 Configuration
 
 Below is the full *default* configuration for `octo.nvim`.
