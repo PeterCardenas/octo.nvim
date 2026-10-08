@@ -1623,6 +1623,7 @@ query($owner: String!, $name: String!) {
   ]]
   M.updated_at = [[
   query($owner: String!, $name: String!, $number: Int!) {
+    rateLimit { limit remaining resetAt }
     repository(owner: $owner, name: $name) {
       issueOrPullRequest(number: $number) {
         ... on Issue { updatedAt }
@@ -1654,6 +1655,7 @@ query($owner: String!, $name: String!) {
 
   M.pull_diff_fingerprint = [[
   query($owner: String!, $name: String!, $number: Int!) {
+    rateLimit { limit remaining resetAt }
     repository(owner: $owner, name: $name) {
       pullRequest(number: $number) {
         title

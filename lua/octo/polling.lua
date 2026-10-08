@@ -1,4 +1,5 @@
 local config = require "octo.config"
+local date = require "octo.date"
 local gh = require "octo.gh"
 local queries = require "octo.gh.queries"
 local uri = require "octo.uri"
@@ -19,12 +20,105 @@ local M = {}
 ---@field last_diff_fingerprint string
 ---@field remote_changed boolean
 ---@field loading boolean
+---@field last_polled_at number|nil
 
 ---@type table<integer, OctoPollingEntry>
 local tracked_buffers = {}
 
 ---@type uv.uv_timer_t|nil
 local timer = nil
+
+---@class OctoPollingBudget
+---@field remaining? number
+---@field limit? number
+---@field reset_at? number
+---@field blocked_until number
+---@field backoff number
+
+-- Keep budgets across visibility-driven timer restarts, but separate GitHub hosts.
+---@type table<string, OctoPollingBudget>
+local budgets = {}
+
+---@param tracking OctoPollingEntry
+---@return OctoPollingBudget
+local function budget_for(tracking)
+  local hostname = tracking.hostname
+  if utils.is_blank(hostname) then
+    hostname = config.values.github_hostname
+  end
+  if utils.is_blank(hostname) then
+    hostname = "github.com"
+  end
+  budgets[hostname] = budgets[hostname] or { blocked_until = 0, backoff = 0 }
+  return budgets[hostname]
+end
+
+---@param tracking OctoPollingEntry
+---@return boolean
+local function poll_due(tracking)
+  local budget = budget_for(tracking)
+  local now = os.time()
+  if now < budget.blocked_until then
+    return false
+  end
+  local interval = config.values.poll.interval
+  if budget.reset_at and now >= budget.reset_at then
+    budget.remaining = nil
+    budget.limit = nil
+    budget.reset_at = nil
+  end
+  if budget.remaining and budget.limit then
+    local fraction = budget.remaining / budget.limit
+    local multiplier = fraction <= 0.05 and 12 or fraction <= 0.1 and 6 or fraction <= 0.2 and 3 or 1
+    interval = interval * multiplier
+  end
+  return not tracking.last_polled_at or vim.uv.now() - tracking.last_polled_at >= interval
+end
+
+---@param tracking OctoPollingEntry
+---@param response table|nil
+---@param stderr string|nil
+local function update_budget(tracking, response, stderr)
+  local budget = budget_for(tracking)
+  local rate = response and vim.tbl_get(response, "data", "rateLimit")
+  if
+    type(rate) == "table"
+    and type(rate.limit) == "number"
+    and rate.limit > 0
+    and type(rate.remaining) == "number"
+    and rate.remaining >= 0
+    and type(rate.resetAt) == "string"
+  then
+    -- The existing date library interprets GitHub's UTC reset time independently of local timezone.
+    local ok, seconds_until_reset = pcall(function()
+      return date.diff(rate.resetAt, os.time()):spanseconds()
+    end)
+    if ok and seconds_until_reset > 0 then
+      budget.limit = rate.limit
+      budget.remaining = rate.remaining
+      budget.reset_at = os.time() + seconds_until_reset
+      -- Leave the final 1% available for opening, editing and refreshing manually.
+      if rate.remaining <= rate.limit * 0.01 then
+        budget.blocked_until = math.max(budget.blocked_until, budget.reset_at)
+      end
+    end
+  end
+
+  local errors = response and response.errors
+  local message = ((stderr or "") .. (errors and vim.json.encode(errors) or "")):lower()
+  if message:find("rate limit", 1, true) or message:find("rate_limit", 1, true) then
+    -- An exhausted query may contain only errors. Reuse its last known reset;
+    -- secondary limits (or unknown resets) instead get bounded exponential backoff.
+    if budget.reset_at and message:find("secondary", 1, true) == nil then
+      budget.blocked_until = math.max(budget.blocked_until, budget.reset_at)
+    else
+      budget.backoff = math.min(math.max(60, budget.backoff * 2), 900)
+      budget.blocked_until = math.max(budget.blocked_until, os.time() + budget.backoff)
+    end
+  elseif utils.is_blank(stderr) and not errors then
+    budget.backoff = 0
+  end
+end
 
 ---Compute a fingerprint from statusCheckRollup for change detection.
 ---Includes the overall state plus each individual check's status, so the
@@ -83,8 +177,10 @@ local function start_timer(interval)
           (tracking.kind == "issue" or tracking.kind == "pull" or tracking.kind == "pull_diff")
           and not tracking.loading
           and (not config.values.poll.should_poll_buffer or config.values.poll.should_poll_buffer(bufnr))
+          and poll_due(tracking)
         then
           tracking.loading = true
+          tracking.last_polled_at = vim.uv.now()
           local query = tracking.kind == "pull_diff" and queries.pull_diff_fingerprint or queries.updated_at
           gh.api.graphql {
             query = query,
@@ -103,17 +199,14 @@ local function start_timer(interval)
                   end
                 end
 
-                if stderr and not utils.is_blank(stderr) then
-                  finish()
-                  return
+                local ok, resp = pcall(vim.json.decode, output or "")
+                if not ok or type(resp) ~= "table" then
+                  resp = nil
                 end
-                if not output or utils.is_blank(output) then
-                  finish()
-                  return
-                end
-
-                local ok, resp = pcall(vim.json.decode, output)
-                if not ok or not resp then
+                -- Read partial rate-limit data before handling errors: GraphQL can
+                -- report exhaustion with HTTP 200 and no repository result.
+                update_budget(tracking, resp, stderr)
+                if (stderr and not utils.is_blank(stderr)) or not resp or resp.errors then
                   finish()
                   return
                 end
@@ -312,6 +405,7 @@ function M.track_buffer(bufnr)
     last_diff_fingerprint = octo_buf:get_diff_fingerprint(),
     remote_changed = false,
     loading = false,
+    last_polled_at = tracked_buffers[bufnr] and tracked_buffers[bufnr].last_polled_at,
   }
 
   -- Auto-start timer if enabled and this is the first tracked buffer

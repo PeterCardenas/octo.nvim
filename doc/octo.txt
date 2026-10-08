@@ -328,7 +328,7 @@ See |octo-command-examples| for examples.
   apply                  Force-reload a dirty buffer with pending remote changes.
 
   Polling periodically checks GitHub for updates to open issue/PR buffers
-  using a lightweight GraphQL query (only fetches `updatedAt`). When a
+  using a lightweight GraphQL fingerprint query and its rate-limit budget. When a
   remote change is detected:
   - If the buffer has no local edits, it is automatically reloaded.
   - If the buffer has unsaved local edits, the reload is skipped and
@@ -340,6 +340,15 @@ See |octo-command-examples| for examples.
   restrict polling by visibility can set `poll.should_poll_buffer = function(bufnr)
   return ... end` to skip individual buffers and manage the enabled state
   for terminal-pane visibility.
+
+  Polling uses `interval` as its base rate. At or below 20%, 10%, and 5% of
+  the GraphQL budget remaining it uses 3x, 6x, and 12x the base interval.
+  At or below 1% it pauses until reset, reserving budget for interactive use.
+  Rate-limit errors pause until a known primary reset, or back off from 60
+  seconds up to 15 minutes for secondary limits or unknown reset times.
+  Budget checks add no API calls. State is shared per hostname and survives
+  timer restarts; normal polling resumes after reset. Manual operations are
+  not delayed.
 
   Configure polling via the `poll` config table:
     `enabled`             (boolean, default false) Auto-start on buffer open

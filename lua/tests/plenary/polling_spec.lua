@@ -105,6 +105,202 @@ describe("Polling module:", function()
     end)
   end)
 
+  describe("adaptive rate", function()
+    local original_poll
+    local original_graphql
+    local original_new_timer
+    local original_now
+    local original_time
+    local tick
+    local clock
+    local requests
+    local epoch = 1791486000
+
+    before_each(function()
+      original_poll = vim.deepcopy(config.values.poll)
+      original_graphql = gh.api.graphql
+      original_new_timer = vim.uv.new_timer
+      original_now = vim.uv.now
+      original_time = os.time
+      clock = 0
+      requests = {}
+      config.values.poll.enabled = true
+      config.values.poll.interval = 10000
+      vim.uv.now = function()
+        return clock
+      end
+      os.time = function(value)
+        return value and original_time(value) or epoch + math.floor(clock / 1000)
+      end
+      vim.uv.new_timer = function()
+        return {
+          start = function(_, _, _, callback)
+            tick = callback
+          end,
+          stop = function() end,
+          close = function() end,
+          is_closing = function()
+            return false
+          end,
+        }
+      end
+      gh.api.graphql = function(opts)
+        requests[#requests + 1] = opts
+      end
+      local bufnr = create_diff_buffer()
+      _G.octo_buffers[bufnr].get_diff_fingerprint = function()
+        return "base...head"
+      end
+      polling.track_buffer(bufnr)
+    end)
+
+    after_each(function()
+      polling.stop()
+      config.values.poll = original_poll
+      gh.api.graphql = original_graphql
+      vim.uv.new_timer = original_new_timer
+      vim.uv.now = original_now
+      os.time = original_time
+    end)
+
+    local function advance(milliseconds)
+      clock = clock + milliseconds
+      local done = false
+      tick()
+      vim.schedule(function()
+        done = true
+      end)
+      local fake_new_timer = vim.uv.new_timer
+      vim.uv.new_timer = original_new_timer
+      local completed = vim.wait(100, function()
+        return done
+      end)
+      vim.uv.new_timer = fake_new_timer
+      assert.is_true(completed)
+    end
+
+    local function respond(remaining, stderr, with_node)
+      requests[#requests].opts.cb(
+        vim.json.encode {
+          data = {
+            rateLimit = {
+              limit = 5000,
+              remaining = remaining,
+              resetAt = os.date("!%Y-%m-%dT%H:%M:%SZ", epoch + 3600),
+            },
+            repository = with_node == false and vim.NIL or {
+              pullRequest = { baseRefOid = "base", headRefOid = "head" },
+            },
+          },
+        },
+        stderr
+      )
+    end
+
+    it("includes the budget in fingerprint queries without another request", function()
+      advance(10000)
+      assert.is_truthy(requests[1].query:find("rateLimit", 1, true))
+      assert.are.equal(1, #requests)
+    end)
+
+    it("keeps the base interval with a healthy budget", function()
+      advance(10000)
+      respond(4000)
+      advance(10000)
+      assert.are.equal(2, #requests)
+    end)
+
+    it("slows down below 20, 10 and 5 percent remaining", function()
+      advance(10000)
+      respond(1000)
+      advance(10000)
+      assert.are.equal(1, #requests)
+      advance(20000)
+      assert.are.equal(2, #requests)
+      respond(500)
+      advance(30000)
+      assert.are.equal(2, #requests)
+      advance(30000)
+      assert.are.equal(3, #requests)
+      respond(250)
+      advance(60000)
+      assert.are.equal(3, #requests)
+      advance(60000)
+      assert.are.equal(4, #requests)
+    end)
+
+    it("reserves the final one percent for interactive requests", function()
+      advance(10000)
+      respond(50)
+      advance(120000)
+      assert.are.equal(1, #requests)
+      advance(3470000)
+      assert.are.equal(2, #requests)
+    end)
+
+    it("returns to the base interval after a low-budget window resets", function()
+      advance(10000)
+      respond(250)
+      advance(3590000)
+      assert.are.equal(2, #requests)
+      respond(4999)
+      advance(10000)
+      assert.are.equal(3, #requests)
+    end)
+
+    it("backs off for GraphQL error bodies without stderr or rate data", function()
+      advance(10000)
+      requests[1].opts.cb('{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}', nil)
+      advance(10000)
+      assert.are.equal(1, #requests)
+      advance(50000)
+      assert.are.equal(2, #requests)
+    end)
+
+    it("honors exhausted budgets even when GitHub returns an error", function()
+      advance(10000)
+      respond(0, "API rate limit exceeded", false)
+      advance(3580000)
+      assert.are.equal(1, #requests)
+      polling.set_enabled(false)
+      polling.set_enabled(true)
+      advance(10000)
+      assert.are.equal(2, #requests)
+      respond(4999)
+      advance(10000)
+      assert.are.equal(3, #requests)
+    end)
+
+    it("backs off on secondary rate limit errors and recovers on success", function()
+      advance(10000)
+      requests[1].opts.cb("", "You have exceeded a secondary rate limit")
+      advance(10000)
+      assert.are.equal(1, #requests)
+      advance(50000)
+      assert.are.equal(2, #requests)
+      requests[2].opts.cb("", "You have exceeded a secondary rate limit")
+      advance(60000)
+      assert.are.equal(2, #requests)
+      advance(60000)
+      assert.are.equal(3, #requests)
+      respond(4999)
+      advance(10000)
+      assert.are.equal(4, #requests)
+    end)
+
+    it("shares the cooldown across buffers but not hosts", function()
+      advance(10000)
+      respond(0)
+      polling.track_buffer(create_diff_buffer { number = 8 })
+      local enterprise = create_diff_buffer { number = 9 }
+      vim.api.nvim_buf_set_name(enterprise, "octo://enterprise.example/owner/repo/pull/9/diff")
+      polling.track_buffer(enterprise)
+      advance(10000)
+      assert.are.equal(2, #requests)
+      assert.are.equal("enterprise.example", requests[2].opts.hostname)
+    end)
+  end)
+
   describe("start_timer", function()
     local original_poll_enabled
     local original_poll_interval

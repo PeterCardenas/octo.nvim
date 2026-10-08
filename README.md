@@ -599,6 +599,16 @@ This stops the timer and prevents newly tracked buffers from restarting it when
 false. Set `poll.should_poll_buffer = function(bufnr) return ... end` to skip
 individual buffers (for example, those hidden in Neovim).
 
+Polling reads the GraphQL budget in its existing fingerprint requests, without
+additional API calls. `poll.interval` is the base interval: polling uses 3x, 6x,
+and 12x that interval at or below 20%, 10%, and 5% remaining respectively. At or
+below 1%, polling pauses until the UTC reset time, reserving the remaining budget
+for interactive operations. Rate-limit errors pause polling until a known primary
+reset or use exponential backoff from 60 seconds to 15 minutes for secondary limits
+or unknown resets. Budgets are shared per hostname across tracked buffers and
+survive timer restarts. The base interval resumes after reset; manual operations
+are not delayed.
+
 `mappings.global` are installed globally instead of buffer-locally. By default,
 this includes `<localleader>gi`, so jumping to issue references works from
 regular repo buffers and review diffs too. Issue previews on `CursorHold` follow
