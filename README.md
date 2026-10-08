@@ -294,6 +294,7 @@ require"octo".setup {
   github_hostname = "", -- GitHub Enterprise host
   use_local_fs = false, -- use local files on right side of reviews
   enable_builtin = false, -- shows a list of builtin actions when no action is provided
+  enable_native_completion = true, -- fetch metadata for Octo's omnifunc completion
   snippet_context_lines = 4, -- number of lines around commented lines
   gh_cmd = "gh", -- Command to use when calling Github CLI
   gh_env = {}, -- extra environment variables to pass on to GitHub CLI, can be a table or function returning a table
@@ -794,6 +795,11 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
 ## 🍞 Completion
 
 Octo provides a built-in omnifunc completion for issues, PRs and users that you can trigger using `<C-x><C-o>`. Alternately, if you use [`nvim-cmp`](https://github.com/hrsh7th/nvim-cmp) or [`blink.cmp`](https://github.com/Saghen/blink.cmp) for completion, you can use the [`cmp-git`](https://github.com/petertriho/cmp-git/) or [`blink-cmp-git`](https://github.com/Kaiser-Yang/blink-cmp-git) source to provide issues, PRs, commits and users completion.
+
+If you only use an external completion source such as `cmp-git`, set
+`enable_native_completion = false`. This leaves your completion source unchanged
+and skips Octo's contributor/issue metadata requests on buffer loads and refreshes,
+as well as installing Octo's omnifunc. Native completion remains enabled by default.
 
 Also, you can use [`cmp-emoji`](https://github.com/hrsh7th/cmp-emoji) or [`blink-emoji.nvim`](https://github.com/moyiz/blink-emoji.nvim) to get markdown emoji completion.
 

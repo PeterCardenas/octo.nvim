@@ -281,7 +281,9 @@ function OctoBuffer:configure()
   vim.api.nvim_buf_call(self.bufnr, function()
     vim.cmd [[setlocal filetype=octo]]
     vim.cmd [[setlocal buftype=acwrite]]
-    vim.cmd [[setlocal omnifunc=v:lua.octo_omnifunc]]
+    if config.values.enable_native_completion then
+      vim.cmd [[setlocal omnifunc=v:lua.octo_omnifunc]]
+    end
   end)
 
   -- window-local options must target a window that displays the buffer,
@@ -329,6 +331,9 @@ end
 --  - The authors of all the existing comments
 --  - The contributors of the repo
 function OctoBuffer:async_fetch_taggable_users()
+  if not config.values.enable_native_completion then
+    return
+  end
   local users = self.taggable_users or {}
 
   -- add participants
@@ -369,6 +374,9 @@ end
 
 ---Fetches the issues in the repo so they can be used for completion.
 function OctoBuffer:async_fetch_issues()
+  if not config.values.enable_native_completion then
+    return
+  end
   gh.api.get {
     "repos/{repo}/issues",
     format = { repo = self.repo },

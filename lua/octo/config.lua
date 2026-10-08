@@ -144,6 +144,7 @@ local M = {}
 ---@field github_hostname string
 ---@field use_local_fs boolean
 ---@field enable_builtin boolean
+---@field enable_native_completion boolean
 ---@field snippet_context_lines number
 ---@field gh_cmd string
 ---@field gh_env (table<string, string|integer>)|(fun(): table<string, string|integer>)
@@ -264,6 +265,7 @@ function M.get_default_values()
     github_hostname = "", -- GitHub Enterprise host
     use_local_fs = false, -- use local files on right side of reviews
     enable_builtin = false, -- shows a list of builtin actions when no action is provided
+    enable_native_completion = true, -- fetch metadata for Octo's omnifunc completion
     snippet_context_lines = 4, -- number of lines around commented lines
     gh_cmd = "gh", -- Command to use when calling Github CLI
     gh_env = {}, -- extra environment variables to pass on to GitHub CLI, can be a table or function returning a table
@@ -752,6 +754,7 @@ function M.validate_config()
   if validate_type(config, "base config", "table") then
     validate_type(config.use_local_fs, "use_local_fs", "boolean")
     validate_type(config.enable_builtin, "enable_builtin", "boolean")
+    validate_type(config.enable_native_completion, "enable_native_completion", "boolean")
     validate_type(config.snippet_context_lines, "snippet_context_lines", "number")
     validate_type(config.timeout, "timeout", "number")
     validate_type(config.default_to_projects_v2, "default_to_projects_v2", "boolean")

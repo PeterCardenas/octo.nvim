@@ -22,6 +22,34 @@ describe("OctoBuffer:clear()", function()
     end
   end)
 
+  it("skips native completion metadata requests when disabled", function()
+    local config = require "octo.config"
+    local gh = require "octo.gh"
+    local original_enabled = config.values.enable_native_completion
+    local original_get = gh.api.get
+    local calls = 0
+    gh.api.get = function()
+      calls = calls + 1
+    end
+    config.values.enable_native_completion = false
+    local buffer = OctoBuffer:new { bufnr = bufnr }
+    buffer.node = { participants = { nodes = {} } }
+    buffer.repo = "owner/repo"
+    buffer.commentsMetadata = {}
+    local ok, err = pcall(function()
+      buffer:async_fetch_taggable_users()
+      buffer:async_fetch_issues()
+      assert.are.equal(0, calls)
+      config.values.enable_native_completion = true
+      buffer:async_fetch_taggable_users()
+      buffer:async_fetch_issues()
+      assert.are.equal(2, calls)
+    end)
+    config.values.enable_native_completion = original_enabled
+    gh.api.get = original_get
+    assert.is_true(ok, err)
+  end)
+
   it("sweeps extmarks placed in the shared comment virtual-text namespace", function()
     local buffer = OctoBuffer:new { bufnr = bufnr }
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "line 1" })
