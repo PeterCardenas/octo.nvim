@@ -171,50 +171,57 @@ end
 ---@param rev Rev
 ---@param callback fun(files: FileEntry[]): nil
 function PullRequest:get_commit_changed_files(rev, callback)
-  gh.api.get {
-    "/repos/{repo}/commits/{commit_sha}",
-    format = { repo = self.repo, commit_sha = rev.commit },
-    paginate = true,
-    slurp = true,
-    opts = {
-      cb = gh.create_callback {
-        success = function(output)
-          local results = vim.json.decode(output)
-          ---@type {
-          ---  files: {
-          ---    filename: string,
-          ---    previous_filename: string,
-          ---    patch: string,
-          ---    status: string,
-          ---    additions: integer,
-          ---    deletions: integer,
-          ---    changes: integer,
-          ---  }[],
-          ---}
-          results = merge_pages(results)
-          local files = {}
-          if results.files then
-            for _, result in ipairs(results.files) do
-              local entry = FileEntry:new {
-                path = result.filename,
-                previous_path = result.previous_filename,
-                patch = result.patch,
+  local files = {}
+  local function fetch_page(page)
+    -- `gh api --paginate` concatenates commit objects; native slurp expects
+    -- individually decodable JSON pages, so fetch this endpoint explicitly.
+    gh.api.get {
+      "/repos/{repo}/commits/{commit_sha}?per_page=100&page={page}",
+      format = { repo = self.repo, commit_sha = rev.commit, page = page },
+      opts = {
+        cb = gh.create_callback {
+          success = function(output)
+            ---@type {
+            ---  files: {
+            ---    filename: string,
+            ---    previous_filename: string,
+            ---    patch: string,
+            ---    status: string,
+            ---    additions: integer,
+            ---    deletions: integer,
+            ---    changes: integer,
+            ---  }[],
+            ---}
+            local result = vim.json.decode(output)
+            if type(result.files) ~= "table" then
+              utils.error "Commit response has no file list"
+              return
+            end
+            for _, file in ipairs(result.files) do
+              files[#files + 1] = FileEntry:new {
+                path = file.filename,
+                previous_path = file.previous_filename,
+                patch = file.patch,
                 pull_request = self,
-                status = utils.file_status_map[result.status],
+                status = utils.file_status_map[file.status],
                 stats = {
-                  additions = result.additions,
-                  deletions = result.deletions,
-                  changes = result.changes,
+                  additions = file.additions,
+                  deletions = file.deletions,
+                  changes = file.changes,
                 },
               }
-              table.insert(files, entry)
             end
-            callback(files)
-          end
-        end,
+            if #result.files == 100 then
+              fetch_page(page + 1)
+            else
+              callback(files)
+            end
+          end,
+        },
       },
-    },
-  }
+    }
+  end
+  fetch_page(1)
 end
 
 ---Helper function to create a PullRequest with merge base

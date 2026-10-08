@@ -787,7 +787,7 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
   - Perform any operations as if you were in a regular issue buffer
 - Review pending comments with `Octo review comments`
   - Use <CR> to jump to the selected pending comment
-- If you want to review a specific commit, use `Octo review commit` to pick a commit. The file panel will get filtered to show only files changed by that commit. Any comments placed on these files will be applied at that specific commit level and will be added to the pending review.
+- If you want to review a specific commit, use `Octo review commit` to pick a commit. The file panel will show all files changed by that commit, including commits with more than one page of files. Any comments placed on these files will be applied at that specific commit level and will be added to the pending review.
 - When ready, submit the review with `Octo review submit`
 - A new float window will pop up. Enter the top level review comment and exit to normal mode. Then press `<C-m>` to submit a comment, `<C-a>` to approve it or `<C-r>` to request changes
 
