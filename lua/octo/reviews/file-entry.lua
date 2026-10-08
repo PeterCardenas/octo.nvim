@@ -44,6 +44,7 @@ M._null_buffer = {}
 ---@field right_comment_ranges? [integer, integer][]
 ---@field left_fetching boolean
 ---@field right_fetching boolean
+---@field fetch_callbacks? (fun())[]
 ---@field associated_bufs integer[]
 ---@field diffhunks? string[]
 ---@field viewed_state octo.FileViewedState
@@ -219,8 +220,29 @@ end
 ---When called synchronously, returns whether the file is ready to render after
 ---waiting. Callers rely on this to decide whether the diff buffers can be loaded.
 ---@param sync boolean
+---@param on_complete? fun()
 ---@return boolean ready
-function FileEntry:fetch(sync)
+function FileEntry:fetch(sync, on_complete)
+  if self:is_ready_to_render() then
+    if on_complete then
+      on_complete()
+    end
+    return true
+  end
+  if on_complete then
+    self.fetch_callbacks = self.fetch_callbacks or {}
+    table.insert(self.fetch_callbacks, on_complete)
+  end
+  local function notify_complete()
+    if not self:is_ready_to_render() then
+      return
+    end
+    local callbacks = self.fetch_callbacks or {}
+    self.fetch_callbacks = nil
+    for _, callback in ipairs(callbacks) do
+      callback()
+    end
+  end
   local right_path = self.path
   local left_path = self.path
   local current_review = require("octo.reviews").get_current_review()
@@ -252,12 +274,14 @@ function FileEntry:fetch(sync)
       self.right_lines = lines
       self.right_fetched = true
       self.right_fetching = false
+      notify_complete()
     end)
   else
     utils.get_file_contents(self.pull_request.repo, right_sha, right_path, function(lines)
       self.right_lines = lines
       self.right_fetched = true
       self.right_fetching = false
+      notify_complete()
     end)
   end
 
@@ -267,12 +291,14 @@ function FileEntry:fetch(sync)
       self.left_lines = lines
       self.left_fetched = true
       self.left_fetching = false
+      notify_complete()
     end)
   else
     utils.get_file_contents(self.pull_request.repo, left_sha, left_path, function(lines)
       self.left_lines = lines
       self.left_fetched = true
       self.left_fetching = false
+      notify_complete()
     end)
   end
 

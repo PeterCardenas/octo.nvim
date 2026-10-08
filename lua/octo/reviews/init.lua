@@ -163,7 +163,7 @@ function Review:start_or_resume()
 end
 
 ---Register freshly fetched files as this review's files
----Selects and fetches the first unread files
+---Selects and fetches the first unread file
 ---Defaults to the first file if all files are VIEWED
 ---@param files FileEntry[]
 function Review:set_files_and_select_first(files)
@@ -183,9 +183,6 @@ function Review:set_files_and_select_first(files)
   if selected_file_idx then
     files[selected_file_idx]:fetch(true)
     self.layout.selected_file_idx = selected_file_idx
-  end
-  for _, file in ipairs(files) do
-    file:fetch(false)
   end
   self.layout:update_files()
 end

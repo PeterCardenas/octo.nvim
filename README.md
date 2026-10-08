@@ -777,7 +777,7 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
 
 - Enter review mode for the current branch with `Octo review`. Alternatively open the PR (e.g. `Octo <PR url>` or `Octo pr list` or `Octo pr edit <PR number>`) then use `Octo review` in the PR buffer to enter review mode for a specific PR.
 - A new tab will show a panel with changed files and two windows showing the diff on any of them.
-- Change panel entries with `]q` and `[q` or by selecting an entry in the window
+- Change panel entries with `]q` and `[q` or by selecting an entry in the window. Nearby files are prefetched so switching between them is fast; distant files load when selected, without downloading every file in a large PR.
 - Add comments with `<localleader>ca` or suggestions with `<localleader>sa` on single or multiple visual-selected lines
   - A new buffer will appear in the alternate diff window. The cursor will be positioned in the new buffer
   - When ready, save the buffer to commit changes to GitHub

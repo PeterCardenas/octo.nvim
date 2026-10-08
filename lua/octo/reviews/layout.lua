@@ -67,6 +67,7 @@ function Layout:open(review)
 end
 
 function Layout:close()
+  self.prefetch_closed = true
   for _, file in ipairs(self.files) do
     file:destroy()
   end
@@ -135,6 +136,8 @@ function Layout:set_current_file(file, focus)
     self.files[self.selected_file_idx] = file
     file:load_buffers(self.left_winid, self.right_winid)
 
+    self:prefetch_nearby_files()
+
     -- Mark and move cursor to selected file in file panel
     self.file_panel:mark_selected(self:get_current_file())
     self.file_panel:set_cursor_to_file(self:get_current_file())
@@ -146,6 +149,38 @@ function Layout:set_current_file(file, focus)
     else
       vim.api.nvim_set_current_win(self.left_winid)
     end
+  end
+end
+
+---Warm a wide navigation window without launching all its requests at once.
+function Layout:prefetch_nearby_files()
+  if self.prefetch_closed or not self.tabpage or vim.api.nvim_get_current_tabpage() ~= self.tabpage then
+    return
+  end
+  self.prefetching = self.prefetching or 0
+  -- Four files in flight cap background content requests at eight.
+  while self.prefetching < 4 do
+    local next_file
+    for offset = 1, 20 do
+      for _, idx in ipairs { self.selected_file_idx + offset, self.selected_file_idx - offset } do
+        local file = self.files[idx]
+        if file and not file:is_ready_to_render() and not file.left_fetching and not file.right_fetching then
+          next_file = file
+          break
+        end
+      end
+      if next_file then
+        break
+      end
+    end
+    if not next_file then
+      return
+    end
+    self.prefetching = self.prefetching + 1
+    next_file:fetch(false, function()
+      self.prefetching = self.prefetching - 1
+      self:prefetch_nearby_files()
+    end)
   end
 end
 

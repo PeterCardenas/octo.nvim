@@ -53,6 +53,39 @@ describe("FileEntry:fetch", function()
     eq(true, file:is_ready_to_render())
   end)
 
+  it("does not request content again when both sides are cached", function()
+    local calls = 0
+    utils.get_file_contents = function(_, _, _, cb)
+      calls = calls + 1
+      cb { "line" }
+    end
+
+    local file = make_file()
+    eq(true, file:fetch(true))
+    eq(true, file:fetch(false))
+    eq(true, file:fetch(true))
+    eq(2, calls)
+  end)
+
+  it("signals completion only after both sides finish fetching", function()
+    local callbacks = {}
+    utils.get_file_contents = function(_, _, _, cb)
+      callbacks[#callbacks + 1] = cb
+    end
+
+    local file = make_file()
+    local completed = 0
+    file:fetch(false, function()
+      completed = completed + 1
+    end)
+    eq(2, #callbacks)
+    callbacks[1] { "right" }
+    eq(0, completed)
+    callbacks[2] { "left" }
+    eq(1, completed)
+    eq(true, file:is_ready_to_render())
+  end)
+
   it("returns readiness when a fetch is already in flight", function()
     -- Simulate an in-flight async fetch that has already populated both sides.
     local file = make_file()

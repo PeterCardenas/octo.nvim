@@ -515,6 +515,8 @@ PR REVIEW                                       *octo-pr-review*
 * Start a review with `Octo review start` or resume a pending review with `Octo review resume`
  A new tab will show a panel with changed files and two windows showing the diff on any of them.
  Change panel entries with `]q` and `[q` or by selecting an entry in the window.
+ Nearby files are prefetched for fast navigation; distant files load when selected,
+ rather than downloading every file in a large PR.
 * Navigate to unviewed files with `]u` (next unviewed) and `[u` (previous unviewed).
 * Add comments with `<localleader>ca` or suggestions with `<localleader>sa` on single or
   multiple visual-selected lines
