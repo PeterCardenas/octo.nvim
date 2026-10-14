@@ -112,6 +112,8 @@ function Layout:set_current_file(file, focus)
   if self:file_safeguard() or not file then
     return
   end
+  -- Keep the previous entry before changing selection so its images are detached.
+  local previous_file = self:get_current_file()
   local found = false
   for i, f in ipairs(self.files) do
     if f == file then
@@ -128,9 +130,8 @@ function Layout:set_current_file(file, focus)
         return
       end
     end
-    local cur = self:get_current_file()
-    if cur then
-      cur:detach_buffers()
+    if previous_file then
+      previous_file:detach_buffers()
     end
     vim.cmd [[diffoff!]]
     self.files[self.selected_file_idx] = file

@@ -526,6 +526,13 @@ PR REVIEW                                       *octo-pr-review*
  Change panel entries with `]q` and `[q` or by selecting an entry in the window.
  Nearby files are prefetched for fast navigation; distant files load when selected,
  rather than downloading every file in a large PR.
+* With Snacks image support enabled, supported image files automatically show
+  their old and new revisions side by side. Binary data is fetched at the
+  review's exact commits and cached in stdpath("cache")/octo/images. Renamed,
+  added, and deleted images are supported. A Kitty graphics-compatible terminal
+  is required; run `:checkhealth snacks` if previews cannot render. Use
+  `<localleader>cf` to add a file-level image comment. Without Snacks image
+  support, the existing review behavior is unchanged.
 * Navigate to unviewed files with `]u` (next unviewed) and `[u` (previous unviewed).
 * Add comments with `<localleader>ca` or suggestions with `<localleader>sa` on single or
   multiple visual-selected lines

@@ -789,6 +789,7 @@ If no command is passed, the argument to `Octo` is treated as a URL from where a
 - Enter review mode for the current branch with `Octo review`. Alternatively open the PR (e.g. `Octo <PR url>` or `Octo pr list` or `Octo pr edit <PR number>`) then use `Octo review` in the PR buffer to enter review mode for a specific PR.
 - A new tab will show a panel with changed files and two windows showing the diff on any of them.
 - Change panel entries with `]q` and `[q` or by selecting an entry in the window. Nearby files are prefetched so switching between them is fast; distant files load when selected, without downloading every file in a large PR.
+- With Snacks' image module enabled, supported image files automatically show the old and new revisions side by side instead of a text diff. Images are fetched as binary data at the review's exact commits and cached under `stdpath("cache")/octo/images`; renamed, added, and deleted files are supported. A Kitty graphics-compatible terminal is required (`:checkhealth snacks`). Use `<localleader>cf` for file-level image comments. Without Snacks image support, the existing review behavior is unchanged.
 - Add comments with `<localleader>ca` or suggestions with `<localleader>sa` on single or multiple visual-selected lines
   - A new buffer will appear in the alternate diff window. The cursor will be positioned in the new buffer
   - When ready, save the buffer to commit changes to GitHub

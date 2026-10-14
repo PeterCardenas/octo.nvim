@@ -3,6 +3,7 @@
 
 local config = require "octo.config"
 local constants = require "octo.constants"
+local image = require "octo.reviews.image"
 local gh = require "octo.gh"
 local mutations = require "octo.gh.mutations"
 local signs = require "octo.ui.signs"
@@ -30,6 +31,9 @@ M._null_buffer = {}
 ---@field stats GitStats
 ---@field left_binary boolean|nil
 ---@field right_binary boolean|nil
+---@field image boolean
+---@field left_image_path? string
+---@field right_image_path? string
 ---@field left_bufid? integer
 ---@field right_bufid? integer
 ---@field left_lines string[]
@@ -95,6 +99,7 @@ function FileEntry:new(opt)
     patch = opt.patch,
     basename = utils.path_basename(opt.path),
     extension = utils.path_extension(opt.path),
+    image = image.supports(opt.path),
     pull_request = pr,
     status = opt.status,
     stats = opt.stats,
@@ -268,6 +273,43 @@ function FileEntry:fetch(sync, on_complete)
     left_path = self.previous_path
   end
 
+  if self.image then
+    local function fetch_side(side, path, sha, use_local, missing)
+      local function complete(image_path, err)
+        self[side .. "_image_path"] = image_path
+        self[side .. "_lines"] = err and { err } or {}
+        self[side .. "_fetched"] = true
+        self[side .. "_fetching"] = false
+        notify_complete()
+      end
+      if missing then
+        complete(nil, missing)
+      else
+        image.fetch(self.pull_request.repo, sha, path, use_local, complete)
+      end
+    end
+    fetch_side(
+      "right",
+      right_path,
+      right_sha,
+      self.pull_request.local_right,
+      self.status == "D" and "Image deleted" or nil
+    )
+    fetch_side(
+      "left",
+      left_path,
+      left_sha,
+      self.pull_request.local_left,
+      self.status == "A" and "Image added (no previous version)" or nil
+    )
+    if sync then
+      vim.wait(conf.timeout, function()
+        return self:is_ready_to_render()
+      end)
+    end
+    return self:is_ready_to_render()
+  end
+
   -- fetch right version
   if self.pull_request.local_right then
     utils.get_file_at_commit(right_path, right_sha, function(lines)
@@ -321,6 +363,7 @@ end
 ---@param left_winid integer
 ---@param right_winid integer
 function FileEntry:load_buffers(left_winid, right_winid)
+  self.left_winid, self.right_winid = left_winid, right_winid
   local empty_files = #self.left_lines == 0 and #self.right_lines == 0
   local splits = {
     {
@@ -343,15 +386,18 @@ function FileEntry:load_buffers(left_winid, right_winid)
   for _, split in ipairs(splits) do
     if not split.bufid or not vim.api.nvim_buf_is_loaded(split.bufid) then
       local conf = config.values
-      local use_local = conf.use_local_fs and split.pos == "right" and utils.in_pr_branch(self.pull_request)
+      local use_local = not self.image
+        and conf.use_local_fs
+        and split.pos == "right"
+        and utils.in_pr_branch(self.pull_request)
 
       -- create buffer
       split.bufid = M._create_buffer {
         status = self.status,
-        show_diff = self.patch ~= nil,
+        show_diff = self.image or self.patch ~= nil,
         path = self.path,
         split = split.pos,
-        binary = split.binary,
+        binary = not self.image and split.binary,
         lines = split.lines,
         repo = self.pull_request.repo,
         use_local = use_local,
@@ -361,8 +407,6 @@ function FileEntry:load_buffers(left_winid, right_winid)
       table.insert(self.associated_bufs, split.bufid)
       ---@diagnostic disable-next-line: no-unknown
       self[split.pos .. "_bufid"] = split.bufid
-      ---@diagnostic disable-next-line: no-unknown
-      self[split.pos .. "_winid"] = split.winid
     end
 
     M._configure_buffer(split.bufid)
@@ -383,6 +427,20 @@ end
 
 -- activate the diff between right and left panels
 function FileEntry:show_diff()
+  if self.image then
+    for _, side in ipairs { "left", "right" } do
+      local path = self[side .. "_image_path"]
+      local winid = self[side .. "_winid"]
+      vim.wo[winid].diff = false
+      vim.wo[winid].scrollbind = false
+      vim.wo[winid].cursorbind = false
+      vim.wo[winid].foldmethod = "manual"
+      if path then
+        image.render(self[side .. "_bufid"], path)
+      end
+    end
+    return
+  end
   for _, bufid in ipairs { self.left_bufid, self.right_bufid } do
     vim.api.nvim_buf_call(bufid, function()
       -- Only trigger ft detect event for non local files to avoid triggering ftplugins for nothing
@@ -408,6 +466,11 @@ function FileEntry:attach_buffers()
 end
 
 function FileEntry:detach_buffers()
+  if self.image and _G.Snacks then
+    for _, bufnr in ipairs { self.left_bufid, self.right_bufid } do
+      Snacks.image.placement.clean(bufnr)
+    end
+  end
   if self.left_bufid then
     M._detach_buffer(self.left_bufid)
   end
