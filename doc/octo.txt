@@ -554,9 +554,9 @@ PR REVIEW                                       *octo-pr-review*
   * Any comments placed on these files will be applied at that specific commit level and will be
     added to the pending review.
 * When ready, submit the review with `Octo review submit`
-* A new float window will pop up. Enter the top level review comment and exit
-  to normal mode. Then press <C-m> to submit a comment, <C-a> to approve
-  it or <C-r> to request changes
+* A new float window with Markdown filetype will pop up. Enter the top level
+  review comment and exit to normal mode. Then press <C-m> to submit a comment,
+  <C-a> to approve it or <C-r> to request changes
 
 
 COMPLETION                                      *octo-completion*

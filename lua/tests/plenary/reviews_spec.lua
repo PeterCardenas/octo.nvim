@@ -17,6 +17,19 @@ describe("Reviews module:", function()
     reviews.reviews = original_reviews
   end)
 
+  it("uses markdown for the review submission buffer", function()
+    local review = setmetatable({ id = "pending_review" }, { __index = reviews.Review })
+
+    review:collect_submit_info()
+
+    local bufnr = review.submit_review_win.bufnr
+    local filetype = vim.bo[bufnr].filetype
+    vim.api.nvim_win_close(review.submit_review_win.winid, true)
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+
+    eq("markdown", filetype)
+  end)
+
   it("matches pull request repositories case-insensitively", function()
     local closed = false
     reviews.reviews.review = {

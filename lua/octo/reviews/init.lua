@@ -383,6 +383,7 @@ function Review:collect_submit_info()
     end,
   })
   vim.api.nvim_set_current_win(winid)
+  vim.bo[bufnr].filetype = "markdown"
   vim.bo[bufnr].syntax = "octo"
   utils.apply_mappings("submit_win", bufnr)
   vim.cmd [[normal G]]
