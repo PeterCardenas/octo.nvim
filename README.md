@@ -401,6 +401,8 @@ require"octo".setup {
     },
     issue = {
       issue_options = { lhs = "<CR>", desc = "show issue options" },
+      attach_image_clipboard = { lhs = "<localleader>ip", desc = "attach image from clipboard" },
+      attach_image_file = { lhs = "<localleader>if", desc = "attach image from file picker" },
       close_issue = { lhs = "<localleader>ic", desc = "close issue" },
       reopen_issue = { lhs = "<localleader>io", desc = "reopen issue" },
       list_issues = { lhs = "<localleader>il", desc = "list open issues on same repo" },
@@ -431,6 +433,8 @@ require"octo".setup {
     },
     pull_request = {
       pr_options = { lhs = "<CR>", desc = "show PR options" },
+      attach_image_clipboard = { lhs = "<localleader>ip", desc = "attach image from clipboard" },
+      attach_image_file = { lhs = "<localleader>if", desc = "attach image from file picker" },
       checkout_pr = { lhs = "<localleader>po", desc = "checkout PR" },
       merge_pr = { lhs = "<localleader>pm", desc = "merge commit PR" },
       squash_and_merge_pr = { lhs = "<localleader>psm", desc = "squash and merge PR" },
@@ -598,6 +602,14 @@ To control polling at runtime, use `require('octo.polling').set_enabled(boolean)
 This stops the timer and prevents newly tracked buffers from restarting it when
 false. Set `poll.should_poll_buffer = function(bufnr) return ... end` to skip
 individual buffers (for example, those hidden in Neovim).
+
+In editable issue and pull request descriptions or comments, `<localleader>ip`
+captures a PNG from the clipboard through the optional `img-clip.nvim` plugin,
+and `<localleader>if` opens the configured `fzf-lua` file picker (or a built-in
+directory picker) to select an existing PNG. Both upload to github.com and insert
+Markdown locally; use the existing Octo `:write` mapping/command to save the
+edited body or comment. Uploads require WRITE, MAINTAIN, or ADMIN access. GitHub
+Enterprise and non-PNG images are not supported.
 
 Polling reads the GraphQL budget in its existing fingerprint requests, without
 additional API calls. `poll.interval` is the base interval: polling uses 3x, 6x,

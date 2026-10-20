@@ -372,6 +372,8 @@ function M.get_default_values()
       },
       issue = {
         issue_options = { lhs = "<CR>", desc = "show issue options" },
+        attach_image_clipboard = { lhs = "<localleader>ip", desc = "attach image from clipboard" },
+        attach_image_file = { lhs = "<localleader>if", desc = "attach image from file picker" },
         close_issue = { lhs = "<localleader>ic", desc = "close issue" },
         reopen_issue = { lhs = "<localleader>io", desc = "reopen issue" },
         list_issues = { lhs = "<localleader>il", desc = "list open issues on same repo" },
@@ -402,6 +404,8 @@ function M.get_default_values()
       },
       pull_request = {
         pr_options = { lhs = "<CR>", desc = "show PR options" },
+        attach_image_clipboard = { lhs = "<localleader>ip", desc = "attach image from clipboard" },
+        attach_image_file = { lhs = "<localleader>if", desc = "attach image from file picker" },
         checkout_pr = { lhs = "<localleader>po", desc = "checkout PR" },
         merge_pr = { lhs = "<localleader>pm", desc = "merge commit PR" },
         squash_and_merge_pr = { lhs = "<localleader>psm", desc = "squash and merge PR" },

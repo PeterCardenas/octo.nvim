@@ -525,6 +525,12 @@ return {
     current_review:submit "APPROVE"
   end,
   approve_pr = approve_pr,
+  attach_image_clipboard = function()
+    require("octo.attachments").paste_clipboard()
+  end,
+  attach_image_file = function()
+    require("octo.attachments").pick_file()
+  end,
   comment_review = function()
     local current_review = reviews.get_current_review()
     if not current_review then
