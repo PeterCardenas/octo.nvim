@@ -203,8 +203,8 @@ Mappings for many of the commands can be easily configured - see |octo-config|.
 
 In editable issue and pull request descriptions or comments, the default
 <localleader>ip mapping captures a clipboard PNG using the optional
-img-clip.nvim plugin, while <localleader>if opens the configured fzf-lua file
-picker (or a built-in directory picker) for an existing PNG. Both actions upload
+img-clip.nvim plugin, while <localleader>if opens a regular vim.ui.select picker
+for an existing PNG, with directory navigation and PNG-only filtering. Both actions upload
 to github.com and insert Markdown in the buffer; use the existing Octo |:write|
 operation to save. Uploads require WRITE, MAINTAIN, or ADMIN repository access.
 GitHub Enterprise and non-PNG images are unsupported. The two mappings may be

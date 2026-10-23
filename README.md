@@ -605,8 +605,8 @@ individual buffers (for example, those hidden in Neovim).
 
 In editable issue and pull request descriptions or comments, `<localleader>ip`
 captures a PNG from the clipboard through the optional `img-clip.nvim` plugin,
-and `<localleader>if` opens the configured `fzf-lua` file picker (or a built-in
-directory picker) to select an existing PNG. Both upload to github.com and insert
+and `<localleader>if` opens a regular `vim.ui.select` picker to select an existing
+PNG, with directory navigation and PNG-only filtering. Both upload to github.com and insert
 Markdown locally; use the existing Octo `:write` mapping/command to save the
 edited body or comment. Uploads require WRITE, MAINTAIN, or ADMIN access. GitHub
 Enterprise and non-PNG images are not supported.

@@ -4,6 +4,9 @@ describe("octo.attachments", function()
   local original_system = vim.system
   local original_remote_host = require("octo.utils").get_remote_host
   local original_buffers = _G.octo_buffers
+  local original_select = vim.ui.select
+  local original_picker = config.values.picker
+  local original_fzf = package.loaded["fzf-lua"]
 
   local function create_png(path)
     local file = assert(io.open(path, "wb"))
@@ -94,6 +97,9 @@ describe("octo.attachments", function()
     require("octo.utils").get_remote_host = original_remote_host
     config.values.github_hostname = ""
     _G.octo_buffers = original_buffers
+    config.values.picker = original_picker
+    vim.ui.select = original_select
+    package.loaded["fzf-lua"] = original_fzf
   end)
 
   it("encodes upload query values", function()
@@ -217,62 +223,56 @@ describe("octo.attachments", function()
     os.remove(path)
   end)
 
-  ---@class octo.test.AttachmentPickerOptions
-  ---@field winopts {on_close: fun()}
-  ---@field actions {esc: fun(), default: fun(entries: string[], opts: table)}
-
-  it("cleans the target anchor exactly once when fzf is aborted", function()
-    local original_picker = config.values.picker
-    local original_fzf = package.loaded["fzf-lua"]
-    ---@type octo.test.AttachmentPickerOptions
-    local picker_options
+  it("uses the regular selection picker and cleans the anchor on cancellation", function()
+    config.values.picker = "fzf-lua"
+    local file_picker_calls = 0
     package.loaded["fzf-lua"] = {
-      files = function(options)
-        picker_options = options
+      files = function()
+        file_picker_calls = file_picker_calls + 1
       end,
     }
-    config.values.picker = "fzf-lua"
-    local buffer = make_buffer()
-    local calls = 0
-    vim.system = function()
-      calls = calls + 1
+    local selected = false
+    vim.ui.select = function(_, _, callback)
+      selected = true
+      callback(nil)
     end
+    local buffer = make_buffer()
+    local calls = install_transport()
     attachments.pick_file()
-    assert.is_truthy(picker_options)
-    picker_options.winopts.on_close()
-    picker_options.actions.esc()
-    assert.are.equal(0, calls)
+    assert.is_true(selected)
+    assert.are.equal(0, file_picker_calls)
+    assert.are.equal(0, #calls)
     local ns = vim.api.nvim_get_namespaces().octo_attachments
     assert.are.equal(0, #vim.api.nvim_buf_get_extmarks(buffer.bufnr, ns, 0, -1, {}))
-    config.values.picker = original_picker
-    package.loaded["fzf-lua"] = original_fzf
     vim.api.nvim_buf_delete(buffer.bufnr, { force = true })
   end)
 
-  it("uses the real fzf file callback and inserts only after mocked upload completes", function()
-    local original_picker = config.values.picker
-    local original_fzf = package.loaded["fzf-lua"]
-    ---@type octo.test.AttachmentPickerOptions
-    local picker_options
-    package.loaded["fzf-lua"] = {
-      path = {
-        entry_to_file = function(entry)
-          return { path = entry }
-        end,
-      },
-      files = function(options)
-        picker_options = options
-      end,
-    }
-    config.values.picker = "fzf-lua"
+  it("navigates directories, filters PNGs, and inserts only after mocked upload completes", function()
     local buffer = make_buffer()
     local calls, completions = install_transport()
-    local path = vim.fn.tempname() .. ".png"
+    local directory = vim.fn.tempname()
+    vim.fn.mkdir(directory .. "/images", "p")
+    local path = directory .. "/images/shot.PNG"
     create_png(path)
+    create_png(directory .. "/ignored.txt")
+    local original_cwd = vim.fn.getcwd()
+    vim.fn.chdir(directory)
+    local selections = 0
+    vim.ui.select = function(choices, _, callback)
+      selections = selections + 1
+      if selections == 1 then
+        assert.are.same({ "../", "[dir] images" }, choices)
+        callback "[dir] images"
+      else
+        assert.are.same({ "../", "shot.PNG" }, choices)
+        callback "shot.PNG"
+      end
+    end
     attachments.pick_file()
-    picker_options.winopts.on_close()
-    picker_options.actions.default({ path }, {})
+    vim.fn.chdir(original_cwd)
+    assert.are.equal(2, selections)
     assert.are.equal(1, #calls)
+    assert.is_nil(vim.api.nvim_buf_get_lines(buffer.bufnr, 2, 3, false)[1]:find "user%-attachments")
     send(completions, 1, '{"id":123}')
     assert.is_true(vim.wait(1000, function()
       return #calls == 2
@@ -286,10 +286,7 @@ describe("octo.attachments", function()
       return vim.api.nvim_buf_get_lines(buffer.bufnr, 2, 3, false)[1]:find "user%-attachments/assets/abc" ~= nil
     end))
     assert.are.equal(3, #calls)
-    picker_options.winopts.on_close()
-    config.values.picker = original_picker
-    package.loaded["fzf-lua"] = original_fzf
-    os.remove(path)
+    vim.fn.delete(directory, "rf")
     vim.api.nvim_buf_delete(buffer.bufnr, { force = true })
   end)
 

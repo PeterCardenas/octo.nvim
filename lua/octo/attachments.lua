@@ -318,41 +318,6 @@ end
 
 ---@param callback fun(path: string?)
 local function choose_file(callback)
-  if config.values.picker == "fzf-lua" then
-    local ok, fzf = pcall(require, "fzf-lua")
-    if ok then
-      local selected = false
-      local options = {
-        prompt = "Select PNG image> ",
-        actions = {
-          default = function(entries, picker_opts)
-            if not entries or not entries[1] then
-              return
-            end
-            selected = true
-            local parsed, entry = pcall(fzf.path.entry_to_file, entries[1], picker_opts)
-            local path = parsed and type(entry.path) == "string" and vim.fn.fnamemodify(entry.path, ":p") or nil
-            callback(path)
-          end,
-          ["esc"] = function()
-            callback(nil)
-          end,
-        },
-        winopts = {
-          on_close = function()
-            vim.schedule(function()
-              if not selected then
-                callback(nil)
-              end
-            end)
-          end,
-        },
-      }
-      if pcall(fzf.files, options) then
-        return
-      end
-    end
-  end
   local function browse(directory)
     local choices = { "../" }
     for name, kind in vim.fs.dir(directory) do
