@@ -318,29 +318,13 @@ end
 
 ---@param callback fun(path: string?)
 local function choose_file(callback)
-  local function browse(directory)
-    local choices = { "../" }
-    for name, kind in vim.fs.dir(directory) do
-      if kind == "directory" or name:lower():match "%.png$" then
-        choices[#choices + 1] = (kind == "directory" and "[dir] " or "") .. name
-      end
+  vim.ui.input({ prompt = "PNG image path: ", completion = "file" }, function(path)
+    if not path or path == "" then
+      callback(nil)
+      return
     end
-    table.sort(choices)
-    vim.ui.select(choices, { prompt = "Select PNG (directories navigate):" }, function(choice)
-      if not choice then
-        callback(nil)
-        return
-      end
-      local name = choice:gsub("^%[dir%] ", "")
-      local path = vim.fs.normalize(directory .. "/" .. name)
-      if choice:match "^%[dir%] " or choice == "../" then
-        browse(path)
-      else
-        callback(path)
-      end
-    end)
-  end
-  browse(vim.fn.getcwd())
+    callback(vim.fn.fnamemodify(path, ":p"))
+  end)
 end
 
 ---@param buffer OctoBuffer

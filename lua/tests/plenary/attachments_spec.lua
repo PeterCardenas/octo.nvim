@@ -5,8 +5,7 @@ describe("octo.attachments", function()
   local original_remote_host = require("octo.utils").get_remote_host
   local original_buffers = _G.octo_buffers
   local original_select = vim.ui.select
-  local original_picker = config.values.picker
-  local original_fzf = package.loaded["fzf-lua"]
+  local original_input = vim.ui.input
 
   local function create_png(path)
     local file = assert(io.open(path, "wb"))
@@ -97,9 +96,8 @@ describe("octo.attachments", function()
     require("octo.utils").get_remote_host = original_remote_host
     config.values.github_hostname = ""
     _G.octo_buffers = original_buffers
-    config.values.picker = original_picker
     vim.ui.select = original_select
-    package.loaded["fzf-lua"] = original_fzf
+    vim.ui.input = original_input
   end)
 
   it("encodes upload query values", function()
@@ -223,54 +221,42 @@ describe("octo.attachments", function()
     os.remove(path)
   end)
 
-  it("uses the regular selection picker and cleans the anchor on cancellation", function()
-    config.values.picker = "fzf-lua"
-    local file_picker_calls = 0
-    package.loaded["fzf-lua"] = {
-      files = function()
-        file_picker_calls = file_picker_calls + 1
-      end,
-    }
-    local selected = false
-    vim.ui.select = function(_, _, callback)
-      selected = true
-      callback(nil)
+  it("requests a file path with completion and cleans the anchor on cancellation or empty input", function()
+    vim.ui.select = function()
+      error "File attachments must use text input, not a selector"
     end
-    local buffer = make_buffer()
-    local calls = install_transport()
-    attachments.pick_file()
-    assert.is_true(selected)
-    assert.are.equal(0, file_picker_calls)
-    assert.are.equal(0, #calls)
-    local ns = vim.api.nvim_get_namespaces().octo_attachments
-    assert.are.equal(0, #vim.api.nvim_buf_get_extmarks(buffer.bufnr, ns, 0, -1, {}))
-    vim.api.nvim_buf_delete(buffer.bufnr, { force = true })
+    for _, input in ipairs { false, "" } do
+      local prompted = false
+      vim.ui.input = function(options, callback)
+        prompted = true
+        assert.are.equal("file", options.completion)
+        callback(input or nil)
+      end
+      local buffer = make_buffer()
+      local calls = install_transport()
+      attachments.pick_file()
+      assert.is_true(prompted)
+      assert.are.equal(0, #calls)
+      local ns = vim.api.nvim_get_namespaces().octo_attachments
+      assert.are.equal(0, #vim.api.nvim_buf_get_extmarks(buffer.bufnr, ns, 0, -1, {}))
+      vim.api.nvim_buf_delete(buffer.bufnr, { force = true })
+    end
   end)
 
-  it("navigates directories, filters PNGs, and inserts only after mocked upload completes", function()
+  it("accepts a typed relative path with spaces and inserts only after mocked upload completes", function()
     local buffer = make_buffer()
     local calls, completions = install_transport()
     local directory = vim.fn.tempname()
     vim.fn.mkdir(directory .. "/images", "p")
-    local path = directory .. "/images/shot.PNG"
+    local path = directory .. "/images/my shot.PNG"
     create_png(path)
-    create_png(directory .. "/ignored.txt")
     local original_cwd = vim.fn.getcwd()
     vim.fn.chdir(directory)
-    local selections = 0
-    vim.ui.select = function(choices, _, callback)
-      selections = selections + 1
-      if selections == 1 then
-        assert.are.same({ "../", "[dir] images" }, choices)
-        callback "[dir] images"
-      else
-        assert.are.same({ "../", "shot.PNG" }, choices)
-        callback "shot.PNG"
-      end
+    vim.ui.input = function(_, callback)
+      callback "images/my shot.PNG"
     end
     attachments.pick_file()
     vim.fn.chdir(original_cwd)
-    assert.are.equal(2, selections)
     assert.are.equal(1, #calls)
     assert.is_nil(vim.api.nvim_buf_get_lines(buffer.bufnr, 2, 3, false)[1]:find "user%-attachments")
     send(completions, 1, '{"id":123}')
