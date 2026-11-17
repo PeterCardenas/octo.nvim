@@ -54,25 +54,29 @@ function M.get_sign(buf, lnum, vnum, win)
   lnum = lnum - 1
   for _, s in ipairs(comments[buf] or {}) do
     if lnum >= s.from and lnum <= s.to then
-      local height = vim.api.nvim_win_text_height(win, { start_row = s.from, end_row = s.to }).all
-      local height_end = vim.api.nvim_win_text_height(win, { start_row = s.to, end_row = s.to }).all
+      -- This runs once per screen row on every redraw, so only measure the
+      -- comment's last line, and only while drawing it. Measuring the whole
+      -- comment per row made each redraw O(rows * comment lines), and every
+      -- measured row runs the treesitter conceal provider under 'wrap'.
+      local is_last_row = lnum == s.to
+        and vnum == vim.api.nvim_win_text_height(win, { start_row = s.to, end_row = s.to }).all - 1
       local corner = corners.middle
-      if height == 1 then
+      if s.from == s.to and vnum == 0 and is_last_row then
         corner = corners.single
       elseif lnum == s.from and vnum == 0 then
         corner = corners.top
-      elseif lnum == s.to and vnum == height_end - 1 then
+      elseif is_last_row then
         corner = corners.last
       end
-      -- Show last corner when a closed fold encompasses the comment's last line
-      if corner == corners.middle then
+      -- A closed fold reaching the comment's last line ends the comment on this row
+      if corner == corners.top or corner == corners.middle then
         -- foldclosedend is window-local; evaluate in the target window to avoid
         -- using stale/current-window fold state while this window is unfocused.
         local fold_end = vim.api.nvim_win_call(win, function()
           return vim.fn.foldclosedend(lnum + 1) -- lnum is 0-based, foldclosedend takes 1-based
         end)
         if fold_end ~= -1 and (fold_end - 1) >= s.to then
-          corner = corners.last
+          corner = corner == corners.top and corners.single or corners.last
         end
       end
       return { text = corner, hl = s.dirty and "OctoDirty" or "OctoStatusColumn" }
