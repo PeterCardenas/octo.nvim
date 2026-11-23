@@ -321,48 +321,90 @@ function M.load_buffer(opts)
   end
 
   ---@param buffer OctoBuffer
-  ---@return table<string, boolean>
-  local function capture_closed_comment_folds(buffer)
-    local closed = {} ---@type table<string, boolean>
+  ---@return table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
+  local function capture_comment_fold_states(buffer)
+    local states = {} ---@type table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
     if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
-      return closed
+      return states
     end
-    for _, comment in ipairs(buffer.commentsMetadata or {}) do
-      if comment.id and comment.extmark then
-        local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, {})
-        if mark[1] then
-          local is_closed = vim.api.nvim_win_call(win, function()
-            return vim.fn.foldclosed(mark[1] + 1) ~= -1
-          end)
-          if is_closed then
-            closed[tostring(comment.id)] = true
+    vim.api.nvim_win_call(win, function()
+      for _, comment in ipairs(buffer.commentsMetadata or {}) do
+        if comment.id and comment.extmark then
+          local mark =
+            vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
+          if mark[1] and mark[3] and mark[3].end_row then
+            local first_line = mark[1] + 1
+            local last_line = math.min(mark[3].end_row + 1, vim.api.nvim_buf_line_count(bufnr))
+            local folds = {} ---@type { start_offset: integer, end_offset: integer, closed: boolean }[]
+            local previous_level = first_line > 1 and vim.fn.foldlevel(first_line - 1) or 0
+            for line = first_line, last_line do
+              local level = vim.fn.foldlevel(line)
+              if level > previous_level then
+                local closed_start = vim.fn.foldclosed(line)
+                if closed_start == -1 or closed_start == line then
+                  local end_line = line
+                  for candidate = line + 1, last_line do
+                    if vim.fn.foldlevel(candidate) < level then
+                      break
+                    end
+                    end_line = candidate
+                  end
+                  folds[#folds + 1] = {
+                    start_offset = line - first_line,
+                    end_offset = end_line - first_line,
+                    closed = closed_start == line,
+                  }
+                end
+              end
+              previous_level = level
+            end
+            if #folds > 0 then
+              states[tostring(comment.id)] = folds
+            end
           end
         end
       end
-    end
-    return closed
+    end)
+    return states
   end
 
   ---@param buffer OctoBuffer
-  ---@param closed table<string, boolean>
-  local function restore_closed_comment_folds(buffer, closed)
+  ---@param states table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
+  local function restore_comment_fold_states(buffer, states)
     if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
       return
     end
-    for _, comment in ipairs(buffer.commentsMetadata or {}) do
-      if comment.id and closed[tostring(comment.id)] and comment.extmark then
-        local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, {})
-        if mark[1] then
-          vim.api.nvim_win_call(win, function()
-            local line = mark[1] + 1
-            vim.api.nvim_win_set_cursor(win, { line, 0 })
-            if vim.fn.foldclosed(line) == -1 then
-              vim.cmd "normal! zc"
+    vim.api.nvim_win_call(win, function()
+      for _, comment in ipairs(buffer.commentsMetadata or {}) do
+        local saved_folds = comment.id and states[tostring(comment.id)] or nil
+        if saved_folds and comment.extmark then
+          local mark =
+            vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
+          if mark[1] and mark[3] and mark[3].end_row then
+            local first_line = mark[1] + 1
+            local last_line = mark[3].end_row + 1
+            table.sort(saved_folds, function(left, right)
+              return left.start_offset < right.start_offset
+            end)
+            for _, state in ipairs(saved_folds) do
+              local line = first_line + state.start_offset
+              if line <= last_line and vim.fn.foldlevel(line) > 0 then
+                vim.api.nvim_win_set_cursor(win, { line, 0 })
+                if state.closed then
+                  if vim.fn.foldclosed(line) == -1 then
+                    vim.cmd "normal! zc"
+                  end
+                else
+                  while vim.fn.foldclosed(line) ~= -1 do
+                    vim.cmd "normal! zo"
+                  end
+                end
+              end
             end
-          end)
+          end
         end
       end
-    end
+    end)
   end
 
   local shell_rendered = false
@@ -505,9 +547,9 @@ function M.load_buffer(opts)
       return
     end
 
-    local closed_comment_folds = {} ---@type table<string, boolean>
+    local comment_fold_states = {} ---@type table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
     if shell_rendered and octo_buf then
-      closed_comment_folds = capture_closed_comment_folds(octo_buf)
+      comment_fold_states = capture_comment_fold_states(octo_buf)
     end
     if shell_rendered and win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
       if octo_buf then
@@ -532,7 +574,7 @@ function M.load_buffer(opts)
           octo_buf:render_issue()
         end
         octo_buf:render_signs()
-        restore_closed_comment_folds(octo_buf, closed_comment_folds)
+        restore_comment_fold_states(octo_buf, comment_fold_states)
       else
         M.create_buffer(kind, obj, repo, false, hostname)
       end

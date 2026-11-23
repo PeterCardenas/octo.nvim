@@ -1098,6 +1098,52 @@ describe("Octo module:", function()
     assert.are.same(1, vim.fn.foldclosed(3))
   end)
 
+  it("preserves open comment and closed nested details fold states by comment ID", function()
+    local constants = require "octo.constants"
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local render_count = 0
+    local requests, get_buffer = install_async_load_stubs(function(buffer)
+      render_count = render_count + 1
+      vim.cmd "silent! normal! zE"
+      local lines = {}
+      if render_count > 1 then
+        vim.list_extend(lines, { "new event", "another event" })
+      end
+      vim.list_extend(
+        lines,
+        { "title", "comment start", "outer body", "<details>", "nested body", "</details>", "comment end" }
+      )
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+      local comment_start = render_count > 1 and 3 or 1
+      local mark =
+        vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, comment_start, 0, { end_row = #lines })
+      buffer.commentsMetadata = { { id = "comment-1", extmark = mark } }
+      vim.cmd [[setlocal foldmethod=manual]]
+      vim.cmd [[setlocal foldnestmax=20]]
+      if render_count == 1 then
+        vim.cmd [[2,7fold]]
+        vim.cmd [[2foldopen]]
+        vim.cmd [[4,6fold]]
+        vim.cmd [[4foldopen]]
+      else
+        vim.cmd [[4,9fold]]
+        vim.cmd [[4foldopen]]
+        vim.cmd [[6,8fold]]
+        vim.cmd [[6foldopen]]
+      end
+    end)
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell" }
+    local current_buffer = get_buffer()
+    current_buffer:render_issue()
+    vim.cmd [[4foldclose]]
+
+    requests[1].callback { id = "complete" }
+
+    assert.are.same(-1, vim.fn.foldclosed(4))
+    assert.are.same(6, vim.fn.foldclosed(7))
+  end)
+
   it("clears the loading skeleton and notifies its caller once on terminal failure", function()
     local bufnr = create_named_buffer "octo://owner/repo/issue/17"
     local requests = install_async_load_stubs()
