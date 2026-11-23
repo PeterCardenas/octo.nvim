@@ -300,6 +300,38 @@ describe("Octo module:", function()
     assert.are.same(3, #loaded.timelineItems.nodes)
   end)
 
+  it("accepts a successful REST diff when gh writes informational stderr", function()
+    gh.api.get = function(opts)
+      opts.opts.cb("diff --git a/file b/file\n", "non-error gh hint", 0)
+    end
+    gh.api.graphql = function(opts)
+      opts.opts.cb(
+        vim.json.encode {
+          data = {
+            repository = {
+              pullRequest = {
+                title = "Pull diff title",
+                updatedAt = "2026-01-01T00:00:00Z",
+                baseRefOid = "base",
+                headRefOid = "head",
+              },
+            },
+          },
+        },
+        nil
+      )
+    end
+
+    local loaded
+    octo.load_pull_diff("owner/repo", 7, nil, function(obj)
+      loaded = obj
+    end)
+
+    assert.is_table(loaded)
+    assert.are.same("diff --git a/file b/file\n", loaded.diff)
+    assert.are.same("base...head", loaded.diffFingerprint)
+  end)
+
   it("starts pull diff fingerprint and REST requests concurrently", function()
     local requests = {}
     gh.api.get = function(opts)

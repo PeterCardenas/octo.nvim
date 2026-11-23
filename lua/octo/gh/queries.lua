@@ -699,6 +699,14 @@ query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
 }
 ]] .. pull_page_fragment_definitions
 
+  local issue_page_fragment_definitions = remove_fragment(
+    remove_fragment(
+      remove_fragment(issue_fragment_definitions, fragments.issue_information),
+      fragments.label_connection
+    ),
+    fragments.assignee_connection
+  )
+
   M.issue_timeline_page = [[
 query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
   repository(owner: $owner, name: $name) {
@@ -711,7 +719,7 @@ query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
     }
   }
 }
-]] .. issue_fragment_definitions
+]] .. issue_page_fragment_definitions
 
   M.discussion_fast = [[
 query($owner: String!, $name: String!, $number: Int!) {

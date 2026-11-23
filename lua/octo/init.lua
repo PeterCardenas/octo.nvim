@@ -323,20 +323,19 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
     opts = {
       headers = { headers.diff },
       hostname = hostname,
-      cb = gh.create_callback {
-        failure = function(stderr)
+      cb = function(diff, stderr, status)
+        if status == nil or status == 0 then
+          diff_output = diff or ""
+          diff_finished = true
+          finish_if_ready()
+        else
           failed = true
-          utils.print_err(stderr)
+          utils.print_err(stderr or "")
           if on_error then
             on_error()
           end
-        end,
-        success = function(diff)
-          diff_output = diff
-          diff_finished = true
-          finish_if_ready()
-        end,
-      },
+        end
+      end,
     },
   }
 
