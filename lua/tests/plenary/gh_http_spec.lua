@@ -154,7 +154,7 @@ describe("GitHub HTTP transport", function()
     end))
   end)
 
-  it("uses the GitHub REST and GHES REST endpoint shapes", function()
+  it("uses GitHub, GitHub Enterprise Cloud, and GHES API endpoint shapes", function()
     if vim.fn.executable "curl" ~= 1 then
       pending "curl is unavailable"
       return
@@ -200,6 +200,49 @@ describe("GitHub HTTP transport", function()
     complete_system(4, { code = 0, stdout = '{"ok":true}' })
     assert.is_true(vim.wait(100, function()
       return received == 2
+    end))
+
+    gh.api.get {
+      "/repos/octo/repo/pulls/7",
+      opts = {
+        hostname = "tenant.ghe.com",
+        cb = function(output, stderr, status)
+          received = received + 1
+          assert.are.same(0, status)
+          assert.are.same({ ok = true }, vim.json.decode(output))
+        end,
+      },
+    }
+    complete_system(5, { code = 0, stdout = "ghec-token\n" })
+    assert.is_true(vim.wait(100, function()
+      return #calls == 6
+    end))
+    assert.is_true(calls[6].opts.stdin:find("https://api.tenant.ghe.com/repos/octo/repo/pulls/7", 1, true) ~= nil)
+    complete_system(6, { code = 0, stdout = '{"ok":true}' })
+    assert.is_true(vim.wait(100, function()
+      return received == 3
+    end))
+
+    gh.api.graphql {
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
+      jq = ".",
+      opts = {
+        hostname = "tenant.ghe.com",
+        cb = function(output, stderr, status)
+          received = received + 1
+          assert.are.same(0, status)
+          assert.are.same({ data = { ok = true } }, vim.json.decode(output))
+        end,
+      },
+    }
+    assert.is_true(vim.wait(100, function()
+      return #calls == 7
+    end))
+    assert.is_true(calls[7].opts.stdin:find("https://api.tenant.ghe.com/graphql", 1, true) ~= nil)
+    complete_system(7, { code = 0, stdout = '{"data":{"ok":true}}' })
+    assert.is_true(vim.wait(100, function()
+      return received == 4
     end))
   end)
 
@@ -309,14 +352,13 @@ describe("GitHub HTTP transport", function()
     end))
   end)
 
-  it("pins the host and host-specific token in real gh argv", function()
+  it("pins the github.com token in the GitHub CLI token slot", function()
     temporary_command = vim.fn.tempname()
-    local output_file = vim.fn.tempname()
-    temporary_token_output = output_file
+    temporary_token_output = vim.fn.tempname()
     vim.fn.writefile({
       "#!/bin/sh",
-      string.format("printf '%%s\\n' \"$*\" > %q", output_file),
-      string.format('printf \'%%s|%%s\' "$GH_TOKEN" "$GH_ENTERPRISE_TOKEN" >> %q', output_file),
+      string.format("printf '%%s\\n' \"$*\" > %q", temporary_token_output),
+      string.format('printf \'%%s|%%s\' "$GH_TOKEN" "$GH_ENTERPRISE_TOKEN" >> %q', temporary_token_output),
       "printf '%s\\n' '{\\\"data\\\":{}}'",
     }, temporary_command)
     vim.fn.setfperm(temporary_command, "rwx------")
@@ -339,12 +381,85 @@ describe("GitHub HTTP transport", function()
     }
 
     assert.is_true(vim.wait(1000, function()
-      return vim.fn.filereadable(output_file) == 1
+      return vim.fn.filereadable(temporary_token_output) == 1
     end))
-    local output = table.concat(vim.fn.readfile(output_file), "\\n")
+    local output = table.concat(vim.fn.readfile(temporary_token_output), "\\n")
     assert.is_true(output:find("--hostname github.com", 1, true) ~= nil)
     assert.is_true(output:find("fixed-token|", 1, true) ~= nil)
     assert.is_true(output:sub(-1) == "|")
+  end)
+
+  it("pins the GitHub Enterprise Cloud tenant token in real gh argv", function()
+    temporary_command = vim.fn.tempname()
+    temporary_token_output = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/bin/sh",
+      string.format("printf '%%s\\n' \"$*\" > %q", temporary_token_output),
+      string.format('printf \'%%s|%%s\' "$GH_TOKEN" "$GH_ENTERPRISE_TOKEN" >> %q', temporary_token_output),
+      "printf '%s\\n' '{\\\"data\\\":{}}'",
+    }, temporary_command)
+    vim.fn.setfperm(temporary_command, "rwx------")
+    config.values.gh_cmd = temporary_command
+
+    gh.api.graphql {
+      query = "query { viewer { login } }",
+      fields = {},
+      jq = ".",
+      opts = {
+        hostname = "tenant.ghe.com",
+        auth_context = {
+          hostname = "tenant.ghe.com",
+          token = "fixed-token",
+          fingerprint = "fixed-fingerprint",
+          env = {},
+        },
+        cb = function() end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return vim.fn.filereadable(temporary_token_output) == 1
+    end))
+    local output = table.concat(vim.fn.readfile(temporary_token_output), "\\n")
+    assert.is_true(output:find("--hostname tenant.ghe.com", 1, true) ~= nil)
+    assert.is_true(output:find("fixed-token|", 1, true) ~= nil)
+    assert.is_true(output:sub(-1) == "|")
+  end)
+
+  it("pins GitHub Enterprise Server tokens in the enterprise token slot", function()
+    temporary_command = vim.fn.tempname()
+    temporary_token_output = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/bin/sh",
+      string.format("printf '%%s\\n' \"$*\" > %q", temporary_token_output),
+      string.format('printf \'%%s|%%s\' "$GH_TOKEN" "$GH_ENTERPRISE_TOKEN" >> %q', temporary_token_output),
+      "printf '%s\\n' '{\\\"data\\\":{}}'",
+    }, temporary_command)
+    vim.fn.setfperm(temporary_command, "rwx------")
+    config.values.gh_cmd = temporary_command
+
+    gh.api.graphql {
+      query = "query { viewer { login } }",
+      fields = {},
+      jq = ".",
+      opts = {
+        hostname = "octo-ghes.example",
+        auth_context = {
+          hostname = "octo-ghes.example",
+          token = "fixed-token",
+          fingerprint = "fixed-fingerprint",
+          env = {},
+        },
+        cb = function() end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return vim.fn.filereadable(temporary_token_output) == 1
+    end))
+    local output = table.concat(vim.fn.readfile(temporary_token_output), "\\n")
+    assert.is_true(output:find("--hostname octo-ghes.example", 1, true) ~= nil)
+    assert.is_true(output:find("|fixed-token", 1, true) ~= nil)
   end)
 
   it("rejects a request host that conflicts with its auth context", function()
@@ -417,6 +532,39 @@ describe("GitHub HTTP transport", function()
     end))
     assert.is_true(killed)
     assert.are.same({ data = { fallback = true } }, vim.json.decode(loaded))
+  end)
+
+  it("lets a paginated gh job finish when stdout continues to make progress", function()
+    config.values.timeout = 5000
+    temporary_command = vim.fn.tempname()
+    temporary_token_output = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/bin/sh",
+      string.format("printf '%%s' \"$*\" > %q", temporary_token_output),
+      'for page in 1 2 3 4 5 6; do printf \'{\\"page\\":%s}\\n\' "$page"; sleep 1; done',
+    }, temporary_command)
+    vim.fn.setfperm(temporary_command, "rwx------")
+    config.values.gh_cmd = temporary_command
+
+    local received
+    gh.api.get {
+      "/repos/{repo}/pulls/{number}/files",
+      format = { repo = "octo/repo", number = 7 },
+      paginate = true,
+      opts = {
+        hostname = "octo-gh-timeout.example",
+        cb = function(output, stderr, status)
+          received = { output = output, stderr = stderr, status = status }
+        end,
+      },
+    }
+
+    assert.is_true(vim.wait(8000, function()
+      return received ~= nil
+    end))
+    assert.are.same(0, received.status)
+    assert.are.same(6, #vim.split(vim.trim(received.output), "\n"))
+    assert.is_true(vim.fn.readfile(temporary_token_output)[1]:find("--paginate", 1, true) ~= nil)
   end)
 
   it("times out asynchronous gh fallback jobs", function()

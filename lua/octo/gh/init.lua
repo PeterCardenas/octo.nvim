@@ -65,6 +65,10 @@ local function parse_scopes(stdout, stderr)
   return parsed_scopes
 end
 
+local function is_github_enterprise_cloud_hostname(hostname)
+  return hostname:lower():match "^.+%.ghe%.com$" ~= nil
+end
+
 local function get_env()
   local env = env_vars
   local gh_env = config.values.gh_env
@@ -426,7 +430,11 @@ local function run(opts)
   if opts.auth_context then
     env = vim.tbl_deep_extend("force", env, opts.auth_context.env)
     if opts.auth_context.token then
-      if opts.auth_context.hostname:lower() == "github.com" then
+      if
+        opts.auth_context.hostname:lower() == "github.com"
+        or opts.auth_context.hostname:lower() == "github.localhost"
+        or is_github_enterprise_cloud_hostname(opts.auth_context.hostname)
+      then
         env.GH_TOKEN = opts.auth_context.token
         env.GH_ENTERPRISE_TOKEN = nil
       else
@@ -441,6 +449,7 @@ local function run(opts)
 
   local async_finished = false
   local timer ---@type uv.uv_timer_t|nil
+  local job ---@type Job
   local function close_async_timer()
     if timer then
       timer:stop()
@@ -449,12 +458,31 @@ local function run(opts)
     end
   end
 
+  local function timeout_async_job()
+    if async_finished then
+      return
+    end
+    async_finished = true
+    close_async_timer()
+    if job.pid then
+      pcall(vim.uv.kill, job.pid, 15)
+    end
+    pcall(job.shutdown, job, 124, 15)
+    if opts.cb then
+      opts.cb("", "gh command timed out", 124)
+    end
+  end
+
   ---@diagnostic disable-next-line: missing-fields
-  local job = Job:new {
+  job = Job:new {
     enable_recording = true,
     command = config.values.gh_cmd,
     args = opts.args,
     on_stdout = vim.schedule_wrap(function(err, data, _)
+      if mode == "async" and not async_finished and data and data ~= "" and timer then
+        timer:stop()
+        timer:start(conf.timeout, 0, vim.schedule_wrap(timeout_async_job))
+      end
       if mode == "async" and opts.stream_cb then
         opts.stream_cb(data, err)
       end
@@ -484,29 +512,10 @@ local function run(opts)
     end
     return output, table.concat(job:stderr_result(), "\n")
   else
+    timer = vim.uv.new_timer()
     job:start()
-    if not async_finished then
-      timer = vim.uv.new_timer()
-      if timer then
-        timer:start(
-          conf.timeout,
-          0,
-          vim.schedule_wrap(function()
-            if async_finished then
-              return
-            end
-            async_finished = true
-            close_async_timer()
-            if job.pid then
-              pcall(vim.uv.kill, job.pid, 15)
-            end
-            pcall(job.shutdown, job, 124, 15)
-            if opts.cb then
-              opts.cb("", "gh command timed out", 124)
-            end
-          end)
-        )
-      end
+    if not async_finished and timer then
+      timer:start(conf.timeout, 0, vim.schedule_wrap(timeout_async_job))
     end
   end
 end
@@ -670,6 +679,8 @@ local function direct_api_url(hostname, path, graphql_request)
   if graphql_request then
     if hostname:lower() == "github.com" then
       return "https://api.github.com/graphql"
+    elseif is_github_enterprise_cloud_hostname(hostname) then
+      return "https://api." .. hostname .. "/graphql"
     end
     return "https://" .. hostname .. "/api/graphql"
   end
@@ -678,6 +689,8 @@ local function direct_api_url(hostname, path, graphql_request)
   end
   if hostname:lower() == "github.com" then
     return "https://api.github.com" .. path
+  elseif is_github_enterprise_cloud_hostname(hostname) then
+    return "https://api." .. hostname .. path
   end
   return "https://" .. hostname .. "/api/v3" .. path
 end

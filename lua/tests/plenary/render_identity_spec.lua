@@ -119,6 +119,31 @@ describe("render identity across progressive updates", function()
     assert.are.same("anchor-comment", _G.octo_buffers[bufnr]:get_comment_at_cursor().id)
   end)
 
+  it("keeps an already-open shell anchor pending and retries when its buffer is displayed", function()
+    octo.load = function(_, _, _, _, callback, opts)
+      load_requests = { callback = callback, opts = opts }
+    end
+    octo.load_buffer { bufnr = bufnr }
+    load_requests.opts.on_shell(make_discussion({ make_comment("shell-comment", 101) }, 2, "shell"), false)
+
+    commands.octo "https://github.com/owner/repo/discussions/42#discussion_r303"
+    assert.are.same(303, vim.b[bufnr].octo_pending_anchor)
+
+    local other_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(other_buf)
+    load_requests.callback(
+      make_discussion({ make_comment("shell-comment", 101), make_comment("live-anchor", 303) }, 2, "complete")
+    )
+    assert.are.same(303, vim.b[bufnr].octo_pending_anchor)
+
+    vim.api.nvim_set_current_buf(bufnr)
+    assert.is_true(vim.wait(1000, function()
+      return vim.b[bufnr].octo_pending_anchor == nil
+    end))
+    assert.are.same("live-anchor", _G.octo_buffers[bufnr]:get_comment_at_cursor().id)
+    vim.api.nvim_buf_delete(other_buf, { force = true })
+  end)
+
   it("retries an older URL anchor after the in-place phase-two repaint", function()
     octo.load = function(_, _, _, _, callback, opts)
       load_requests = { callback = callback, opts = opts }

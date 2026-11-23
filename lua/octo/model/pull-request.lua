@@ -204,22 +204,6 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
     }
   end
 
-  local files_ready ---@type FileEntry[]?
-  local revision_checked = false
-  local completed = false
-  local function finish_when_ready()
-    if completed or not revision_checked or not files_ready then
-      return
-    end
-    completed = true
-    check_pinned_revision(function()
-      if on_page then
-        on_page(files_ready)
-      end
-      callback(files_ready)
-    end)
-  end
-
   local function load_files()
     gh.api.get {
       "/repos/{repo}/pulls/{number}/files",
@@ -270,7 +254,7 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
             return
           end
 
-          files_ready = {} ---@type FileEntry[]
+          local files_ready = {} ---@type FileEntry[]
           for _, result in ipairs(results) do
             files_ready[#files_ready + 1] = FileEntry:new {
               path = result.filename,
@@ -285,18 +269,19 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
               },
             }
           end
-          finish_when_ready()
+          check_pinned_revision(function()
+            if on_page then
+              on_page(files_ready)
+            end
+            callback(files_ready)
+          end)
         end,
       },
     }
   end
 
-  -- Fetching page one while the preflight runs avoids serializing two API round trips.
-  check_pinned_revision(function()
-    revision_checked = true
-    finish_when_ready()
-  end)
-  load_files()
+  -- The preflight response must precede enumeration so its revision brackets the file read.
+  check_pinned_revision(load_files)
 end
 
 ---Fetch the changed files at a given commit

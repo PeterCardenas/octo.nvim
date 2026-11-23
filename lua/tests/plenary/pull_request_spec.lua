@@ -298,6 +298,46 @@ describe("PullRequest:get_changed_files", function()
     eq("Pull request head changed while loading review; reopen the review", error_message)
   end)
 
+  it("starts file enumeration only after the revision preflight completes", function()
+    local revision_callback
+    local file_callback
+    local requests = {}
+    gh.api.get = function(opts)
+      requests[#requests + 1] = opts
+      if opts[1]:find("/files", 1, true) then
+        file_callback = opts.opts.cb
+      else
+        revision_callback = opts.opts.cb
+      end
+    end
+
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 0,
+    }, { __index = PullRequest })
+    local completed = false
+    pr:get_changed_files(function()
+      completed = true
+    end)
+
+    eq(1, #requests)
+    eq(false, requests[1][1]:find("/files", 1, true) ~= nil)
+    revision_callback(revision_json("base-oid", "head-oid"), "", 0)
+    eq(2, #requests)
+    eq(true, requests[2][1]:find("/files", 1, true) ~= nil)
+    file_callback("[[]]", "", 0)
+    eq(3, #requests)
+    eq(false, completed)
+    requests[3].opts.cb(revision_json("base-oid", "head-oid"), "", 0)
+    eq(true, completed)
+  end)
+
   it("rejects a same-count file list when only the base revision moved", function()
     local revision_callbacks = {}
     local files_callback
@@ -333,8 +373,9 @@ describe("PullRequest:get_changed_files", function()
       end
     )
 
-    eq(2, #requests)
+    eq(1, #requests)
     revision_callbacks[1](revision_json("base-oid", "head-oid"), "", 0)
+    eq(2, #requests)
     files_callback(
       vim.json.encode {
         {

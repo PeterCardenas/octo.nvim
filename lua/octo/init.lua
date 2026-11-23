@@ -172,6 +172,10 @@ local function navigate_to_pending_anchor(octo_buffer, live_complete)
   if not anchor then
     return
   end
+  if live_complete and octo_buffer.node._loadState ~= "shell" then
+    vim.b[bufnr].octo_pending_anchor_live_complete = true
+  end
+  local clear_if_missing = vim.b[bufnr].octo_pending_anchor_live_complete == true
   local target_win ---@type integer?
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     if vim.api.nvim_win_get_buf(win) == bufnr then
@@ -194,11 +198,23 @@ local function navigate_to_pending_anchor(octo_buffer, live_complete)
     local found = vim.api.nvim_win_call(target_win, function()
       return M.navigate_to_anchor(octo_buffer, anchor)
     end)
-    if found or (live_complete and octo_buffer.node._loadState ~= "shell") then
+    if found or clear_if_missing then
       vim.b[bufnr].octo_pending_anchor = nil
+      vim.b[bufnr].octo_pending_anchor_live_complete = nil
     end
   end)
 end
+
+local anchor_autocmd_group = vim.api.nvim_create_augroup("octo_url_anchor_navigation", { clear = true })
+vim.api.nvim_create_autocmd("BufWinEnter", {
+  group = anchor_autocmd_group,
+  callback = function(event)
+    local octo_buffer = octo_buffers[event.buf]
+    if octo_buffer and vim.b[event.buf].octo_pending_anchor then
+      navigate_to_pending_anchor(octo_buffer)
+    end
+  end,
+})
 
 --- Load issue/pr/repo buffer
 ---@param opts? ReloadOpts
@@ -809,46 +825,62 @@ function M.load_buffer(opts)
       vim.cmd [[setlocal nomodifiable]]
     end)
 
-    M.load_pull_diff(repo, id, hostname, function(obj)
-      if not is_latest_load() then
-        return
-      end
-      fresh_response_received = true
-      if not vim.api.nvim_buf_is_valid(bufnr) then
+    local diff_painted = false
+    M.load_pull_diff(
+      repo,
+      id,
+      hostname,
+      function(obj)
+        if not is_latest_load() then
+          return
+        end
+        fresh_response_received = true
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          finish_load()
+          if opts.on_error then
+            opts.on_error()
+          end
+          return
+        end
+
+        local has_local_buffer_edits = has_local_changes()
+        clear_cached_mark(bufnr)
+        if has_local_buffer_edits then
+          finish_load()
+          if opts.on_local_changes then
+            opts.on_local_changes()
+          end
+          return
+        end
+
+        vim.api.nvim_buf_call(bufnr, function()
+          M.create_pull_diff_buffer(obj, repo, false, hostname)
+          restore_cursor()
+
+          if opts.verbose then
+            utils.info(string.format("Loaded %s/%s/%s", repo, kind, id))
+          end
+        end)
+
+        if not diff_painted then
+          diff_painted = true
+          if opts.on_reload then
+            opts.on_reload()
+          end
+        end
+      end,
+      handle_load_error,
+      auth_context,
+      function(obj, verified)
+        if not is_latest_load() then
+          return
+        end
+        if verified and cache_key and not utils.is_blank(obj.diffFingerprint) then
+          persistent_cache.write(cache_key, { object = obj })
+        end
         finish_load()
-        if opts.on_error then
-          opts.on_error()
-        end
-        return
       end
-
-      local has_local_buffer_edits = has_local_changes()
-      clear_cached_mark(bufnr)
-      if has_local_buffer_edits then
-        finish_load()
-        if opts.on_local_changes then
-          opts.on_local_changes()
-        end
-        return
-      end
-
-      vim.api.nvim_buf_call(bufnr, function()
-        M.create_pull_diff_buffer(obj, repo, false, hostname)
-        restore_cursor()
-
-        if opts.verbose then
-          utils.info(string.format("Loaded %s/%s/%s", repo, kind, id))
-        end
-      end)
-
-      if cache_key and not utils.is_blank(obj.diffFingerprint) then
-        persistent_cache.write(cache_key, { object = obj })
-      end
-      finish_load()
-      if opts.on_reload then
-        opts.on_reload()
-      end
-    end, handle_load_error, auth_context)
+    )
     return
   end
 
@@ -985,37 +1017,58 @@ end
 ---@param repo string
 ---@param number integer|string
 ---@param hostname string|nil
----@param cb fun(obj: table): nil
+---@param cb fun(obj: table): nil -- Paints each REST response immediately, including bounded replacement retries.
 ---@param on_error? fun()
 ---@param auth_context? octo.AuthContext
-function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
+---@param on_settled? fun(obj: table, verified: boolean): nil
+function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context, on_settled)
   local owner, name = utils.split_repo(repo)
+  local max_attempts = 3
+  local attempt = 1
+  local fingerprint, updated_at, title = "", nil, nil
+  local latest_diff ---@type table?
+  local settled = false
+
   local function get_diff_fingerprint(pr)
-    if not pr then
+    if type(pr) ~= "table" then
       return ""
     end
     local base_ref_oid = utils.is_blank(pr.baseRefOid) and "" or pr.baseRefOid
     local head_ref_oid = utils.is_blank(pr.headRefOid) and "" or pr.headRefOid
-    if base_ref_oid == "" and head_ref_oid == "" then
+    if base_ref_oid == "" or head_ref_oid == "" then
       return ""
     end
     return base_ref_oid .. "..." .. head_ref_oid
   end
 
-  local fingerprint, updated_at, title = "", nil, nil
-  local fingerprint_finished = false
-  local diff_finished = false
-  local diff_output ---@type string?
-  local failed = false
-  local verification_started = false
-  local fingerprint_verified = false
-
-  local finish_if_ready
-  local function start_verification()
-    if fingerprint == "" or verification_started then
+  local function finish(verified)
+    if settled then
       return
     end
-    verification_started = true
+    settled = true
+    if latest_diff and on_settled then
+      on_settled(latest_diff, verified)
+    end
+  end
+
+  local function fail_request(stderr)
+    if settled then
+      return
+    end
+    settled = true
+    utils.print_err(stderr or "Failed to load pull request diff")
+    if on_error then
+      on_error()
+    end
+  end
+
+  local function finish_unverified()
+    require("octo.notify").info "Pull request diff changed repeatedly while loading; showing the latest diff without caching its revision"
+    finish(false)
+  end
+
+  local request_diff
+  local function request_fingerprint(is_retry)
     gh.api.graphql {
       query = queries.pull_diff_fingerprint,
       F = { owner = owner, name = name, number = tonumber(number) },
@@ -1025,59 +1078,79 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
         auth_context = auth_context,
         cb = gh.create_callback {
           failure = function(stderr)
-            failed = true
-            utils.print_err(stderr)
-            if on_error then
-              on_error()
+            if not is_retry and attempt == 1 and not latest_diff then
+              fingerprint = ""
+              request_diff()
+            else
+              fail_request(stderr)
             end
           end,
           success = function(output)
             local ok, response = pcall(vim.json.decode, output)
             local pr = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
-            local confirmed = type(pr) == "table" and get_diff_fingerprint(pr) or ""
-            if confirmed ~= fingerprint then
-              failed = true
-              utils.print_err "PR revision changed while fetching its diff; retry the diff load"
-              if on_error then
-                on_error()
-              end
-              return
+            fingerprint = type(pr) == "table" and get_diff_fingerprint(pr) or ""
+            if type(pr) == "table" then
+              updated_at = pr.updatedAt
+              title = pr.title
             end
-            fingerprint_verified = true
-            finish_if_ready()
+            if fingerprint ~= "" then
+              request_diff()
+            elseif is_retry and attempt < max_attempts then
+              attempt = attempt + 1
+              request_fingerprint(true)
+            elseif is_retry then
+              finish_unverified()
+            else
+              request_diff()
+            end
           end,
         },
       },
     }
   end
 
-  finish_if_ready = function()
-    if failed or not fingerprint_finished or not diff_finished then
-      return
-    end
-    if fingerprint ~= "" and not verification_started then
-      start_verification()
-      return
-    end
-    if fingerprint ~= "" and not fingerprint_verified then
-      return
-    end
-    cb {
-      id = string.format("%s#%s:diff", repo, number),
-      number = tonumber(number),
-      title = title,
-      diff = diff_output or "",
-      diffFingerprint = fingerprint,
-      updatedAt = updated_at,
+  local function verify_diff()
+    gh.api.graphql {
+      query = queries.pull_diff_fingerprint,
+      F = { owner = owner, name = name, number = tonumber(number) },
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        auth_context = auth_context,
+        cb = gh.create_callback {
+          failure = fail_request,
+          success = function(output)
+            local ok, response = pcall(vim.json.decode, output)
+            local pr = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
+            local confirmed = type(pr) == "table" and get_diff_fingerprint(pr) or ""
+            if confirmed == fingerprint and confirmed ~= "" then
+              latest_diff.diffFingerprint = fingerprint
+              finish(true)
+            elseif attempt < max_attempts then
+              attempt = attempt + 1
+              if confirmed ~= "" then
+                fingerprint = confirmed
+                if type(pr) == "table" then
+                  updated_at = pr.updatedAt
+                  title = pr.title
+                end
+                request_diff()
+              else
+                request_fingerprint(true)
+              end
+            else
+              finish_unverified()
+            end
+          end,
+        },
+      },
     }
   end
 
-  local diff_request_started = false
-  local function request_diff()
-    if diff_request_started then
+  request_diff = function()
+    if settled then
       return
     end
-    diff_request_started = true
     gh.api.get {
       "/repos/{repo}/pulls/{number}",
       format = { repo = repo, number = number },
@@ -1086,52 +1159,29 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
         hostname = hostname,
         auth_context = auth_context,
         cb = function(diff, stderr, status)
-          if status == nil or status == 0 then
-            diff_output = diff or ""
-            diff_finished = true
-            finish_if_ready()
+          if status ~= nil and status ~= 0 then
+            fail_request(stderr)
+            return
+          end
+          latest_diff = {
+            id = string.format("%s#%s:diff", repo, number),
+            number = tonumber(number),
+            title = title,
+            diff = diff or "",
+            updatedAt = updated_at,
+          }
+          cb(latest_diff)
+          if fingerprint == "" then
+            finish(false)
           else
-            failed = true
-            utils.print_err(stderr or "")
-            if on_error then
-              on_error()
-            end
+            verify_diff()
           end
         end,
       },
     }
   end
 
-  gh.api.graphql {
-    query = queries.pull_diff_fingerprint,
-    F = { owner = owner, name = name, number = tonumber(number) },
-    jq = ".",
-    opts = {
-      hostname = hostname,
-      auth_context = auth_context,
-      cb = gh.create_callback {
-        failure = function()
-          fingerprint_finished = true
-          request_diff()
-          finish_if_ready()
-        end,
-        success = function(output)
-          local ok, resp = pcall(vim.json.decode, output)
-          local pr = ok and vim.tbl_get(resp, "data", "repository", "pullRequest") or nil
-          if type(pr) == "table" then
-            fingerprint = get_diff_fingerprint(pr)
-            updated_at = pr.updatedAt
-            title = pr.title
-          end
-          fingerprint_finished = true
-          request_diff()
-          -- The initial snapshot pins the request; overlap confirmation with the diff read.
-          start_verification()
-          finish_if_ready()
-        end,
-      },
-    },
-  }
+  request_fingerprint(false)
 end
 
 ---@param obj table

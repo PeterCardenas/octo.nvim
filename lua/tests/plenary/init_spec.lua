@@ -24,6 +24,8 @@ describe("Octo module:", function()
   local original_nvim_redraw
   local original_track_buffer
   local original_octo_buffers
+  local original_notify_info
+  local notify
   local created_buffers
 
   before_each(function()
@@ -33,6 +35,8 @@ describe("Octo module:", function()
     polling = require "octo.polling"
     config = require "octo.config"
     persistent_cache = require "octo.cache"
+    notify = require "octo.notify"
+    original_notify_info = notify.info
     original_cache_key = persistent_cache.key
     original_cache_read = persistent_cache.read
     original_cache_write = persistent_cache.write
@@ -81,6 +85,7 @@ describe("Octo module:", function()
     octo.create_buffer = original_create_buffer
     vim.api.nvim__redraw = original_nvim_redraw
     polling.track_buffer = original_track_buffer
+    notify.info = original_notify_info
     _G.octo_buffers = original_octo_buffers
     for _, bufnr in ipairs(created_buffers) do
       if vim.api.nvim_buf_is_valid(bufnr) then
@@ -1185,43 +1190,111 @@ describe("Octo module:", function()
     assert.are.same("base...head", loaded.diffFingerprint)
   end)
 
-  it("rejects a pull diff paired with a fingerprint from a different PR revision", function()
-    local diff_request
+  it("retries and repaints a diff when confirmation sees a newer PR revision", function()
+    local diff_requests = {}
     local fingerprint_requests = {}
     local errors = 0
-    local loaded
+    local painted = {}
+    local settled
     gh.api.get = function(opts)
-      diff_request = opts
+      diff_requests[#diff_requests + 1] = opts
     end
     gh.api.graphql = function(opts)
       fingerprint_requests[#fingerprint_requests + 1] = opts
     end
 
-    octo.load_pull_diff("owner/repo", 17, nil, function(obj)
-      loaded = obj
-    end, function()
-      errors = errors + 1
-    end)
-    assert.is_nil(diff_request, "the initial PR revision must be established before reading the diff")
+    local function fingerprint(base, head)
+      return vim.json.encode { data = { repository = { pullRequest = { baseRefOid = base, headRefOid = head } } } }
+    end
+    octo.load_pull_diff(
+      "owner/repo",
+      17,
+      nil,
+      function(obj)
+        painted[#painted + 1] = obj
+      end,
+      function()
+        errors = errors + 1
+      end,
+      nil,
+      function(obj, verified)
+        settled = { obj = obj, verified = verified }
+      end
+    )
     assert.are.same(1, #fingerprint_requests)
-    fingerprint_requests[1].opts.cb(
-      vim.json.encode {
-        data = { repository = { pullRequest = { baseRefOid = "base-a", headRefOid = "head-a" } } },
-      },
-      nil
-    )
-    diff_request.opts.cb("diff from an overlapping push", nil, 0)
+    fingerprint_requests[1].opts.cb(fingerprint("base-a", "head-a"), nil, 0)
+    assert.are.same(1, #fingerprint_requests, "the confirmation read must wait for REST diff completion")
+    assert.are.same(1, #diff_requests)
+    diff_requests[1].opts.cb("diff for head-a", nil, 0)
+    assert.are.same(1, #painted)
+    assert.are.same("diff for head-a", painted[1].diff)
+    assert.is_nil(painted[1].diffFingerprint)
 
-    assert.are.same(2, #fingerprint_requests, "the PR revision must be rechecked after fetching the diff")
-    fingerprint_requests[2].opts.cb(
-      vim.json.encode {
-        data = { repository = { pullRequest = { baseRefOid = "base-a", headRefOid = "head-b" } } },
-      },
-      nil
-    )
+    assert.are.same(2, #fingerprint_requests, "confirm after painting the REST diff")
+    fingerprint_requests[2].opts.cb(fingerprint("base-a", "head-b"), nil, 0)
 
-    assert.is_nil(loaded)
-    assert.are.same(1, errors)
+    assert.are.same(2, #diff_requests)
+    diff_requests[2].opts.cb("diff for head-b", nil, 0)
+    assert.are.same(2, #painted)
+    assert.are.same("diff for head-b", painted[2].diff)
+    assert.is_nil(painted[2].diffFingerprint)
+    assert.are.same(3, #fingerprint_requests)
+    fingerprint_requests[3].opts.cb(fingerprint("base-a", "head-b"), nil, 0)
+    assert.are.same(0, errors)
+    assert.is_true(settled.verified)
+    assert.are.same(painted[2], settled.obj)
+    assert.are.same("base-a...head-b", settled.obj.diffFingerprint)
+  end)
+
+  it("keeps the latest diff visible without caching after three unconfirmed revisions", function()
+    local diff_requests = {}
+    local fingerprint_requests = {}
+    local painted = {}
+    local warnings = {}
+    local errors = 0
+    local settled
+    notify.info = function(message)
+      warnings[#warnings + 1] = message
+    end
+    gh.api.get = function(opts)
+      diff_requests[#diff_requests + 1] = opts
+    end
+    gh.api.graphql = function(opts)
+      fingerprint_requests[#fingerprint_requests + 1] = opts
+    end
+    local function fingerprint(head)
+      return vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base", headRefOid = head } } },
+      }
+    end
+
+    octo.load_pull_diff(
+      "owner/repo",
+      17,
+      nil,
+      function(obj)
+        painted[#painted + 1] = obj
+      end,
+      function()
+        errors = errors + 1
+      end,
+      nil,
+      function(obj, verified)
+        settled = { obj = obj, verified = verified }
+      end
+    )
+    fingerprint_requests[1].opts.cb(fingerprint "head-a", nil, 0)
+    for attempt = 1, 3 do
+      diff_requests[attempt].opts.cb("latest diff " .. attempt, nil, 0)
+      fingerprint_requests[attempt + 1].opts.cb(fingerprint("head-" .. string.char(97 + attempt)), nil, 0)
+    end
+
+    assert.are.same(3, #painted)
+    assert.are.same("latest diff 3", settled.obj.diff)
+    assert.is_nil(settled.obj.diffFingerprint)
+    assert.is_false(settled.verified)
+    assert.are.same(0, errors)
+    assert.are.same(1, #warnings)
   end)
 
   it("establishes the PR fingerprint before requesting its diff", function()
@@ -1250,8 +1323,89 @@ describe("Octo module:", function()
       nil,
       0
     )
-    assert.are.same({ "fingerprint", "diff", "fingerprint" }, requests)
+    assert.are.same({ "fingerprint", "diff" }, requests)
     assert.is_table(diff_request)
+    diff_request.opts.cb("diff data", nil, 0)
+    assert.are.same({ "fingerprint", "diff", "fingerprint" }, requests)
+  end)
+
+  it("does not cache a pull diff until its revision confirmation matches", function()
+    config.values.persistent_cache.enabled = true
+    polling.track_buffer = function() end
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/pull/17/diff"
+    local writes = {}
+    local fingerprint_requests = {}
+    local diff_request
+    persistent_cache.read = function(_, callback)
+      callback(nil)
+    end
+    persistent_cache.write = function(_, data)
+      writes[#writes + 1] = data
+    end
+    gh.api.graphql = function(opts)
+      fingerprint_requests[#fingerprint_requests + 1] = opts
+    end
+    gh.api.get = function(opts)
+      diff_request = opts
+    end
+    local function fingerprint()
+      return vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base", headRefOid = "head" } } },
+      }
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    fingerprint_requests[1].opts.cb(fingerprint(), nil, 0)
+    diff_request.opts.cb("diff data", nil, 0)
+
+    assert.are.same(0, #writes)
+    assert.is_nil(_G.octo_buffers[bufnr].node.diffFingerprint)
+    fingerprint_requests[2].opts.cb(fingerprint(), nil, 0)
+
+    assert.are.same(1, #writes)
+    assert.are.same("base...head", writes[1].object.diffFingerprint)
+  end)
+
+  it("does not cache an exhausted pull diff retry and keeps the latest paint", function()
+    config.values.persistent_cache.enabled = true
+    polling.track_buffer = function() end
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/pull/17/diff"
+    local writes = {}
+    local warnings = {}
+    local fingerprint_requests = {}
+    local diff_requests = {}
+    persistent_cache.read = function(_, callback)
+      callback(nil)
+    end
+    persistent_cache.write = function(_, data)
+      writes[#writes + 1] = data
+    end
+    notify.info = function(message)
+      warnings[#warnings + 1] = message
+    end
+    gh.api.graphql = function(opts)
+      fingerprint_requests[#fingerprint_requests + 1] = opts
+    end
+    gh.api.get = function(opts)
+      diff_requests[#diff_requests + 1] = opts
+    end
+    local function fingerprint(head)
+      return vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base", headRefOid = head } } },
+      }
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    fingerprint_requests[1].opts.cb(fingerprint "head-a", nil, 0)
+    for attempt = 1, 3 do
+      diff_requests[attempt].opts.cb("latest diff " .. attempt, nil, 0)
+      fingerprint_requests[attempt + 1].opts.cb(fingerprint("head-" .. string.char(97 + attempt)), nil, 0)
+    end
+
+    assert.are.same(0, #writes)
+    assert.are.same("latest diff 3", _G.octo_buffers[bufnr].node.diff)
+    assert.is_nil(_G.octo_buffers[bufnr].node.diffFingerprint)
+    assert.are.same(1, #warnings)
   end)
 
   it("keeps a cached marker and surfaces an error when revalidation fails", function()
@@ -1318,8 +1472,11 @@ describe("Octo module:", function()
     end))
 
     local receive_fresh_diff
-    octo.load_pull_diff = function(_, _, _, callback)
-      receive_fresh_diff = callback
+    octo.load_pull_diff = function(_, _, _, callback, _, _, on_settled)
+      receive_fresh_diff = function(obj)
+        callback(obj)
+        on_settled(obj, true)
+      end
     end
     local redraws = 0
     vim.api.nvim__redraw = function(opts)

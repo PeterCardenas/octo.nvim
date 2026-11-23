@@ -1297,7 +1297,11 @@ function M.octo(object, action, ...)
         vim.api.nvim_set_current_buf(existing_bufnr)
       end
       if anchor then
-        require("octo").navigate_to_anchor(octo_buffer, anchor)
+        vim.b[existing_bufnr].octo_pending_anchor = anchor
+        vim.b[existing_bufnr].octo_pending_anchor_live_complete = nil
+        if require("octo").navigate_to_anchor(octo_buffer, anchor) then
+          vim.b[existing_bufnr].octo_pending_anchor = nil
+        end
       end
     else
       -- Buffer doesn't exist yet — create and load it
@@ -1306,6 +1310,7 @@ function M.octo(object, action, ...)
       if anchor then
         local bufnr = vim.api.nvim_get_current_buf()
         vim.b[bufnr].octo_pending_anchor = anchor
+        vim.b[bufnr].octo_pending_anchor_live_complete = nil
       end
     end
   else
