@@ -644,7 +644,7 @@ function M.load_buffer(opts)
         end
       end)
 
-      if cache_key then
+      if cache_key and not utils.is_blank(obj.diffFingerprint) then
         persistent_cache.write(cache_key, { object = obj })
       end
       finish_load()
@@ -806,9 +806,52 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
   local diff_finished = false
   local diff_output ---@type string?
   local failed = false
+  local verification_started = false
+  local fingerprint_verified = false
 
   local function finish_if_ready()
     if failed or not fingerprint_finished or not diff_finished then
+      return
+    end
+    if fingerprint ~= "" and not verification_started then
+      verification_started = true
+      local owner, name = utils.split_repo(repo)
+      gh.api.graphql {
+        query = queries.pull_diff_fingerprint,
+        F = { owner = owner, name = name, number = tonumber(number) },
+        jq = ".",
+        opts = {
+          hostname = hostname,
+          auth_context = auth_context,
+          cb = gh.create_callback {
+            failure = function(stderr)
+              failed = true
+              utils.print_err(stderr)
+              if on_error then
+                on_error()
+              end
+            end,
+            success = function(output)
+              local ok, response = pcall(vim.json.decode, output)
+              local pr = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
+              local confirmed = type(pr) == "table" and get_diff_fingerprint(pr) or ""
+              if confirmed ~= fingerprint then
+                failed = true
+                utils.print_err "PR revision changed while fetching its diff; retry the diff load"
+                if on_error then
+                  on_error()
+                end
+                return
+              end
+              fingerprint_verified = true
+              finish_if_ready()
+            end,
+          },
+        },
+      }
+      return
+    end
+    if fingerprint ~= "" and not fingerprint_verified then
       return
     end
     cb {

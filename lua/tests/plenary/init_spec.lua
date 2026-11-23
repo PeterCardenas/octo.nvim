@@ -1117,6 +1117,44 @@ describe("Octo module:", function()
     assert.are.same("base...head", loaded.diffFingerprint)
   end)
 
+  it("rejects a pull diff paired with a fingerprint from a different PR revision", function()
+    local diff_request
+    local fingerprint_requests = {}
+    local errors = 0
+    local loaded
+    gh.api.get = function(opts)
+      diff_request = opts
+    end
+    gh.api.graphql = function(opts)
+      fingerprint_requests[#fingerprint_requests + 1] = opts
+    end
+
+    octo.load_pull_diff("owner/repo", 17, nil, function(obj)
+      loaded = obj
+    end, function()
+      errors = errors + 1
+    end)
+    assert.are.same(1, #fingerprint_requests)
+    fingerprint_requests[1].opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base-a", headRefOid = "head-a" } } },
+      },
+      nil
+    )
+    diff_request.opts.cb("diff from an overlapping push", nil, 0)
+
+    assert.are.same(2, #fingerprint_requests, "the PR revision must be rechecked after fetching the diff")
+    fingerprint_requests[2].opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base-a", headRefOid = "head-b" } } },
+      },
+      nil
+    )
+
+    assert.is_nil(loaded)
+    assert.are.same(1, errors)
+  end)
+
   it("starts pull diff fingerprint and REST requests concurrently", function()
     local requests = {}
     gh.api.get = function(opts)
