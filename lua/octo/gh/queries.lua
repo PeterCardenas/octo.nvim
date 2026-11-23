@@ -597,6 +597,8 @@ fragment PullRequestReviewFastFragment on PullRequestReview {
     ),
     "latestOpinionatedReviews(first: 100)"
   )
+  pull_request_fast_body = remove_field(pull_request_fast_body, "statusCheckRollup {")
+
   M.pull_request_fast_full = replace_first(
     pull_request_fast_body,
     "...PullRequestTimelineItemsConnectionFragment",
@@ -692,6 +694,35 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
 ]],
     "reviewThreads(last: 0)"
   ) .. pull_shell_fragment_definitions
+
+  M.pull_request_checks = [[
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      statusCheckRollup {
+        state
+        contexts(first: 100) {
+          nodes {
+            ... on CheckRun {
+              __typename
+              name
+              conclusion
+              status
+              isRequired(pullRequestNumber: $number)
+            }
+            ... on StatusContext {
+              __typename
+              context
+              state
+              isRequired(pullRequestNumber: $number)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+]]
 
   M.pull_request_review_threads = [[
 query($owner: String!, $name: String!, $number: Int!) {

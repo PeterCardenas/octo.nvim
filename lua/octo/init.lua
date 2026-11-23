@@ -761,9 +761,11 @@ function M.load(repo, kind, id, hostname, cb, opts)
   local details_received = false
   local review_threads_received = kind ~= "pull"
   local ruleset_details_received = kind ~= "pull"
+  local checks_received = kind ~= "pull"
   local pull_review_threads ---@type table?
   local pull_rulesets ---@type table?
   local latest_opinionated_reviews ---@type table?
+  local pull_status_check_rollup ---@type table?
   local expected_count ---@type integer?
   local page_count = 0
   local pending_pages = 0
@@ -778,6 +780,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       or pending_pages > 0
       or not review_threads_received
       or not ruleset_details_received
+      or not checks_received
     then
       return
     end
@@ -823,6 +826,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
       end
       full_obj.reviewThreads = pull_review_threads
       full_obj.latestOpinionatedReviews = latest_opinionated_reviews
+      if pull_status_check_rollup then
+        full_obj.statusCheckRollup = pull_status_check_rollup
+      end
       repository.rulesets = pull_rulesets
     end
     full_obj._timelineIncomplete = nil
@@ -978,6 +984,36 @@ function M.load(repo, kind, id, hostname, cb, opts)
             pull_rulesets = rulesets
             latest_opinionated_reviews = opinionated_reviews
             ruleset_details_received = true
+            finish_if_ready()
+          end,
+        },
+      },
+    }
+    gh.api.graphql {
+      query = queries.pull_request_checks,
+      fields = fields,
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function()
+            fallback()
+          end,
+          success = function(output)
+            if fallback_started or load_completed then
+              return
+            end
+            local ok, response = pcall(vim.json.decode, output)
+            local pull_request = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
+            local checks = type(pull_request) == "table" and pull_request.statusCheckRollup or nil
+            if checks == nil or (checks ~= vim.NIL and type(checks) ~= "table") then
+              fallback()
+              return
+            end
+            if checks ~= vim.NIL then
+              pull_status_check_rollup = checks
+            end
+            checks_received = true
             finish_if_ready()
           end,
         },

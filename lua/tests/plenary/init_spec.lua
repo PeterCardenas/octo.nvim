@@ -579,13 +579,14 @@ describe("Octo module:", function()
       end,
     })
 
-    assert.are.same(3, #requests)
+    assert.are.same(4, #requests)
     assert.matches("timelineItems", requests[1].query)
     assert.is_nil(requests[1].query:find("reviewThreads(last:100)", 1, true))
     assert.is_nil(requests[1].query:find("rulesets(first: 10", 1, true))
     assert.is_nil(requests[1].query:find("latestOpinionatedReviews", 1, true))
     assert.are.same(queries.pull_request_review_threads, requests[2].query)
     assert.are.same(queries.pull_request_rulesets, requests[3].query)
+    assert.are.same(queries.pull_request_checks, requests[4].query)
     requests[1].opts.cb(pull_response(1, { { id = "timeline-node" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
     requests[2].opts.cb(
@@ -605,11 +606,24 @@ describe("Octo module:", function()
       },
       nil
     )
+    requests[4].opts.cb(
+      vim.json.encode {
+        data = {
+          repository = {
+            pullRequest = {
+              statusCheckRollup = { state = "SUCCESS", contexts = { nodes = {} } },
+            },
+          },
+        },
+      },
+      nil
+    )
 
     assert.are.same(0, shells)
     assert.are.same("thread-id", loaded.reviewThreads.nodes[1].id)
     assert.are.same("required reviews", loaded._rulesets.nodes[1].name)
     assert.are.same("APPROVED", loaded.latestOpinionatedReviews.nodes[1].state)
+    assert.are.same("SUCCESS", loaded.statusCheckRollup.state)
   end)
 
   it("falls back when a parallel pull review-thread query fails", function()
@@ -622,9 +636,9 @@ describe("Octo module:", function()
     assert.are.same(queries.pull_request_review_threads, requests[2].query)
     requests[2].opts.cb("", "network failure")
 
-    assert.are.same(4, #requests)
-    assert.is_true(requests[4].paginate)
-    requests[4].opts.cb(
+    assert.are.same(5, #requests)
+    assert.is_true(requests[5].paginate)
+    requests[5].opts.cb(
       vim.json.encode {
         data = {
           repository = {
