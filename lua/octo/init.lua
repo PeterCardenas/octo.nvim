@@ -875,8 +875,11 @@ function M.load_buffer(opts)
         if not is_latest_load() then
           return
         end
-        if verified and cache_key and not utils.is_blank(obj.diffFingerprint) then
-          persistent_cache.write(cache_key, { object = obj })
+        if verified then
+          if cache_key and not utils.is_blank(obj.diffFingerprint) then
+            persistent_cache.write(cache_key, { object = obj })
+          end
+          require("octo.polling").update_buffer(bufnr)
         end
         finish_load()
       end
@@ -956,6 +959,7 @@ function M.load_buffer(opts)
     if cache_key then
       persistent_cache.write(cache_key, { object = obj })
     end
+    require("octo.polling").update_buffer(bufnr)
     finish_load()
     if opts.on_reload then
       opts.on_reload()
@@ -1062,8 +1066,11 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context, on
     end
   end
 
-  local function finish_unverified()
-    require("octo.notify").info "Pull request diff changed repeatedly while loading; showing the latest diff without caching its revision"
+  local function finish_unverified(message)
+    require("octo.notify").info(
+      message
+        or "Pull request diff changed repeatedly while loading; showing the latest diff without caching its revision"
+    )
     finish(false)
   end
 
@@ -1078,7 +1085,9 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context, on
         auth_context = auth_context,
         cb = gh.create_callback {
           failure = function(stderr)
-            if not is_retry and attempt == 1 and not latest_diff then
+            if latest_diff then
+              finish_unverified "Could not confirm the pull request diff revision; showing the latest diff without caching it"
+            elseif not is_retry and attempt == 1 then
               fingerprint = ""
               request_diff()
             else
@@ -1118,7 +1127,9 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context, on
         hostname = hostname,
         auth_context = auth_context,
         cb = gh.create_callback {
-          failure = fail_request,
+          failure = function()
+            finish_unverified "Could not confirm the pull request diff revision; showing the latest diff without caching it"
+          end,
           success = function(output)
             local ok, response = pcall(vim.json.decode, output)
             local pr = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
@@ -2345,6 +2356,12 @@ function M.create_pull_diff_buffer(obj, repo, create, hostname)
     end
   else
     bufnr = vim.api.nvim_get_current_buf()
+  end
+
+  if vim.b[bufnr].octo_loading_skeleton then
+    vim.bo[bufnr].readonly = false
+    vim.bo[bufnr].modifiable = true
+    vim.b[bufnr].octo_loading_skeleton = nil
   end
 
   local octo_buffer = OctoBuffer:new {

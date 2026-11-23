@@ -154,6 +154,43 @@ describe("GitHub HTTP transport", function()
     end))
   end)
 
+  it("uses curl for the full fast pull-request details query", function()
+    if vim.fn.executable "curl" ~= 1 then
+      pending "curl is unavailable"
+      return
+    end
+
+    make_fallback_command()
+    local completed = false
+    gh.api.graphql {
+      query = require("octo.gh.queries").pull_request_fast_full,
+      fields = { owner = "octo", name = "repo", number = 7, timelineCount = 10 },
+      jq = ".",
+      opts = {
+        hostname = "github.com",
+        auth_context = {
+          hostname = "github.com",
+          token = "fixed-token",
+          fingerprint = "fixed-fingerprint",
+          env = {},
+        },
+        cb = function()
+          completed = true
+        end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return #calls > 0 or completed
+    end))
+    assert.are.same("curl", calls[1] and calls[1].argv[1])
+    assert.is_true(calls[1].opts.stdin:find("fixed-token", 1, true) ~= nil)
+    complete_system(1, { code = 0, stdout = '{"data":{}}', stderr = "" })
+    assert.is_true(vim.wait(100, function()
+      return completed
+    end))
+  end)
+
   it("uses GitHub, GitHub Enterprise Cloud, and GHES API endpoint shapes", function()
     if vim.fn.executable "curl" ~= 1 then
       pending "curl is unavailable"

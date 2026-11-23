@@ -63,6 +63,43 @@ describe("Polling module:", function()
     assert.are.same("base..head", status.buffers[bufnr].last_diff_fingerprint)
   end)
 
+  it("refreshes existing issue and pull polling baselines after progressive paints", function()
+    for _, kind in ipairs { "issue", "pull" } do
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      table.insert(created_buffers, bufnr)
+      vim.api.nvim_buf_set_name(bufnr, string.format("octo://owner/repo/%s/7", kind))
+      local model = {
+        kind = kind,
+        repo = "owner/repo",
+        number = 7,
+        node = { updatedAt = "shell-time", mergeStateStatus = "UNKNOWN" },
+        get_updated_at = function(self)
+          return self.node.updatedAt
+        end,
+        get_diff_fingerprint = function(self)
+          return self.node.diffFingerprint or ""
+        end,
+        configure = function() end,
+      }
+      _G.octo_buffers = vim.tbl_extend("force", _G.octo_buffers or {}, { [bufnr] = model })
+      polling.track_buffer(bufnr)
+      local tracking = polling.status().buffers[bufnr]
+      tracking.loading = true
+
+      model.node = {
+        updatedAt = "complete-time",
+        mergeStateStatus = "CLEAN",
+        statusCheckRollup = { state = "SUCCESS", contexts = { nodes = {} } },
+      }
+      polling.update_buffer(bufnr)
+
+      assert.are.equal(tracking, polling.status().buffers[bufnr])
+      assert.are.same("complete-time", tracking.last_updated_at)
+      assert.are.same("CLEAN", tracking.last_merge_state)
+      assert.is_true(tracking.loading)
+    end
+  end)
+
   describe("set_enabled", function()
     it("stops polling and prevents buffer tracking from restarting it", function()
       local original_enabled = config.values.poll.enabled

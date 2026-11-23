@@ -23,6 +23,9 @@ describe("Octo module:", function()
   local original_create_buffer
   local original_nvim_redraw
   local original_track_buffer
+  local original_poll
+  local original_new_timer
+  local original_schedule_wrap
   local original_octo_buffers
   local original_notify_info
   local notify
@@ -63,6 +66,9 @@ describe("Octo module:", function()
     original_create_buffer = octo.create_buffer
     original_nvim_redraw = vim.api.nvim__redraw
     original_track_buffer = polling.track_buffer
+    original_poll = vim.deepcopy(config.values.poll)
+    original_new_timer = vim.uv.new_timer
+    original_schedule_wrap = vim.schedule_wrap
     original_octo_buffers = _G.octo_buffers
     created_buffers = {}
   end)
@@ -84,7 +90,14 @@ describe("Octo module:", function()
     octo.load_pull_diff = original_load_pull_diff
     octo.create_buffer = original_create_buffer
     vim.api.nvim__redraw = original_nvim_redraw
+    polling.stop()
+    for _, bufnr in ipairs(created_buffers) do
+      polling.untrack_buffer(bufnr)
+    end
     polling.track_buffer = original_track_buffer
+    config.values.poll = original_poll
+    vim.uv.new_timer = original_new_timer
+    vim.schedule_wrap = original_schedule_wrap
     notify.info = original_notify_info
     _G.octo_buffers = original_octo_buffers
     for _, bufnr in ipairs(created_buffers) do
@@ -1327,6 +1340,143 @@ describe("Octo module:", function()
     assert.is_table(diff_request)
     diff_request.opts.cb("diff data", nil, 0)
     assert.are.same({ "fingerprint", "diff", "fingerprint" }, requests)
+  end)
+
+  it("keeps a painted pull diff visible when revision confirmation fails", function()
+    config.values.persistent_cache.enabled = true
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/pull/17/diff"
+    local writes = {}
+    local warnings = {}
+    local fingerprint_requests = {}
+    local diff_request
+    local errors = 0
+    persistent_cache.read = function(_, callback)
+      callback(nil)
+    end
+    persistent_cache.write = function(_, data)
+      writes[#writes + 1] = data
+    end
+    notify.info = function(message)
+      warnings[#warnings + 1] = message
+    end
+    gh.api.graphql = function(opts)
+      fingerprint_requests[#fingerprint_requests + 1] = opts
+    end
+    gh.api.get = function(opts)
+      diff_request = opts
+    end
+
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_error = function()
+        errors = errors + 1
+      end,
+    }
+    fingerprint_requests[1].opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base", headRefOid = "head" } } },
+      },
+      nil,
+      0
+    )
+    diff_request.opts.cb("diff --git a/file b/file\n@@ -1 +1 @@\n-old\n+new\n", nil, 0)
+    assert.are.same(2, #fingerprint_requests)
+    fingerprint_requests[2].opts.cb("", "confirmation unavailable")
+
+    assert.are.same({
+      "diff --git a/file b/file",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    assert.is_nil(vim.b[bufnr].octo_loading_skeleton)
+    assert.is_nil(_G.octo_buffers[bufnr].node.diffFingerprint)
+    assert.is_false(vim.b[bufnr].octo_cached or false)
+    assert.are.same(0, #writes)
+    assert.are.same(1, #warnings)
+    assert.are.same(0, errors)
+    polling.untrack_buffer(bufnr)
+  end)
+
+  it("uses verified diff fingerprints for polling and reloads changed revisions", function()
+    config.values.poll.enabled = true
+    config.values.poll.interval = 10000
+    local timer_callback
+    vim.schedule_wrap = function(callback)
+      return callback
+    end
+    vim.uv.new_timer = function()
+      return {
+        start = function(_, _, _, callback)
+          timer_callback = callback
+        end,
+        stop = function() end,
+        close = function() end,
+        is_closing = function()
+          return false
+        end,
+      }
+    end
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/pull/17/diff"
+    local graphql_requests = {}
+    local diff_requests = {}
+    gh.api.graphql = function(opts)
+      graphql_requests[#graphql_requests + 1] = opts
+    end
+    gh.api.get = function(opts)
+      diff_requests[#diff_requests + 1] = opts
+    end
+
+    local function fingerprint(head)
+      return vim.json.encode {
+        data = {
+          repository = {
+            pullRequest = {
+              baseRefOid = "base",
+              headRefOid = head,
+              updatedAt = "2026-01-01T00:00:00Z",
+            },
+          },
+        },
+      }
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    graphql_requests[1].opts.cb(fingerprint "head-a", nil, 0)
+    diff_requests[1].opts.cb("diff for head-a", nil, 0)
+    graphql_requests[2].opts.cb(fingerprint "head-a", nil, 0)
+
+    local tracking = polling.status().buffers[bufnr]
+    assert.are.same("base...head-a", tracking.last_diff_fingerprint)
+    assert.is_true(polling.status().running)
+    assert.is_false(tracking.loading)
+    assert.is_function(timer_callback)
+
+    local function poll_once(expected_requests)
+      tracking.last_polled_at = nil
+      timer_callback()
+      assert.are.same(expected_requests, #graphql_requests)
+    end
+
+    poll_once(3)
+    graphql_requests[3].opts.cb(fingerprint "head-a", nil)
+    assert.are.same(1, #diff_requests, "an unchanged poll must not reload the REST diff")
+    assert.are.same(3, #graphql_requests, "an unchanged poll must not start another load")
+
+    poll_once(4)
+    graphql_requests[4].opts.cb(fingerprint "head-b", nil)
+    assert.are.same(5, #graphql_requests)
+    graphql_requests[5].opts.cb(fingerprint "head-b", nil, 0)
+    assert.are.same(2, #diff_requests)
+    diff_requests[2].opts.cb("diff for head-b", nil, 0)
+    graphql_requests[6].opts.cb(fingerprint "head-b", nil, 0)
+
+    assert.are.same(2, #diff_requests)
+    assert.are.same("base...head-b", polling.status().buffers[bufnr].last_diff_fingerprint)
+    assert.is_truthy(
+      table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"):find("diff for head-b", 1, true)
+    )
   end)
 
   it("does not cache a pull diff until its revision confirmation matches", function()

@@ -365,6 +365,28 @@ function M.toggle()
   M.set_enabled(timer == nil)
 end
 
+---Refresh a buffer's polling baseline without replacing its in-flight tracking entry.
+---@param bufnr integer
+function M.update_buffer(bufnr)
+  local tracking = tracked_buffers[bufnr]
+  local octo_buf = octo_buffers[bufnr]
+  if
+    not tracking
+    or not octo_buf
+    or tracking.kind ~= octo_buf.kind
+    or tracking.number ~= octo_buf.number
+    or tracking.owner .. "/" .. tracking.name ~= octo_buf.repo
+  then
+    return
+  end
+
+  local node = octo_buf.node
+  tracking.last_updated_at = octo_buf:get_updated_at() or ""
+  tracking.last_merge_state = (node and node.mergeStateStatus) or ""
+  tracking.last_check_fingerprint = check_fingerprint(node and node.statusCheckRollup)
+  tracking.last_diff_fingerprint = octo_buf:get_diff_fingerprint()
+end
+
 ---Register a buffer for polling
 ---@param bufnr integer
 function M.track_buffer(bufnr)

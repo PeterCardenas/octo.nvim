@@ -882,6 +882,7 @@ local direct_graphql_query_names = {
   "issue_timeline_page",
   "pull_diff_fingerprint",
   "pull_request_checks",
+  "pull_request_fast_full",
   "pull_request_fast",
   "pull_request_review_metadata",
   "pull_request_review_threads",
