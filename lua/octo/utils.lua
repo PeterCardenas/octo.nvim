@@ -1746,84 +1746,251 @@ M.error = notify.error
 ---@param on_early? fun(pr: PullRequest): nil
 ---@param on_error? fun(message: string): nil
 function M.get_pull_request_for_current_branch(cb, on_early, on_error)
-  gh.run {
-    args = { "pr", "view", "--json", "id,number,headRepositoryOwner,headRepository,isCrossRepository,url" },
-    cb = function(out)
-      if out == "" then
-        M.error "No pr found for current branch"
-        return
-      end
-      ---@class octo.PullRequestViewJson
-      ---@field id string
-      ---@field number integer
-      ---@field headRepositoryOwner { login: string, name: string }
-      ---@field headRepository { name: string }
-      ---@field isCrossRepository boolean
-      ---@field url string
-
-      ---@type octo.PullRequestViewJson
-      local pr = vim.json.decode(out)
-      local base_owner ---@type string
-      local base_name ---@type string
-      if pr.number then
-        if pr.isCrossRepository then
-          -- Parsing the pr url is the only way to get the target repo owner if the pr is cross repo
-          if not pr.url then
-            M.error "Failed to get pr url"
-            return
-          end
-          local url_suffix = pr.url:match "[^/]+/[^/]+/pull/%d+$"
-          if not url_suffix then
-            M.error "Failed to parse pr url"
-            return
-          end
-          ---@type fun(): string
-          local iter = url_suffix:gmatch "[^/]+/"
-          base_owner = iter():sub(1, -2)
-          base_name = iter():sub(1, -2)
-        else
-          base_owner = pr.headRepositoryOwner.login
-          base_name = pr.headRepository.name
-        end
-        local number = pr.number
-        local id = pr.id
-        local query = graphql("pull_request_query", _G.octo_pv2_fragment)
-        gh.api.graphql {
-          query = query,
-          fields = { owner = base_owner, name = base_name, number = number },
-          paginate = true,
-          jq = ".",
-          opts = {
-            cb = gh.create_callback {
-              failure = M.print_err,
-              success = function(output)
-                local resp = M.aggregate_pages(output, "data.repository.pullRequest.timelineItems.nodes")
-                ---@type octo.PullRequest
-                local obj = resp.data.repository.pullRequest
-                local repo_data = resp.data.repository
-                if repo_data.rulesets then
-                  obj._rulesets = repo_data.rulesets
-                end
-                if repo_data.defaultBranchRef then
-                  obj._defaultBranchName = repo_data.defaultBranchRef.name
-                end
-                local PullRequest = require "octo.model.pull-request"
-
-                local opts = {
-                  repo = base_owner .. "/" .. base_name,
-                  head_repo = obj.headRepository.nameWithOwner,
-                  number = number,
-                  id = id,
-                  head_ref_name = obj.headRefName,
-                }
-
-                PullRequest.create_with_merge_base(opts, obj, cb, on_early, on_error)
-              end,
-            },
-          },
+  local metadata_query = [[
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      number
+      headRepository { nameWithOwner }
+      headRefName
+      headRefOid
+      baseRefName
+      baseRefOid
+      changedFiles
+      files(first: 100) {
+        nodes {
+          path
+          viewerViewedState
         }
+      }
+    }
+  }
+}
+]]
+  local branch_query = [[
+query($owner: String!, $name: String!, $ref: String!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $ref) {
+      associatedPullRequests(first: 10) {
+        nodes {
+          id
+          number
+          state
+          baseRepository { nameWithOwner }
+          headRepository { nameWithOwner }
+          headRefName
+          headRefOid
+          baseRefName
+          baseRefOid
+          changedFiles
+          files(first: 100) {
+            nodes {
+              path
+              viewerViewedState
+            }
+          }
+        }
+      }
+    }
+  }
+}
+]]
+
+  local function report_error(message)
+    if on_error then
+      on_error(message)
+    else
+      M.error(message)
+    end
+  end
+
+  local function create_pull_request(obj, repo, head_repo)
+    if type(obj) ~= "table" or type(obj.number) ~= "number" then
+      return false
+    end
+    local PullRequest = require "octo.model.pull-request"
+    local opts = {
+      repo = repo,
+      head_repo = head_repo,
+      number = obj.number,
+      id = obj.id,
+      head_ref_name = obj.headRefName,
+    }
+    PullRequest.create_with_merge_base(opts, obj, cb, on_early, on_error)
+    return true
+  end
+
+  local function load_pull_request_metadata(base_repo, number, id, head_repo)
+    local owner, name = M.split_repo(base_repo)
+    gh.api.graphql {
+      query = metadata_query,
+      F = { owner = owner, name = name, number = number },
+      opts = {
+        cb = function(output, stderr, status)
+          if (status ~= nil and status ~= 0) or (stderr and not M.is_blank(stderr)) or M.is_blank(output) then
+            report_error("Failed to fetch pull request metadata: " .. (stderr or "empty response"))
+            return
+          end
+          local ok, response = pcall(vim.json.decode, output)
+          local obj
+          if ok and type(response) == "table" and type(response.data) == "table" then
+            local repo_data = response.data.repository
+            if type(repo_data) == "table" then
+              obj = repo_data.pullRequest
+            end
+          end
+          if type(obj) ~= "table" then
+            report_error "Failed to decode pull request metadata"
+            return
+          end
+          obj.id = id or obj.id
+          local head_repository_name = type(obj.headRepository) == "table" and obj.headRepository.nameWithOwner or nil
+          local resolved_head_repo = head_repository_name or head_repo or base_repo
+          if not create_pull_request(obj, base_repo, resolved_head_repo) then
+            report_error "Pull request metadata is incomplete"
+          end
+        end,
+      },
+    }
+  end
+
+  local function current_branch_head_repository()
+    local branch = vim.trim(vim.fn.system { "git", "branch", "--show-current" })
+    if branch == "" or vim.v.shell_error ~= 0 then
+      return
+    end
+    local remote_name = vim.trim(vim.fn.system { "git", "config", "--get", "branch." .. branch .. ".remote" })
+    if remote_name == "." then
+      return
+    end
+    local remotes = M.parse_git_remote()
+    local remote
+    if remote_name == "" then
+      remote = M.get_remote()
+    else
+      remote = remotes[remote_name]
+      if
+        (not remote or not remote.repo)
+        and (remote_name:find("://", 1, true) or remote_name:match "^[^/]+@[^:]+:[^/]+/")
+      then
+        remote = M.parse_remote_url(remote_name, config.values.ssh_aliases)
       end
-    end,
+    end
+    if not remote or not remote.repo then
+      return
+    end
+    return branch, remote
+  end
+
+  local function choose_associated_pull_request(nodes, head_repo)
+    if type(nodes) ~= "table" then
+      return
+    end
+    local matching = {}
+    local open = {}
+    for _, pull_request in ipairs(nodes) do
+      local candidate_head_repo = type(pull_request.headRepository) == "table"
+          and pull_request.headRepository.nameWithOwner
+        or nil
+      if candidate_head_repo and M.repos_equal(candidate_head_repo, head_repo) and pull_request.headRefName then
+        matching[#matching + 1] = pull_request
+        if pull_request.state == "OPEN" then
+          open[#open + 1] = pull_request
+        end
+      end
+    end
+    if #open == 1 then
+      return open[1]
+    end
+    if #matching == 1 then
+      return matching[1]
+    end
+  end
+
+  local function fallback_to_gh_pr_view()
+    gh.run {
+      args = { "pr", "view", "--json", "id,number,headRepositoryOwner,headRepository,isCrossRepository,url" },
+      cb = function(output, stderr, status)
+        if (status ~= nil and status ~= 0) or M.is_blank(output) then
+          report_error(stderr and not M.is_blank(stderr) and stderr or "No PR found for current branch")
+          return
+        end
+
+        ---@class octo.PullRequestViewJson
+        ---@field id string
+        ---@field number integer
+        ---@field headRepositoryOwner { login: string, name: string }
+        ---@field headRepository { name: string }
+        ---@field isCrossRepository boolean
+        ---@field url string
+        ---@type octo.PullRequestViewJson
+        local ok, pr = pcall(vim.json.decode, output)
+        if not ok or type(pr) ~= "table" or not pr.number then
+          report_error "Failed to decode PR details for current branch"
+          return
+        end
+
+        local base_repo
+        if pr.isCrossRepository then
+          local url_suffix = pr.url and pr.url:match "[^/]+/[^/]+/pull/%d+$"
+          if not url_suffix then
+            report_error "Failed to identify the base repository for current branch PR"
+            return
+          end
+          local owner, name = url_suffix:match "^([^/]+)/([^/]+)/pull/%d+$"
+          base_repo = owner and name and owner .. "/" .. name or nil
+        else
+          local head_owner = type(pr.headRepositoryOwner) == "table" and pr.headRepositoryOwner.login
+          local head_name = type(pr.headRepository) == "table" and pr.headRepository.name
+          base_repo = head_owner and head_name and head_owner .. "/" .. head_name or nil
+        end
+        if not base_repo then
+          report_error "Failed to identify the repository for current branch PR"
+          return
+        end
+        load_pull_request_metadata(base_repo, pr.number, pr.id, nil)
+      end,
+    }
+  end
+
+  local branch, head_repository = current_branch_head_repository()
+  if not branch or not head_repository then
+    fallback_to_gh_pr_view()
+    return
+  end
+
+  local owner, name = M.split_repo(head_repository.repo)
+  gh.api.graphql {
+    query = branch_query,
+    F = { owner = owner, name = name, ref = "refs/heads/" .. branch },
+    opts = {
+      hostname = head_repository.host,
+      cb = function(output, stderr, status)
+        if (status ~= nil and status ~= 0) or (stderr and not M.is_blank(stderr)) or M.is_blank(output) then
+          fallback_to_gh_pr_view()
+          return
+        end
+        local ok, response = pcall(vim.json.decode, output)
+        local nodes
+        if ok and type(response) == "table" and type(response.data) == "table" then
+          local repo_data = response.data.repository
+          local ref = type(repo_data) == "table" and repo_data.ref or nil
+          local connection = type(ref) == "table" and ref.associatedPullRequests or nil
+          nodes = type(connection) == "table" and connection.nodes or nil
+        end
+        local pull_request = choose_associated_pull_request(nodes, head_repository.repo)
+        local base_repository = pull_request and pull_request.baseRepository
+        local base_repo = type(base_repository) == "table" and base_repository.nameWithOwner or nil
+        if
+          not pull_request
+          or not base_repo
+          or not create_pull_request(pull_request, base_repo, head_repository.repo)
+        then
+          fallback_to_gh_pr_view()
+        end
+      end,
+    },
   }
 end
 
