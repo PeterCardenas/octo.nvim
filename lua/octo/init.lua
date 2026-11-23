@@ -1014,6 +1014,15 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
   end
 
+  if (kind == "pull" or kind == "issue" or kind == "discussion") and id ~= nil then
+    local number = tonumber(id)
+    if not number or number < 1 or number > 2147483647 or number ~= math.floor(number) then
+      fail(string.format("Invalid %s number: %s", kind, id))
+      return
+    end
+    id = number
+  end
+
   ---@type string, string, table<string, string|integer>
   local query, key, fields
   local fast_pull_query ---@type string?
@@ -1034,7 +1043,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     fields = {
       owner = owner,
       name = name,
-      number = id --[[@as integer]],
+      number = id,
     }
   elseif kind == "release" then
     query = queries.release

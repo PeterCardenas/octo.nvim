@@ -303,6 +303,28 @@ describe("Octo module:", function()
     assert.are.same(17, requested_id)
   end)
 
+  it("normalizes numeric IDs before issuing GraphQL load requests", function()
+    local fragments = require "octo.gh.fragments"
+    local queries = require "octo.gh.queries"
+    fragments.setup()
+    queries.setup()
+    _G.octo_pv2_fragment = ""
+    octo.load_preview = function() end
+
+    for _, kind in ipairs { "issue", "pull", "discussion" } do
+      local requests = {}
+      gh.api.graphql = function(opts)
+        requests[#requests + 1] = opts
+      end
+      octo.load("owner/repo", kind, "17", nil, function() end)
+
+      assert.is_true(#requests > 0)
+      for _, request in ipairs(requests) do
+        assert.are.same(17, request.fields.number)
+      end
+    end
+  end)
+
   it("rejects non-integer resource IDs before starting a load", function()
     local bufnr = create_named_buffer "octo://owner/repo/discussion/17.5"
     local load_started = false
