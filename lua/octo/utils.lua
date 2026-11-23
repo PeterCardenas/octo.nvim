@@ -1206,7 +1206,8 @@ end
 ---@param commit string
 ---@param path string
 ---@param cb fun(lines: string[]): nil
-function M.get_file_contents(repo, commit, path, cb)
+---@param on_error? fun(message: string): nil
+function M.get_file_contents(repo, commit, path, cb, on_error)
   local owner, name = M.split_repo(repo)
   gh.api.graphql {
     query = queries.file_content,
@@ -1214,6 +1215,13 @@ function M.get_file_contents(repo, commit, path, cb)
     jq = ".data.repository.object.text",
     opts = {
       cb = gh.create_callback {
+        failure = function(message)
+          if on_error then
+            on_error(message)
+          else
+            M.error(message)
+          end
+        end,
         success = function(blob)
           local lines = {}
           if blob then
@@ -1735,7 +1743,9 @@ M.info = notify.info
 M.error = notify.error
 
 ---@param cb fun(pr: PullRequest):nil
-function M.get_pull_request_for_current_branch(cb)
+---@param on_early? fun(pr: PullRequest): nil
+---@param on_error? fun(message: string): nil
+function M.get_pull_request_for_current_branch(cb, on_early, on_error)
   gh.run {
     args = { "pr", "view", "--json", "id,number,headRepositoryOwner,headRepository,isCrossRepository,url" },
     cb = function(out)
@@ -1807,7 +1817,7 @@ function M.get_pull_request_for_current_branch(cb)
                   head_ref_name = obj.headRefName,
                 }
 
-                PullRequest.create_with_merge_base(opts, obj, cb)
+                PullRequest.create_with_merge_base(opts, obj, cb, on_early, on_error)
               end,
             },
           },

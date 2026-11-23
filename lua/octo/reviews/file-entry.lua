@@ -49,6 +49,7 @@ M._null_buffer = {}
 ---@field left_fetching boolean
 ---@field right_fetching boolean
 ---@field fetch_callbacks? (fun())[]
+---@field fetch_error_callbacks? (fun(message: string))[]
 ---@field associated_bufs integer[]
 ---@field diffhunks? string[]
 ---@field viewed_state octo.FileViewedState
@@ -223,11 +224,12 @@ end
 
 ---Fetch file content locally or from GitHub.
 ---When called synchronously, returns whether the file is ready to render after
----waiting. Callers rely on this to decide whether the diff buffers can be loaded.
+---waiting. The left side is deferred until the exact merge base is available.
 ---@param sync boolean
 ---@param on_complete? fun()
+---@param on_error? fun(message: string): nil
 ---@return boolean ready
-function FileEntry:fetch(sync, on_complete)
+function FileEntry:fetch(sync, on_complete, on_error)
   if self:is_ready_to_render() then
     if on_complete then
       on_complete()
@@ -237,6 +239,17 @@ function FileEntry:fetch(sync, on_complete)
   if on_complete then
     self.fetch_callbacks = self.fetch_callbacks or {}
     table.insert(self.fetch_callbacks, on_complete)
+  end
+  if on_error then
+    self.fetch_error_callbacks = self.fetch_error_callbacks or {}
+    table.insert(self.fetch_error_callbacks, on_error)
+  end
+  local function notify_error(message)
+    local callbacks = self.fetch_error_callbacks or {}
+    self.fetch_error_callbacks = nil
+    for _, callback in ipairs(callbacks) do
+      callback(message)
+    end
   end
   local function notify_complete()
     if not self:is_ready_to_render() then
@@ -248,46 +261,57 @@ function FileEntry:fetch(sync, on_complete)
       callback()
     end
   end
-  local right_path = self.path
-  local left_path = self.path
+
   local current_review = require("octo.reviews").get_current_review()
   if not current_review then
     return false
   end
-  local conf = config.values
-  if self.left_fetching or self.right_fetching then
-    if sync then
-      vim.wait(conf.timeout, function()
-        return self:is_ready_to_render()
-      end)
-    end
-    return self:is_ready_to_render()
-  end
-  self.left_fetching = true
-  self.right_fetching = true
+  local right_path = self.path
+  local left_path = self.path
   local right_sha = current_review.layout.right.commit
   local left_sha = current_review.layout.left.commit
 
-  -- handle renamed files
+  -- Handle renamed files on the base side.
   if self.status == "R" and self.previous_path then
     left_path = self.previous_path
   end
 
-  if self.image then
-    local function fetch_side(side, path, sha, use_local, missing)
-      local function complete(image_path, err)
-        self[side .. "_image_path"] = image_path
-        self[side .. "_lines"] = err and { err } or {}
-        self[side .. "_fetched"] = true
-        self[side .. "_fetching"] = false
-        notify_complete()
-      end
-      if missing then
-        complete(nil, missing)
-      else
-        image.fetch(self.pull_request.repo, sha, path, use_local, complete)
-      end
+  local function fetch_side(side, path, sha, use_local, missing)
+    if self[side .. "_fetched"] or self[side .. "_fetching"] then
+      return
     end
+    self[side .. "_fetching"] = true
+    local function complete(lines, image_path)
+      self[side .. "_lines"] = lines
+      self[side .. "_image_path"] = image_path
+      self[side .. "_fetched"] = true
+      self[side .. "_fetching"] = false
+      notify_complete()
+    end
+
+    if self.image then
+      if missing then
+        complete({ missing }, nil)
+      else
+        image.fetch(self.pull_request.repo, sha, path, use_local, function(image_path, err)
+          complete(err and { err } or {}, image_path)
+        end)
+      end
+    elseif use_local then
+      utils.get_file_at_commit(path, sha, function(lines)
+        complete(lines)
+      end)
+    else
+      utils.get_file_contents(self.pull_request.repo, sha, path, function(lines)
+        complete(lines)
+      end, function(message)
+        self[side .. "_fetching"] = false
+        notify_error(message)
+      end)
+    end
+  end
+
+  if self.pull_request.right_ready ~= false then
     fetch_side(
       "right",
       right_path,
@@ -295,6 +319,8 @@ function FileEntry:fetch(sync, on_complete)
       self.pull_request.local_right,
       self.status == "D" and "Image deleted" or nil
     )
+  end
+  if self.pull_request.left_ready ~= false then
     fetch_side(
       "left",
       left_path,
@@ -302,51 +328,10 @@ function FileEntry:fetch(sync, on_complete)
       self.pull_request.local_left,
       self.status == "A" and "Image added (no previous version)" or nil
     )
-    if sync then
-      vim.wait(conf.timeout, function()
-        return self:is_ready_to_render()
-      end)
-    end
-    return self:is_ready_to_render()
   end
 
-  -- fetch right version
-  if self.pull_request.local_right then
-    utils.get_file_at_commit(right_path, right_sha, function(lines)
-      self.right_lines = lines
-      self.right_fetched = true
-      self.right_fetching = false
-      notify_complete()
-    end)
-  else
-    utils.get_file_contents(self.pull_request.repo, right_sha, right_path, function(lines)
-      self.right_lines = lines
-      self.right_fetched = true
-      self.right_fetching = false
-      notify_complete()
-    end)
-  end
-
-  -- fetch left version
-  if self.pull_request.local_left then
-    utils.get_file_at_commit(left_path, left_sha, function(lines)
-      self.left_lines = lines
-      self.left_fetched = true
-      self.left_fetching = false
-      notify_complete()
-    end)
-  else
-    utils.get_file_contents(self.pull_request.repo, left_sha, left_path, function(lines)
-      self.left_lines = lines
-      self.left_fetched = true
-      self.left_fetching = false
-      notify_complete()
-    end)
-  end
-
-  -- wait until we have both versions
-  if sync then
-    vim.wait(conf.timeout, function()
+  if sync and not self:is_ready_to_render() then
+    vim.wait(config.values.timeout, function()
       return self:is_ready_to_render()
     end)
   end

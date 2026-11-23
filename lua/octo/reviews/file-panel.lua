@@ -62,6 +62,7 @@ function FilePanel:new(files)
   local this = {
     files = files,
     size = conf.file_panel.size,
+    loading = false,
   }
 
   setmetatable(this, self)
@@ -256,23 +257,29 @@ function FilePanel:render()
 
   local conf = config.values
   local strlen = vim.fn.strlen
-  local s = "Files changed"
-  add_hl("OctoFilePanelTitle", line_idx, 0, #s)
-  local change_count = string.format("%s%d%s", conf.left_bubble_delimiter, #self.files, conf.right_bubble_delimiter)
-  add_hl("OctoBubbleDelimiterYellow", line_idx, strlen(s) + 1, strlen(s) + 1 + strlen(conf.left_bubble_delimiter))
-  add_hl(
-    "OctoBubbleYellow",
-    line_idx,
-    strlen(s) + 1 + strlen(conf.left_bubble_delimiter),
-    strlen(s) + 1 + strlen(change_count) - strlen(conf.right_bubble_delimiter)
-  )
-  add_hl(
-    "OctoBubbleDelimiterYellow",
-    line_idx,
-    strlen(s) + 1 + strlen(change_count) - strlen(conf.right_bubble_delimiter),
-    strlen(s) + 1 + strlen(change_count)
-  )
-  s = s .. " " .. change_count
+  local s
+  if self.loading then
+    s = "Loading changed files…"
+    add_hl("OctoFilePanelTitle", line_idx, 0, #s)
+  else
+    s = "Files changed"
+    add_hl("OctoFilePanelTitle", line_idx, 0, #s)
+    local change_count = string.format("%s%d%s", conf.left_bubble_delimiter, #self.files, conf.right_bubble_delimiter)
+    add_hl("OctoBubbleDelimiterYellow", line_idx, strlen(s) + 1, strlen(s) + 1 + strlen(conf.left_bubble_delimiter))
+    add_hl(
+      "OctoBubbleYellow",
+      line_idx,
+      strlen(s) + 1 + strlen(conf.left_bubble_delimiter),
+      strlen(s) + 1 + strlen(change_count) - strlen(conf.right_bubble_delimiter)
+    )
+    add_hl(
+      "OctoBubbleDelimiterYellow",
+      line_idx,
+      strlen(s) + 1 + strlen(change_count) - strlen(conf.right_bubble_delimiter),
+      strlen(s) + 1 + strlen(change_count)
+    )
+    s = s .. " " .. change_count
+  end
   table.insert(lines, s)
   line_idx = line_idx + 1
 
@@ -404,7 +411,9 @@ function FilePanel:render()
 
   local right = current_review.layout.right
   local left = current_review.layout.left
-  local extra_info = { left:abbrev() .. ".." .. right:abbrev() }
+  local compare_range = current_review.pull_request.left_ready == false and "Loading merge base…"
+    or left:abbrev() .. ".." .. right:abbrev()
+  local extra_info = { compare_range }
   table.insert(lines, "")
   line_idx = line_idx + 1
 

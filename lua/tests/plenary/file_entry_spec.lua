@@ -96,4 +96,54 @@ describe("FileEntry:fetch", function()
 
     eq(true, file:fetch(true))
   end)
+
+  it("fetches the head side before merge-base metadata and the base side after it", function()
+    local requests = {}
+    utils.get_file_contents = function(repo, commit, path, cb)
+      requests[#requests + 1] = { repo = repo, commit = commit, path = path, callback = cb }
+    end
+    local review = reviews.reviews[tabpage_key]
+    review.layout.left.commit = "base_ref_sha"
+    review.layout.right.commit = "head_sha"
+
+    local file = FileEntry:new {
+      path = "a.txt",
+      pull_request = {
+        repo = "owner/repo",
+        local_left = false,
+        local_right = false,
+        left_ready = false,
+        right_ready = false,
+        files = {},
+      },
+      status = "M",
+      stats = { additions = 1, deletions = 0, changes = 1 },
+    }
+    local completed = 0
+    file:fetch(false, function()
+      completed = completed + 1
+    end)
+
+    eq(0, #requests)
+    eq(false, file.right_fetching)
+
+    file.pull_request.right_ready = true
+    file:fetch(false)
+    eq(1, #requests)
+    eq("head_sha", requests[1].commit)
+    eq(false, file.left_fetching)
+
+    review.layout.left.commit = "merge_base_sha"
+    file.pull_request.left_ready = true
+    file:fetch(false)
+
+    eq(2, #requests)
+    eq("merge_base_sha", requests[2].commit)
+    requests[1].callback { "head" }
+    eq(0, completed)
+    requests[2].callback { "base" }
+    eq(1, completed)
+    eq({ "base" }, file.left_lines)
+    eq({ "head" }, file.right_lines)
+  end)
 end)

@@ -1220,8 +1220,10 @@ function OctoBuffer:release()
 end
 
 ---Gets the PR object for the current octo buffer with correct merge base
----@param callback function Callback function(pr) called with the PullRequest object
-function OctoBuffer:get_pr(callback)
+---@param callback function Callback function(pr) called when merge-base metadata is ready
+---@param on_early? fun(pr: PullRequest): nil Called with shell metadata before merge-base resolution
+---@param on_error? fun(message: string): nil
+function OctoBuffer:get_pr(callback, on_early, on_error)
   if not self:isPullRequest() then
     utils.error "Not in a PR buffer"
     return
@@ -1244,7 +1246,7 @@ function OctoBuffer:get_pr(callback)
     id = self:pullRequest().id,
   }
 
-  PullRequest.create_with_merge_base(opts, self:pullRequest(), callback)
+  PullRequest.create_with_merge_base(opts, self:pullRequest(), callback, on_early, on_error)
 end
 
 --- Get a issue/PR comment at cursor (if any)

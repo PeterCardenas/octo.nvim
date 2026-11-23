@@ -1,20 +1,30 @@
 ---@diagnostic disable
 local reviews = require "octo.reviews"
 local Layout = require("octo.reviews.layout").Layout
+local utils = require "octo.utils"
 local eq = assert.are.same
 
 describe("Reviews module:", function()
   local original_reviews
+  local original_layout_new
+  local original_in_pr_branch
+  local original_utils_error
 
   before_each(function()
     vim.cmd "tabonly!"
     original_reviews = reviews.reviews
+    original_layout_new = Layout.new
+    original_in_pr_branch = utils.in_pr_branch
+    original_utils_error = utils.error
     reviews.reviews = {}
   end)
 
   after_each(function()
     vim.cmd "tabonly!"
     reviews.reviews = original_reviews
+    Layout.new = original_layout_new
+    utils.in_pr_branch = original_in_pr_branch
+    utils.error = original_utils_error
   end)
 
   it("uses markdown for the review submission buffer", function()
@@ -52,35 +62,267 @@ describe("Reviews module:", function()
     eq(true, closed)
   end)
 
-  it("fetches the first unread file before rendering the layout", function()
-    local review = setmetatable({ layout = { update_files = function() end } }, { __index = reviews.Review })
-    local fetched = {}
-    local files = {
-      {
-        viewed_state = "VIEWED",
-        fetch = function(self, sync)
-          table.insert(fetched, { self, sync })
+  local function make_review_flow()
+    local file_callbacks = {}
+    local thread_callback
+    local thread_error
+    local opened_layout
+    local pull_request = {
+      id = "pr_1",
+      repo = "owner/repo",
+      owner = "owner",
+      name = "repo",
+      number = 1,
+      left = { commit = "base" },
+      right = { commit = "head" },
+      get_changed_files = function(_, callback, on_page, on_error)
+        file_callbacks = { complete = callback, page = on_page, error = on_error }
+      end,
+    }
+
+    utils.in_pr_branch = function()
+      return true
+    end
+    Layout.new = function(_, opts)
+      opened_layout = {
+        left = opts.left,
+        right = opts.right,
+        files = opts.files,
+        selected_file_idx = 1,
+        user_selected_file = false,
+        file_panel = {
+          files = opts.files,
+          loading = false,
+          render = function() end,
+          redraw = function() end,
+        },
+        is_live = function(self)
+          return self.live == true
         end,
+        open = function(self, review)
+          self.live = true
+          self.tabpage = vim.api.nvim_get_current_tabpage()
+          self.review = review
+          reviews.reviews[tostring(self.tabpage)] = review
+        end,
+        close = function(self)
+          self.live = false
+          self.closed = true
+        end,
+        run_in_tabpage = function(self, callback)
+          if self.live then
+            callback()
+          end
+        end,
+        get_current_file = function(self)
+          return self.files[self.selected_file_idx]
+        end,
+        update_files = function(self)
+          self.file_panel.files = self.files
+          self.updates = (self.updates or 0) + 1
+        end,
+      }
+      return opened_layout
+    end
+
+    local review = setmetatable(
+      { pull_request = pull_request, id = -1, threads = {}, files = {} },
+      { __index = reviews.Review }
+    )
+    review.populate_threads = function(_, callback, on_error)
+      thread_callback = callback
+      thread_error = on_error
+    end
+    return {
+      review = review,
+      file_callbacks = file_callbacks,
+      get_file_callbacks = function()
+        return file_callbacks
+      end,
+      get_thread_callback = function()
+        return thread_callback
+      end,
+      get_thread_error = function()
+        return thread_error
+      end,
+      get_layout = function()
+        return opened_layout
+      end,
+    }
+  end
+
+  local function make_thread()
+    return {
+      id = "thread_1",
+      subjectType = "LINE",
+      isOutdated = false,
+      isResolved = false,
+      line = 2,
+      startLine = 2,
+      originalLine = 2,
+      originalStartLine = 2,
+      diffSide = "RIGHT",
+      comments = {
+        nodes = {
+          {
+            body = "pending body",
+            state = "PENDING",
+            pullRequestReview = { state = "PENDING" },
+          },
+        },
       },
-      {
-        viewed_state = "UNVIEWED",
-        fetch = function(self, sync)
-          table.insert(fetched, { self, sync })
-        end,
-      },
-      {
-        viewed_state = "UNVIEWED",
-        fetch = function(self, sync)
-          table.insert(fetched, { self, sync })
-        end,
+    }
+  end
+
+  local function make_file()
+    return {
+      path = "file.lua",
+      viewed_state = "UNVIEWED",
+      is_ready_to_render = function()
+        return false
+      end,
+    }
+  end
+
+  it("opens browse layout and loads threads before changed files", function()
+    local flow = make_review_flow()
+    flow.review:browse()
+    local layout = flow.get_layout()
+    local callbacks = flow.get_file_callbacks()
+
+    eq(true, layout.live)
+    eq(true, layout.file_panel.loading)
+    eq(true, type(flow.get_thread_callback()) == "function")
+    eq(true, type(callbacks.page) == "function")
+
+    flow.get_thread_callback() {
+      data = { repository = { pullRequest = { reviewThreads = { nodes = { make_thread() } } } } },
+    }
+    eq("pending body", flow.review.threads.thread_1.comments.nodes[1].body)
+    eq(0, #layout.files)
+
+    local files = { make_file() }
+    callbacks.page(files)
+    eq(true, layout.file_panel.loading)
+    callbacks.complete(files)
+
+    eq(files, layout.files)
+    eq(false, layout.file_panel.loading)
+  end)
+
+  it("renders changed files before review threads arrive", function()
+    local flow = make_review_flow()
+    flow.review:browse()
+    local layout = flow.get_layout()
+    local callbacks = flow.get_file_callbacks()
+    local files = { make_file() }
+
+    callbacks.page(files)
+    callbacks.complete(files)
+    eq(files, layout.files)
+    eq(nil, flow.review.threads.thread_1)
+
+    flow.get_thread_callback() {
+      data = { repository = { pullRequest = { reviewThreads = { nodes = { make_thread() } } } } },
+    }
+    eq("pending body", flow.review.threads.thread_1.comments.nodes[1].body)
+  end)
+
+  it("tears down the loading layout when the thread request fails", function()
+    local flow = make_review_flow()
+    local errors = {}
+    utils.error = function(message)
+      errors[#errors + 1] = message
+    end
+    flow.review:browse()
+    local layout = flow.get_layout()
+
+    flow.get_thread_error() "network unavailable"
+
+    eq(true, layout.closed)
+    eq({ "Failed to load review threads: network unavailable" }, errors)
+  end)
+
+  it("ignores file and thread results after the review tab closes", function()
+    local flow = make_review_flow()
+    flow.review:browse()
+    local layout = flow.get_layout()
+    local callbacks = flow.get_file_callbacks()
+    layout.live = false
+
+    flow.get_thread_callback() {
+      data = { repository = { pullRequest = { reviewThreads = { nodes = { make_thread() } } } } },
+    }
+    local files = { make_file() }
+    callbacks.page(files)
+    callbacks.complete(files)
+
+    eq(0, #layout.files)
+    eq(0, layout.updates or 0)
+    eq(nil, layout.closed)
+  end)
+
+  it("starts pending-review lookup concurrently with changed-file loading", function()
+    local flow = make_review_flow()
+    local pending_callback
+    flow.review.retrieve_pending_state = function(_, callback)
+      pending_callback = callback
+    end
+
+    flow.review:resume()
+
+    eq(true, type(pending_callback) == "function")
+    eq(true, type(flow.get_file_callbacks().page) == "function")
+    pending_callback("pending-review", { make_thread() })
+    eq("pending-review", flow.review.id)
+    eq("pending body", flow.review.threads.thread_1.comments.nodes[1].body)
+  end)
+
+  it("opens the loading layout before starting a review and closes an older browse tab", function()
+    local flow = make_review_flow()
+    vim.cmd "tabnew"
+    local browse_tab = vim.api.nvim_get_current_tabpage()
+    local browse_layout = {
+      tabpage = browse_tab,
+      close = function(self)
+        self.closed = true
+      end,
+      on_enter = function() end,
+      on_leave = function() end,
+      on_win_leave = function() end,
+    }
+    reviews.reviews[tostring(browse_tab)] = {
+      id = -1,
+      pull_request = flow.review.pull_request,
+      layout = browse_layout,
+    }
+    vim.cmd "tabnew"
+
+    local create_callback
+    flow.review.create = function(_, callback)
+      create_callback = callback
+    end
+    flow.review:start()
+    local layout = flow.get_layout()
+
+    eq(true, layout.live)
+    eq(true, layout.file_panel.loading)
+    eq(true, type(create_callback) == "function")
+    eq(true, type(flow.get_file_callbacks().page) == "function")
+
+    create_callback {
+      data = {
+        addPullRequestReview = {
+          pullRequestReview = {
+            id = "pending_review",
+            pullRequest = { reviewThreads = { nodes = {} } },
+          },
+        },
       },
     }
 
-    review:set_files_and_select_first(files)
-
-    eq(files, review.layout.files)
-    eq(2, review.layout.selected_file_idx)
-    eq({ { files[2], true } }, fetched)
+    eq("pending_review", flow.review.id)
+    eq(true, browse_layout.closed)
   end)
 
   it("fills a wide nearby prefetch window with bounded, selection-prioritized requests", function()

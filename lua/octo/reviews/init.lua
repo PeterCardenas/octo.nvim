@@ -40,12 +40,20 @@ end
 
 ---Creates a new review
 ---@param callback fun(obj: octo.mutations.StartReview): nil
-function Review:create(callback)
+---@param on_error? fun(message: string): nil
+function Review:create(callback, on_error)
   local query = graphql("start_review_mutation", self.pull_request.id)
   gh.api.graphql {
     f = { query = query },
     opts = {
       cb = gh.create_callback {
+        failure = function(message)
+          if on_error then
+            on_error(message)
+          else
+            utils.error(message)
+          end
+        end,
         success = function(output)
           local resp = vim.json.decode(output)
           callback(resp)
@@ -55,51 +63,79 @@ function Review:create(callback)
   }
 end
 
----Get review threads without start a review.
+---Get review threads without starting a review.
 ---@param callback fun(obj: octo.queries.ReviewThreads): nil
-function Review:populate_threads(callback)
+---@param on_error? fun(message: string): nil
+function Review:populate_threads(callback, on_error)
   gh.api.graphql {
     query = queries.review_threads,
     F = { owner = self.pull_request.owner, name = self.pull_request.name, number = self.pull_request.number },
     opts = {
-      cb = function(output, stderr)
-        if stderr and not utils.is_blank(stderr) then
-          utils.error(stderr)
-        elseif output then
+      cb = gh.create_callback {
+        failure = function(message)
+          if on_error then
+            on_error(message)
+          else
+            utils.error(message)
+          end
+        end,
+        success = function(output)
           local resp = vim.json.decode(output)
           callback(resp)
-        end
-      end,
+        end,
+      },
     },
   }
 end
 
 function Review:browse()
+  local layout = self:initiate()
+  if not layout then
+    return
+  end
   self:populate_threads(function(resp)
+    if not self:is_loading_layout(layout) then
+      return
+    end
     local threads = resp.data.repository.pullRequest.reviewThreads.nodes
     self:update_threads(threads)
-    self:initiate()
+  end, function(message)
+    self:fail_loading(layout, "Failed to load review threads: " .. message)
   end)
 end
 
 -- Starts a new review
 function Review:start()
+  local layout = self.layout and self:is_loading_layout(self.layout) and self.layout or self:initiate()
+  if not layout then
+    return
+  end
   self:create(function(resp)
     self.id = resp.data.addPullRequestReview.pullRequestReview.id
+    require("octo.reviews").close_browse_reviews_for_pull_request(self.pull_request)
     local threads = resp.data.addPullRequestReview.pullRequestReview.pullRequest.reviewThreads.nodes
     self:update_threads(threads)
-    self:initiate()
+  end, function(message)
+    self:fail_loading(layout, "Failed to start review: " .. message)
   end)
 end
 
 ---Retrieves existing review
 ---@param callback fun(obj: octo.queries.PendingReviewThreads): nil
-function Review:retrieve(callback)
+---@param on_error? fun(message: string): nil
+function Review:retrieve(callback, on_error)
   gh.api.graphql {
     query = queries.pending_review_threads,
     F = { owner = self.pull_request.owner, name = self.pull_request.name, number = self.pull_request.number },
     opts = {
       cb = gh.create_callback {
+        failure = function(message)
+          if on_error then
+            on_error(message)
+          else
+            utils.error(message)
+          end
+        end,
         success = function(output)
           local resp = vim.json.decode(output)
           callback(resp)
@@ -120,37 +156,54 @@ local function get_viewer_pending_review_id(review_nodes)
 end
 
 ---@param callback fun(review_id: string | nil, threads: octo.ReviewThread[]): nil
-function Review:retrieve_pending_state(callback)
+---@param on_error? fun(message: string): nil
+function Review:retrieve_pending_state(callback, on_error)
   self:retrieve(function(resp)
     local pull_request = resp.data.repository.pullRequest
     callback(get_viewer_pending_review_id(pull_request.reviews.nodes), pull_request.reviewThreads.nodes)
-  end)
+  end, on_error)
 end
 
 ---@param review Review
 ---@param review_id string
 ---@param threads octo.ReviewThread[]
 local function initiate_pending_review(review, review_id, threads)
+  require("octo.reviews").close_browse_reviews_for_pull_request(review.pull_request)
   review.id = review_id
   review:update_threads(threads)
-  review:initiate()
 end
 
 -- Resumes an existing review
 function Review:resume()
+  local layout = self:initiate()
+  if not layout then
+    return
+  end
   self:retrieve_pending_state(function(review_id, threads)
+    if not self:is_loading_layout(layout) then
+      return
+    end
     if not review_id then
-      utils.error "No pending reviews found for viewer"
+      self:fail_loading(layout, "No pending reviews found for viewer")
       return
     end
 
     initiate_pending_review(self, review_id, threads)
+  end, function(message)
+    self:fail_loading(layout, "Failed to retrieve pending review: " .. message)
   end)
 end
 
 -- Resumes an existing review if there is any, else start one
 function Review:start_or_resume()
+  local layout = self:initiate()
+  if not layout then
+    return
+  end
   self:retrieve_pending_state(function(review_id, threads)
+    if not self:is_loading_layout(layout) then
+      return
+    end
     if not review_id then
       utils.info "No pending review, starting one"
       self:start()
@@ -159,32 +212,132 @@ function Review:start_or_resume()
 
     utils.info "Resuming review"
     initiate_pending_review(self, review_id, threads)
+  end, function(message)
+    self:fail_loading(layout, "Failed to retrieve pending review: " .. message)
   end)
 end
 
----Register freshly fetched files as this review's files
----Selects and fetches the first unread file
----Defaults to the first file if all files are VIEWED
+---Register freshly fetched files as this review's files.
+---Selects the first unread file when the user has not changed the selection.
 ---@param files FileEntry[]
-function Review:set_files_and_select_first(files)
+---@param loading? boolean
+function Review:set_files_and_select_first(files, loading)
+  loading = loading or false
+  local layout = self.layout
+  if not layout or not self:is_loading_layout(layout) then
+    return
+  end
+
+  local current_file = layout:get_current_file()
   local selected_file_idx ---@type integer?
-  for idx, file in ipairs(files) do
-    if file.viewed_state ~= "VIEWED" then
-      selected_file_idx = idx
-      break
+  if current_file and not layout.user_selected_file then
+    for idx, file in ipairs(files) do
+      if file == current_file then
+        selected_file_idx = idx
+        break
+      end
     end
   end
 
-  if not selected_file_idx and #files > 0 then
-    selected_file_idx = 1
+  if not selected_file_idx and not layout.user_selected_file then
+    for idx, file in ipairs(files) do
+      if file.viewed_state ~= "VIEWED" then
+        selected_file_idx = idx
+        break
+      end
+    end
+    if not selected_file_idx and #files > 0 then
+      selected_file_idx = 1
+      layout.selection_pending = loading
+    else
+      layout.selection_pending = false
+    end
   end
 
-  self.layout.files = files
-  if selected_file_idx then
-    files[selected_file_idx]:fetch(true)
-    self.layout.selected_file_idx = selected_file_idx
+  if layout.selection_pending and not layout.user_selected_file then
+    for idx, file in ipairs(files) do
+      if file.viewed_state ~= "VIEWED" then
+        selected_file_idx = idx
+        layout.selection_pending = false
+        break
+      end
+    end
   end
-  self.layout:update_files()
+
+  layout.files = files
+  layout.file_panel.loading = loading
+  if selected_file_idx then
+    layout.selected_file_idx = selected_file_idx
+  end
+  layout:update_files(true)
+end
+
+---@param layout Layout
+---@return boolean
+function Review:is_loading_layout(layout)
+  return self.layout == layout and layout:is_live() and not layout.failed
+end
+
+---@param layout Layout
+---@param message string
+function Review:fail_loading(layout, message)
+  if not self:is_loading_layout(layout) then
+    return
+  end
+  layout.failed = true
+  self:close_layout(layout)
+  utils.error(message)
+end
+
+---@param layout Layout
+function Review:close_layout(layout)
+  if self.layout == layout then
+    require("octo.reviews").close_review(self)
+  end
+end
+
+---Fetch the file list while other review requests are in flight.
+---@param layout Layout
+function Review:load_changed_files(layout)
+  self.pull_request:get_changed_files(function(files)
+    if self:is_loading_layout(layout) then
+      self:set_files_and_select_first(files, false)
+    end
+  end, function(files)
+    if self:is_loading_layout(layout) then
+      self:set_files_and_select_first(files, true)
+    end
+  end, function(message)
+    self:fail_loading(layout, "Failed to load changed files: " .. message)
+  end)
+end
+
+---Resume file requests after the exact merge base becomes available.
+function Review:merge_base_ready()
+  local layout = self.layout
+  if not layout or not self:is_loading_layout(layout) then
+    return
+  end
+  layout:run_in_tabpage(function()
+    layout.left = self.pull_request.left
+    layout.file_panel:render()
+    layout.file_panel:redraw()
+    local selected_file = layout:get_current_file()
+    if selected_file then
+      selected_file:fetch(false)
+    end
+    for _, file in ipairs(layout.files) do
+      if
+        file ~= selected_file
+        and not file.left_fetched
+        and not file.left_fetching
+        and (file.right_fetched or file.right_fetching)
+      then
+        file:fetch(false)
+      end
+    end
+    layout:prefetch_nearby_files()
+  end)
 end
 
 ---Updates layout to focus on a single commit
@@ -232,17 +385,20 @@ function Review:initiate(opts)
     require("octo.reviews").close_browse_reviews_for_pull_request(pr)
   end
 
-  -- create the layout
+  if self.layout and self:is_loading_layout(self.layout) then
+    return self.layout
+  end
+
+  -- Open the loading layout before waiting for independent review requests.
   self.layout = Layout:new {
-    left = opts.left or pr.left,
+    left = opts.left or (pr.left_ready == false and Rev:new "" or pr.left),
     right = opts.right or pr.right,
     files = {},
   }
+  self.layout.file_panel.loading = true
   self.layout:open(self)
-
-  pr:get_changed_files(function(files)
-    self:set_files_and_select_first(files)
-  end)
+  self:load_changed_files(self.layout)
+  return self.layout
 end
 
 ---Counts pending comments with non-empty bodies in review threads
@@ -342,13 +498,16 @@ function Review:update_threads(threads)
       self.threads[thread.id] = thread
     end
   end
-  if self.layout then
-    self.layout.file_panel:render()
-    self.layout.file_panel:redraw()
-    local file = self.layout:get_current_file()
-    if file then
-      file:place_signs()
-    end
+  local layout = self.layout
+  if layout and self:is_loading_layout(layout) then
+    layout:run_in_tabpage(function()
+      layout.file_panel:render()
+      layout.file_panel:redraw()
+      local file = layout:get_current_file()
+      if file and file:is_ready_to_render() then
+        file:place_signs()
+      end
+    end)
   end
 end
 
@@ -982,50 +1141,99 @@ end
 --- Get the pull request associated with current buffer.
 --- Fall back to pull request associated with the current branch if not in an Octo buffer.
 --- @param cb fun(pull_request: PullRequest?): nil
-local function get_pr_from_buffer_or_current_branch(cb)
+---@param on_early? fun(pull_request: PullRequest): nil
+---@param on_error? fun(message: string): nil
+local function get_pr_from_buffer_or_current_branch(cb, on_early, on_error)
   local buffer = utils.get_current_buffer()
 
   if not buffer then
     -- We are not in an octo buffer, try and fallback to the current branch's pr
-    utils.get_pull_request_for_current_branch(cb)
+    utils.get_pull_request_for_current_branch(cb, on_early, on_error)
     return
   end
 
   if buffer:isPullRequest() then
-    buffer:get_pr(cb)
+    buffer:get_pr(cb, on_early, on_error)
   else
-    utils.get_pull_request_for_current_branch(cb)
+    utils.get_pull_request_for_current_branch(cb, on_early, on_error)
   end
 end
 
 ---@param cb fun(review: Review): nil
-local function with_current_pr_review(cb)
+---@param on_ready? fun(review: Review): nil
+---@param on_error? fun(message: string, review: Review?): nil
+local function with_current_pr_review(cb, on_ready, on_error)
   local current_review = M.get_current_review()
   if current_review then
     cb(current_review)
+    if on_ready then
+      on_ready(current_review)
+    end
     return
   end
 
-  get_pr_from_buffer_or_current_branch(function(pull_request)
+  local review ---@type Review?
+  local started = false
+  local function use_pull_request(pull_request, metadata_ready)
     if not pull_request then
       return
     end
 
-    local review, duplicate_reviews = get_or_create_review_for_pull_request(pull_request)
-    if duplicate_reviews or not review then
+    if not review then
+      local duplicate_reviews
+      review, duplicate_reviews = get_or_create_review_for_pull_request(pull_request)
+      if duplicate_reviews then
+        review = nil
+        return
+      end
+    else
+      review.pull_request = pull_request
+    end
+    if not review then
       return
     end
 
-    cb(review)
+    if not started then
+      started = true
+      cb(review)
+    end
+    if metadata_ready and on_ready then
+      on_ready(review)
+    end
+  end
+
+  get_pr_from_buffer_or_current_branch(function(pull_request)
+    use_pull_request(pull_request, true)
+  end, function(pull_request)
+    use_pull_request(pull_request, false)
+  end, function(message)
+    if on_error then
+      on_error(message, review)
+    elseif review and review.layout then
+      review:fail_loading(review.layout, message)
+    else
+      utils.error(message)
+    end
   end)
 end
 
 ---@param method "start" | "resume" | "start_or_resume"
 local function run_review_action(method)
+  local active_review ---@type Review?
   with_current_pr_review(function(review)
-    local next_review = prepare_review_for_pending_action(review)
-    if next_review then
-      next_review[method](next_review)
+    active_review = prepare_review_for_pending_action(review)
+    if active_review then
+      active_review[method](active_review)
+    end
+  end, function(review)
+    local ready_review = active_review or review
+    ready_review:merge_base_ready()
+  end, function(message, review)
+    local failed_review = active_review or review
+    if failed_review and failed_review.layout then
+      failed_review:fail_loading(failed_review.layout, message)
+    else
+      utils.error(message)
     end
   end)
 end
@@ -1043,6 +1251,14 @@ function M.browse_review()
     end
 
     review:browse()
+  end, function(review)
+    review:merge_base_ready()
+  end, function(message, review)
+    if review and review.layout then
+      review:fail_loading(review.layout, message)
+    else
+      utils.error(message)
+    end
   end)
 end
 
