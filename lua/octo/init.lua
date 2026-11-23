@@ -1306,8 +1306,10 @@ function M.load(repo, kind, id, hostname, cb, opts)
         return
       end
 
-      expected_count = count
-      load_shell._timelineIncomplete = count > #shell_nodes
+      if not is_cached then
+        expected_count = count
+      end
+      load_shell._timelineIncomplete = is_cached or count > #shell_nodes
       if opts and opts.on_shell then
         opts.on_shell(load_shell, is_cached)
       end
@@ -1343,6 +1345,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
   local page_count = 0
   local pending_pages = 0
   local pages = {} ---@type table<integer, { filteredCount: integer, nodes: table[] }>
+  local failed_pages = {} ---@type table<integer, boolean>
   local full_response ---@type table?
 
   local function finish_if_ready()
@@ -1466,10 +1469,11 @@ function M.load(repo, kind, id, hostname, cb, opts)
         auth_context = opts and opts.auth_context,
         cb = gh.create_callback {
           failure = function()
-            if expected_count ~= nil and page_index >= page_count then
-              return
+            if expected_count == nil then
+              failed_pages[page_index] = true
+            elseif page_index < page_count then
+              fallback()
             end
-            fallback()
           end,
           success = function(output)
             receive_timeline_page(page_index, output)
@@ -1488,6 +1492,12 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
     expected_count = count
     page_count = count <= 100 and 1 or math.ceil((count - 100) / 99) + 1
+    for page_index in pairs(failed_pages) do
+      if page_index < page_count then
+        fallback()
+        return
+      end
+    end
     local pages_to_request = {} ---@type integer[]
     pending_pages = 0
     for page_index = 1, page_count - 1 do
@@ -1528,11 +1538,13 @@ function M.load(repo, kind, id, hostname, cb, opts)
       return
     end
 
-    start_page_fanout(count)
+    if not is_cached then
+      start_page_fanout(count)
+    end
     if details_received or fallback_started or load_completed then
       return
     end
-    load_shell._timelineIncomplete = count > #shell_nodes
+    load_shell._timelineIncomplete = is_cached or count > #shell_nodes
     if opts and opts.on_shell then
       opts.on_shell(load_shell, is_cached)
     end

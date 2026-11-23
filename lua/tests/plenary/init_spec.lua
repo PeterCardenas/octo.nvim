@@ -141,8 +141,8 @@ describe("Octo module:", function()
     octo.load_preview = function(_, _, _, _, callback)
       shell_callback = callback
     end
-    return requests, function(shell)
-      shell_callback(shell)
+    return requests, function(shell, cached)
+      shell_callback(shell, cached)
     end, queries
   end
 
@@ -833,9 +833,9 @@ describe("Octo module:", function()
     octo.load("owner/repo", "issue", 17, nil, function(obj)
       loaded = obj
     end)
-    deliver_shell { timelineItems = { filteredCount = 10, nodes = {} } }
-    assert.is_false(fallback_used, "known small count must not start cursor pagination")
     find_skip_request(requests, 198).opts.cb("", "network failure")
+    assert.is_false(fallback_used, "an unresolved speculative failure must wait for the fresh count")
+    deliver_shell { timelineItems = { filteredCount = 10, nodes = {} } }
     assert.is_false(fallback_used, "a failed page beyond the known count must be ignored")
     local nodes = {}
     for index = 1, 10 do
@@ -845,6 +845,33 @@ describe("Octo module:", function()
 
     assert.is_false(fallback_used)
     assert.are.same(10, #loaded.timelineItems.nodes)
+  end)
+
+  it("does not treat a cached shell count as authoritative during revalidation", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local fallback_used = false
+    local loaded
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+      if opts.paginate then
+        fallback_used = true
+      end
+    end
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end)
+    deliver_shell({ timelineItems = { filteredCount = 101, nodes = {} } }, true)
+    find_issue_details_request(requests).opts.cb(issue_response(1, { { id = "only-item" } }), nil)
+
+    assert.is_false(fallback_used)
+    assert.is_table(loaded)
+    assert.are.same(
+      { "only-item" },
+      vim.tbl_map(function(item)
+        return item.id
+      end, loaded.timelineItems.nodes)
+    )
   end)
 
   it("reports one terminal error when both parallel and fallback requests fail", function()
