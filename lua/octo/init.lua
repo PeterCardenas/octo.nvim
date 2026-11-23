@@ -176,6 +176,14 @@ function M.load_buffer(opts)
     return
   end
   local repo, kind, id, hostname = buffer_info.repo, buffer_info.kind, buffer_info.id, buffer_info.hostname
+  if kind == "pull" or kind == "issue" or kind == "discussion" or kind == "pull_diff" then
+    local number = tonumber(id)
+    if not number or number < 1 or number > 2147483647 or number ~= math.floor(number) then
+      utils.print_err(string.format("Invalid %s number in buffer URI: %s", kind, id))
+      return
+    end
+    id = number
+  end
   next_load_generation = next_load_generation + 1
   local load_generation = next_load_generation
   active_loads[bufnr] = load_generation

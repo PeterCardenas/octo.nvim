@@ -288,6 +288,30 @@ describe("Octo module:", function()
     assert.are.same({ databaseId = 3185672857 }, received)
   end)
 
+  it("normalizes numeric resource IDs at the buffer loader boundary", function()
+    local bufnr = create_named_buffer "octo://owner/repo/pull/17"
+    local requested_id
+    octo.load = function(_, _, id)
+      requested_id = id
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+
+    assert.are.same(17, requested_id)
+  end)
+
+  it("rejects non-integer resource IDs before starting a load", function()
+    local bufnr = create_named_buffer "octo://owner/repo/discussion/17.5"
+    local load_started = false
+    octo.load = function()
+      load_started = true
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+
+    assert.is_false(load_started)
+  end)
+
   it("loads pull request diff buffers from octo URIs", function()
     local graphql_opts
     local get_opts
@@ -324,7 +348,7 @@ describe("Octo module:", function()
 
     assert.are.same({ owner = "owner", name = "repo", number = 7 }, graphql_opts.F)
     assert.are.same("/repos/{repo}/pulls/{number}", get_opts[1])
-    assert.are.same({ repo = "owner/repo", number = "7" }, get_opts.format)
+    assert.are.same({ repo = "owner/repo", number = 7 }, get_opts.format)
     assert.are.same("base...head", _G.octo_buffers[bufnr]:get_diff_fingerprint())
     assert.are.same("diff", vim.bo[bufnr].filetype)
     assert.are.same(false, vim.bo[bufnr].modifiable)
