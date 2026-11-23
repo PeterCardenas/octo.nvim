@@ -18,6 +18,10 @@ local loading_timeline_ns = vim.api.nvim_create_namespace "octo_timeline_loading
 
 ---@alias octo.NodeKind "issue" | "pull" | "pull_diff" | "discussion" | "repo" | "release"
 
+---@class octo.BufferCompletionWaiter
+---@field complete fun(): nil
+---@field failure fun(message: string): nil
+
 ---@class OctoBuffer
 ---@field bufnr integer
 ---@field number integer
@@ -29,7 +33,7 @@ local loading_timeline_ns = vim.api.nvim_create_namespace "octo_timeline_loading
 ---@field commentsMetadata CommentMetadata[]
 ---@field threadsMetadata ThreadMetadata[]
 ---@field private node octo.PullRequest|octo.Issue|octo.Release|octo.Discussion|octo.Repository|table
----@field private complete_waiters? (fun(): nil)[]
+---@field private complete_waiters? octo.BufferCompletionWaiter[]
 ---@field taggable_users? string[] list of taggable users for the buffer. Trigger with @
 ---@field owner? string
 ---@field name? string
@@ -102,27 +106,43 @@ function OctoBuffer:clear_timeline_loading_indicator()
   vim.api.nvim_buf_clear_namespace(self.bufnr, loading_timeline_ns, 0, -1)
 end
 
+local function drain_completion_waiters(self, failure_message)
+  local waiters = self.complete_waiters
+  self.complete_waiters = nil
+  for _, waiter in ipairs(waiters or {}) do
+    if failure_message then
+      if waiter.failure then
+        waiter.failure(failure_message)
+      end
+    else
+      waiter.complete()
+    end
+  end
+end
+
 function OctoBuffer:update_node(node)
   local shell_was_replaced = self.node._loadState == "shell" and node._loadState ~= "shell"
   self.node = node
-  if shell_was_replaced and self.complete_waiters then
-    local waiters = self.complete_waiters
-    self.complete_waiters = nil
-    for _, callback in ipairs(waiters) do
-      callback()
-    end
+  if shell_was_replaced then
+    drain_completion_waiters(self)
   end
 end
 
 ---Run a callback once this buffer has complete object data.
 ---@param callback fun(): nil
-function OctoBuffer:when_complete(callback)
+---@param on_failure? fun(message: string): nil
+function OctoBuffer:when_complete(callback, on_failure)
   if self.node._loadState ~= "shell" then
     callback()
     return
   end
   self.complete_waiters = self.complete_waiters or {}
-  table.insert(self.complete_waiters, callback)
+  table.insert(self.complete_waiters, { complete = callback, failure = on_failure or function() end })
+end
+
+---@param message string
+function OctoBuffer:fail_completion_waiters(message)
+  drain_completion_waiters(self, message)
 end
 
 ---Apply the buffer mappings
@@ -1273,6 +1293,12 @@ function OctoBuffer:get_pr(callback, on_early, on_error)
   if self.node._loadState == "shell" then
     self:when_complete(function()
       self:get_pr(callback, on_early, on_error)
+    end, function(message)
+      if on_error then
+        on_error(message)
+      else
+        utils.error(message)
+      end
     end)
     return
   end

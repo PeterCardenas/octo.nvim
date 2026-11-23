@@ -86,6 +86,10 @@ end
 function M.invalidate_load(bufnr)
   active_loads[bufnr] = nil
   active_auth_loads[bufnr] = nil
+  local buffer = octo_buffers[bufnr]
+  if buffer and type(buffer.fail_completion_waiters) == "function" then
+    buffer:fail_completion_waiters "Octo buffer load was cancelled"
+  end
 end
 
 function M.setup(user_config)
@@ -246,6 +250,9 @@ function M.load_buffer(opts)
       local was_skeleton = vim.b[bufnr].octo_loading_skeleton
       vim.b[bufnr].octo_loading_skeleton = nil
       local current_buffer = octo_buffers[bufnr]
+      if current_buffer and type(current_buffer.fail_completion_waiters) == "function" then
+        current_buffer:fail_completion_waiters(string.format("Failed to load %s buffer %s", kind, id))
+      end
       if current_buffer and type(current_buffer.clear_timeline_loading_indicator) == "function" then
         current_buffer:clear_timeline_loading_indicator()
       end
@@ -663,6 +670,9 @@ function M.load_buffer(opts)
 
     local octo_buf = octo_buffers[bufnr]
     if has_local_changes() then
+      if octo_buf and type(octo_buf.fail_completion_waiters) == "function" then
+        octo_buf:fail_completion_waiters "Local edits prevented completing the Octo buffer load"
+      end
       clear_cached_mark(bufnr)
       finish_load()
       if opts.on_local_changes then

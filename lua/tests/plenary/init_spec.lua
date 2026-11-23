@@ -1457,6 +1457,62 @@ describe("Octo module:", function()
     assert.are.same(6, vim.fn.foldclosed(7))
   end)
 
+  it("fails real shell waiters when a load terminates before complete data arrives", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local requests = install_async_load_stubs()
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell", _loadState = "shell" }
+
+    local OctoBuffer = require("octo.model.octo-buffer").OctoBuffer
+    local buffer = OctoBuffer:new {
+      bufnr = bufnr,
+      number = 17,
+      repo = "owner/repo",
+      kind = "issue",
+      node = { _loadState = "shell" },
+    }
+    local completed, failed = 0, 0
+    local failure_message
+    buffer:when_complete(function()
+      completed = completed + 1
+    end, function(message)
+      failed = failed + 1
+      failure_message = message
+    end)
+
+    requests[1].opts.on_error()
+
+    assert.are.same(0, completed)
+    assert.are.same(1, failed)
+    assert.is_string(failure_message)
+  end)
+
+  it("fails shell waiters when local edits skip the complete repaint", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local requests = install_async_load_stubs()
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell", _loadState = "shell" }
+
+    local OctoBuffer = require("octo.model.octo-buffer").OctoBuffer
+    local buffer = OctoBuffer:new {
+      bufnr = bufnr,
+      number = 17,
+      repo = "owner/repo",
+      kind = "issue",
+      node = { _loadState = "shell" },
+    }
+    local failures = 0
+    buffer:when_complete(function() end, function(message)
+      failures = failures + 1
+      assert.is_truthy(message)
+    end)
+    buffer.titleMetadata.dirty = true
+
+    requests[1].callback { id = "complete", _loadState = "complete" }
+
+    assert.are.same(1, failures)
+  end)
+
   it("clears the loading skeleton and notifies its caller once on terminal failure", function()
     local bufnr = create_named_buffer "octo://owner/repo/issue/17"
     local requests = install_async_load_stubs()
