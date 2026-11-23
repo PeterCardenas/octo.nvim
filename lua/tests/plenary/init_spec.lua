@@ -477,9 +477,9 @@ describe("Octo module:", function()
 
       assert.is_table(loaded, "load should complete for " .. count .. " timeline nodes")
       assert.are.same(count, #loaded.timelineItems.nodes)
-      local expected_skips = { 100, 200, 300, 400, 500, 600 }
-      for skip = 700, count - 1, 100 do
-        expected_skips[#expected_skips + 1] = skip
+      local expected_skips = { 99 }
+      if count >= 200 then
+        expected_skips[#expected_skips + 1] = 198
       end
       table.sort(requested_skips)
       assert.are.same(expected_skips, requested_skips)
@@ -574,7 +574,7 @@ describe("Octo module:", function()
     })
 
     assert.are.same("skeleton", events[1])
-    assert.are.same(7, #requests)
+    assert.are.same(3, #requests)
     assert.is_function(preview_callback)
   end)
 
@@ -592,7 +592,7 @@ describe("Octo module:", function()
     })
 
     local details_request = find_issue_details_request(requests)
-    assert.are.same(7, #requests)
+    assert.are.same(3, #requests)
     assert.is_nil(details_request.paginate)
     details_request.opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
@@ -639,14 +639,72 @@ describe("Octo module:", function()
     })
     find_issue_details_request(requests).opts.cb(issue_response(101, nodes), nil)
 
-    assert.are.same(7, #requests)
-    local page_request = find_skip_request(requests, 100)
+    assert.are.same(3, #requests)
+    local page_request = find_skip_request(requests, 99)
     assert.are.same(queries.issue_timeline_page, page_request.query)
-    page_request.opts.cb(issue_response(101, { { id = "node-101" } }), nil)
+    page_request.opts.cb(issue_response(101, { { id = "node-100" }, { id = "node-101" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 101, nodes = { { id = "shell-node" } } } }
 
     assert.are.same(0, shells)
     assert.are.same(101, #loaded.timelineItems.nodes)
+  end)
+
+  it("falls back when overlapping page boundaries shift despite a matching count", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local fallback_used = false
+    local loaded
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+      if opts.paginate then
+        fallback_used = true
+        opts.opts.cb(issue_response(101, { { id = "node-1" }, { id = "node-2" } }), nil)
+      end
+    end
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end)
+    deliver_shell { timelineItems = { filteredCount = 101, nodes = {} } }
+    local first_page = {}
+    for index = 1, 100 do
+      first_page[index] = { id = "node-" .. index }
+    end
+    find_issue_details_request(requests).opts.cb(issue_response(101, first_page), nil)
+    find_skip_request(requests, 99).opts.cb(
+      issue_response(101, { { id = "shifted-boundary" }, { id = "node-101" } }),
+      nil
+    )
+
+    assert.is_true(fallback_used)
+    assert.is_table(loaded)
+  end)
+
+  it("ignores failed speculative pages after the known count excludes them", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local fallback_used = false
+    local loaded
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+      if opts.paginate then
+        fallback_used = true
+      end
+    end
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end)
+    deliver_shell { timelineItems = { filteredCount = 10, nodes = {} } }
+    assert.is_false(fallback_used, "known small count must not start cursor pagination")
+    find_skip_request(requests, 198).opts.cb("", "network failure")
+    assert.is_false(fallback_used, "a failed page beyond the known count must be ignored")
+    local nodes = {}
+    for index = 1, 10 do
+      nodes[index] = { id = "item-" .. index }
+    end
+    find_issue_details_request(requests).opts.cb(issue_response(10, nodes), nil)
+
+    assert.is_false(fallback_used)
+    assert.are.same(10, #loaded.timelineItems.nodes)
   end)
 
   it("falls back to cursor pagination when a concurrent detail request fails", function()
@@ -684,7 +742,7 @@ describe("Octo module:", function()
       loaded = obj
     end)
     deliver_shell { timelineItems = { filteredCount = 101, nodes = { { id = "shell-node" } } } }
-    find_skip_request(requests, 100).opts.cb("", "network failure")
+    find_skip_request(requests, 99).opts.cb("", "network failure")
 
     local fallback_request = find_fallback_request(requests)
     assert.is_true(fallback_request.paginate)
@@ -705,7 +763,7 @@ describe("Octo module:", function()
       end,
     })
 
-    assert.are.same(10, #requests)
+    assert.are.same(6, #requests)
     local details_request = find_pull_details_request(requests)
     assert.matches("timelineItems", details_request.query)
     assert.is_nil(details_request.query:find("reviewThreads(last:100)", 1, true))

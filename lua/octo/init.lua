@@ -1060,9 +1060,22 @@ function M.load(repo, kind, id, hostname, cb, opts)
     local seen = {} ---@type table<string, boolean>
     for page_index = 0, page_count - 1 do
       local page = pages[page_index]
-      if not page or page.filteredCount ~= expected_count then
+      local skip = page_index == 0 and 0 or page_index * 99
+      local expected_page_size = math.min(100, expected_count - skip)
+      if not page or page.filteredCount ~= expected_count or #page.nodes ~= expected_page_size then
         fallback()
         return
+      end
+      if page_index > 0 then
+        local previous_page = pages[page_index - 1]
+        local previous_item = previous_page and previous_page.nodes[#previous_page.nodes]
+        local boundary_item = page.nodes[1]
+        local previous_id = type(previous_item) == "table" and previous_item ~= vim.NIL and previous_item.id or nil
+        local boundary_id = type(boundary_item) == "table" and boundary_item ~= vim.NIL and boundary_item.id or nil
+        if previous_id == nil or boundary_id == nil or previous_id ~= boundary_id then
+          fallback()
+          return
+        end
       end
       for _, item in ipairs(page.nodes) do
         local node_id = item ~= vim.NIL and type(item) == "table" and item.id or nil
@@ -1112,7 +1125,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
   local requested_pages = {} ---@type table<integer, boolean>
 
   local function receive_timeline_page(page_index, output)
-    if fallback_started or load_completed then
+    if fallback_started or load_completed or (expected_count ~= nil and page_index >= page_count) then
       return
     end
     local ok, response = pcall(vim.json.decode, output)
@@ -1145,12 +1158,15 @@ function M.load(repo, kind, id, hostname, cb, opts)
     requested_pages[page_index] = true
     gh.api.graphql {
       query = page_query,
-      fields = { owner = owner, name = name, number = id, skip = page_index * 100 },
+      fields = { owner = owner, name = name, number = id, skip = page_index * 99 },
       jq = ".",
       opts = {
         hostname = hostname,
         cb = gh.create_callback {
           failure = function()
+            if expected_count ~= nil and page_index >= page_count then
+              return
+            end
             fallback()
           end,
           success = function(output)
@@ -1169,7 +1185,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       return
     end
     expected_count = count
-    page_count = math.ceil(count / 100)
+    page_count = count <= 100 and 1 or math.ceil((count - 100) / 99) + 1
     local pages_to_request = {} ---@type integer[]
     pending_pages = 0
     for page_index = 1, page_count - 1 do
@@ -1196,13 +1212,11 @@ function M.load(repo, kind, id, hostname, cb, opts)
     opts.on_skeleton()
   end
 
-  -- Start the first pages before count discovery; their filteredCount can start
-  -- the remaining fanout while the shell and full-details calls are in flight.
-  for page_index = 1, 6 do
-    requested_pages[page_index] = true
-  end
-  for page_index = 1, 6 do
-    request_timeline_page(page_index)
+  -- Two overlap pages can reveal the count while shell and details are in flight.
+  for page_index = 1, 2 do
+    if expected_count == nil then
+      request_timeline_page(page_index)
+    end
   end
 
   -- Phase two carries the complete details and page zero. It is independent of
