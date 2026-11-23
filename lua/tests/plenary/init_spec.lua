@@ -414,6 +414,16 @@ describe("Octo module:", function()
     queries.setup()
     _G.octo_pv2_fragment = ""
 
+    local function selects_boundary_id(fragment)
+      local nodes_start = assert(fragment:find("nodes {", 1, true))
+      local id_start = fragment:find("id", nodes_start, true)
+      local typename_start = fragment:find("__typename", nodes_start, true)
+      return id_start ~= nil and typename_start ~= nil and id_start < typename_start
+    end
+
+    assert.is_true(selects_boundary_id(fragments.issue_timeline_items_connection))
+    assert.is_true(selects_boundary_id(fragments.pull_request_timeline_items_connection))
+
     local function make_node(index, count)
       if count == 101 and index == 100 then
         return { id = "node-100", __typename = "LabeledEvent", label = { name = "first" } }

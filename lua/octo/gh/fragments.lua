@@ -1259,6 +1259,7 @@ fragment CommentDeletedEventFragment on CommentDeletedEvent {
   ]]
 
   local issue_timeline_items_connection_fragments = [[
+    ... on Node { id }
     __typename
     ...AssignedEventFragment
     ...UnassignedEventFragment
@@ -1319,6 +1320,7 @@ fragment IssueTimelineItemsConnectionFragment on IssueTimelineItemsConnection {
   )
 
   local pull_request_timeline_items_connection_fragments = [[
+    ... on Node { id }
     __typename
     ...AutomaticBaseChangeSucceededEventFragment
     ...BaseRefChangedEventFragment
