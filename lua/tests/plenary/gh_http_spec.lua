@@ -4,9 +4,11 @@ describe("GitHub HTTP transport", function()
   local original_system
   local original_gh_cmd
   local original_gh_env
+  local original_timeout
   local completions
   local calls
   local temporary_command
+  local temporary_token_output
 
   local function install_system_stub()
     calls = {}
@@ -39,7 +41,9 @@ describe("GitHub HTTP transport", function()
     original_system = vim.system
     original_gh_cmd = config.values.gh_cmd
     original_gh_env = config.values.gh_env
+    original_timeout = config.values.timeout
     temporary_command = nil
+    temporary_token_output = nil
     install_system_stub()
   end)
 
@@ -47,8 +51,12 @@ describe("GitHub HTTP transport", function()
     vim.system = original_system
     config.values.gh_cmd = original_gh_cmd
     config.values.gh_env = original_gh_env
+    config.values.timeout = original_timeout
     if temporary_command and vim.fn.filereadable(temporary_command) == 1 then
       vim.fn.delete(temporary_command)
+    end
+    if temporary_token_output and vim.fn.filereadable(temporary_token_output) == 1 then
+      vim.fn.delete(temporary_token_output)
     end
   end)
 
@@ -321,6 +329,78 @@ describe("GitHub HTTP transport", function()
       return loaded ~= nil
     end))
     assert.are.same('{"data":{"fallback":true}}', vim.trim(loaded.output))
+  end)
+
+  it("times out auth lookup and kills the asynchronous gh process", function()
+    config.values.timeout = 10
+    local killed = false
+    vim.system = function(argv)
+      assert.are.same({ original_gh_cmd, "auth", "token", "--hostname", "octo-auth-timeout.example" }, argv)
+      return {
+        kill = function()
+          killed = true
+        end,
+      }
+    end
+    local context
+    gh.get_auth_context("octo-auth-timeout.example", function(result)
+      context = result
+    end)
+
+    assert.is_true(vim.wait(500, function()
+      return context ~= nil
+    end))
+    assert.is_true(killed)
+    assert.is_nil(context.token)
+    assert.is_nil(context.fingerprint)
+  end)
+
+  it("falls back after a curl deadline with the same auth context in gh_env", function()
+    config.values.timeout = 10
+    temporary_command = vim.fn.tempname()
+    temporary_token_output = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/bin/sh",
+      string.format("printf '%%s' \"$GH_TOKEN\" > %q", temporary_token_output),
+      "printf '%s\\n' '{\"data\":{\"fallback\":true}}'",
+    }, temporary_command)
+    vim.fn.setfperm(temporary_command, "rwx------")
+    config.values.gh_cmd = temporary_command
+
+    local killed = 0
+    local loaded
+    vim.system = function(argv)
+      assert.are.same("curl", argv[1])
+      return {
+        kill = function()
+          killed = killed + 1
+        end,
+      }
+    end
+    gh.api.graphql {
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
+      jq = ".",
+      opts = {
+        hostname = "octo-curl-timeout.example",
+        auth_context = {
+          hostname = "octo-curl-timeout.example",
+          token = "fixed-load-token",
+          fingerprint = vim.fn.sha256 "fixed-load-token",
+          env = {},
+        },
+        cb = function(output)
+          loaded = output
+        end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return loaded ~= nil
+    end))
+    assert.are.same(1, killed)
+    assert.are.same("fixed-load-token", vim.fn.readfile(temporary_token_output)[1])
+    assert.are.same({ data = { fallback = true } }, vim.json.decode(loaded))
   end)
 
   it("falls back to gh when curl encounters a transport error", function()
