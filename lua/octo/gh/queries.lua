@@ -167,6 +167,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 
   ---@class octo.PullRequestTimelineItemsConnection : octo.fragments.PullRequestTimelineItemsConnection
   ---@field pageInfo octo.PageInfo
+  ---@field filteredCount integer
 
   ---@class octo.PullRequest : octo.ReactionGroupsFragment
   ---@field id string
@@ -205,6 +206,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   ---@field viewerSubscription octo.SubscriptionState
   ---@field projectItems? octo.fragments.ProjectsV2Connection
   ---@field timelineItems octo.PullRequestTimelineItemsConnection
+  ---@field _timelineIncomplete? boolean
   ---@field reviewDecision string
   ---@field latestOpinionatedReviews? { nodes: { state: octo.PullRequestReviewState }[] }
   ---@field reviewThreads { nodes: octo.ReviewThread[] }
@@ -353,6 +355,7 @@ query PullRequest($endCursor: String, $owner: String!, $name: String!, $number: 
       ...ReactionGroupsFragment
       %s
       timelineItems(first: 100, after: $endCursor) {
+        filteredCount
         pageInfo {
           hasNextPage
           endCursor
@@ -436,12 +439,14 @@ query PullRequest($endCursor: String, $owner: String!, $name: String!, $number: 
 
   ---@class octo.IssueTimelineItemConnection : octo.fragments.IssueTimelineItemsConnection
   --- @field pageInfo octo.PageInfo
+  --- @field filteredCount integer
 
   ---@class octo.Issue : octo.fragments.IssueInformation, octo.ReactionGroupsFragment
   ---@field participants { nodes: { login: string }[] }
   ---@field parent octo.fragments.Issue
   ---@field projectItems? octo.fragments.ProjectsV2Connection
   ---@field timelineItems octo.IssueTimelineItemConnection
+  ---@field _timelineIncomplete? boolean
   ---@field labels octo.fragments.LabelConnection
   ---@field assignees octo.fragments.AssigneeConnection
   ---@field viewerCanSubscribe boolean
@@ -464,6 +469,7 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
       ...ReactionGroupsFragment
       %s
       timelineItems(first: 100, after: $endCursor) {
+        filteredCount
         pageInfo {
           hasNextPage
           endCursor
@@ -495,6 +501,186 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
       .. fragments.removed_from_project_v2_event
       .. fragments.project_v2_item_status_changed_event
   end
+
+  local pull_fragments_start = M.pull_request:find("fragment CrossReferencedEventFragment", 1, true)
+  local issue_fragments_start = M.issue:find("fragment CrossReferencedEventFragment", 1, true)
+  local pull_fragment_definitions = M.pull_request:sub(pull_fragments_start)
+  local issue_fragment_definitions = M.issue:sub(issue_fragments_start)
+  local function remove_fragment(definitions, fragment)
+    local start = definitions:find(fragment, 1, true)
+    if start then
+      return definitions:sub(1, start - 1) .. definitions:sub(start + #fragment)
+    end
+    return definitions
+  end
+  local pull_page_fragment_definitions = remove_fragment(
+    remove_fragment(
+      remove_fragment(
+        remove_fragment(pull_fragment_definitions, fragments.review_thread_information),
+        fragments.review_thread_comment
+      ),
+      fragments.label_connection
+    ),
+    fragments.assignee_connection
+  )
+
+  M.pull_request_fast = [[
+query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      isDraft
+      number
+      state
+      title
+      body
+      createdAt
+      lastEditedAt
+      includesCreatedEdit
+      closedAt
+      updatedAt
+      url
+      headRepository { nameWithOwner }
+      closingIssuesReferences(first: 10) {
+        totalCount
+        nodes { ...IssueFields }
+      }
+      merged
+      mergedBy {
+        ... on Organization { name }
+        ... on Bot { login }
+        ... on User { login isViewer }
+        ... on Mannequin { login }
+      }
+      additions
+      deletions
+      commits(first: 1) { totalCount }
+      participants(first: 10) { nodes { login } }
+      changedFiles
+      headRefName
+      headRefOid
+      baseRefName
+      baseRefOid
+      baseRepository { name nameWithOwner }
+      milestone {
+        title
+        state
+        openIssueCount
+        closedIssueCount
+        progressPercentage
+      }
+      author { login }
+      authorAssociation
+      viewerDidAuthor
+      viewerCanUpdate
+      viewerCanSubscribe
+      viewerSubscription
+      ...ReactionGroupsFragment
+      %s
+      reviewThreads(last: 0) {
+        nodes {
+          ...ReviewThreadInformationFragment
+          comments(first: 0) { nodes { ...ReviewThreadCommentFragment } }
+        }
+      }
+      timelineItems(last: $timelineCount) {
+        filteredCount
+        ...PullRequestTimelineItemsConnectionFragment
+      }
+      reviewDecision
+      latestOpinionatedReviews(first: 100) { nodes { state } }
+      labels(first: 20) { ...LabelConnectionFragment }
+      assignees(first: 20) { ...AssigneeConnectionFragment }
+      reviewRequests(first: 20) {
+        totalCount
+        nodes {
+          asCodeOwner
+          requestedReviewer {
+            ... on User { login isViewer }
+            ... on Mannequin { login }
+            ... on Bot { login }
+            ... on Team { name }
+          }
+        }
+      }
+      mergeStateStatus
+      mergeable
+      autoMergeRequest { enabledBy { login } mergeMethod }
+    }
+  }
+}
+]] .. pull_fragment_definitions
+
+  M.issue_fast = [[
+query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      ...IssueInformationFragment
+      participants(first: 10) { nodes { login } }
+      parent { ...IssueFields }
+      ...ReactionGroupsFragment
+      %s
+      timelineItems(last: $timelineCount) {
+        filteredCount
+        ...IssueTimelineItemsConnectionFragment
+      }
+      labels(first: 20) { ...LabelConnectionFragment }
+      assignees(first: 20) { ...AssigneeConnectionFragment }
+      blockedBy(first: 10) { nodes { ...IssueFields } }
+      blocking(first: 10) { nodes { ...IssueFields } }
+      viewerCanSubscribe
+      viewerSubscription
+    }
+  }
+}
+]] .. issue_fragment_definitions
+
+  M.pull_request_timeline_page = [[
+query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(first: 100, skip: $skip) {
+        filteredCount
+        ...PullRequestTimelineItemsConnectionFragment
+      }
+    }
+  }
+}
+]] .. pull_page_fragment_definitions
+
+  M.issue_timeline_page = [[
+query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      timelineItems(first: 100, skip: $skip) {
+        filteredCount
+        ...IssueTimelineItemsConnectionFragment
+      }
+    }
+  }
+}
+]] .. issue_fragment_definitions
+
+  M.discussion_fast = [[
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    discussion(number: $number) {
+      ...DiscussionDetailsFragment
+      labels(first: 20) { ...LabelConnectionFragment }
+      comments(last: 10) {
+        totalCount
+        nodes {
+          ...DiscussionCommentFragment
+          replies(first: 15) {
+            totalCount
+            nodes { ...DiscussionCommentFragment }
+          }
+        }
+      }
+    }
+  }
+}
+]] .. fragments.reaction_groups .. fragments.label_connection .. fragments.label .. fragments.discussion_info .. fragments.discussion_details .. fragments.discussion_poll .. fragments.discussion_poll_option .. fragments.discussion_comment
 
   ---@class octo.queries.IssueKind
   ---@field data {
@@ -838,6 +1024,7 @@ query($owner: String!, $name: String!) {
   ---}
 
   ---@class octo.Discussion : octo.fragments.DiscussionDetails
+  ---@field _timelineIncomplete? boolean
   ---@field labels octo.fragments.LabelConnection
   ---@field comments {
   ---  totalCount: integer,
@@ -866,6 +1053,31 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
         pageInfo {
           hasNextPage
           endCursor
+        }
+      }
+    }
+  }
+}
+]] .. fragments.reaction_groups .. fragments.label_connection .. fragments.label .. fragments.discussion_info .. fragments.discussion_details .. fragments.discussion_poll .. fragments.discussion_poll_option .. fragments.discussion_comment
+
+  M.discussion_full_recent = [[
+query($owner: String!, $name: String!, $number: Int!, $beforeCursor: String) {
+  repository(owner: $owner, name: $name) {
+    discussion(number: $number) {
+      ...DiscussionDetailsFragment
+      labels(first: 20) { ...LabelConnectionFragment }
+      comments(last: 100, before: $beforeCursor) {
+        totalCount
+        nodes {
+          ...DiscussionCommentFragment
+          replies(first: 15) {
+            totalCount
+            nodes { ...DiscussionCommentFragment }
+          }
+        }
+        pageInfo {
+          hasPreviousPage
+          startCursor
         }
       }
     }

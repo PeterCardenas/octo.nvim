@@ -25,6 +25,8 @@ _G.octo_repo_issues = {}
 _G.octo_buffers = {}
 
 local M = {}
+local next_load_generation = 0
+local active_loads = {} ---@type table<integer, integer>
 
 function M.setup(user_config)
   if not vim.fn.has "nvim-0.7" then
@@ -111,6 +113,17 @@ function M.load_buffer(opts)
     return
   end
   local repo, kind, id, hostname = buffer_info.repo, buffer_info.kind, buffer_info.id, buffer_info.hostname
+  next_load_generation = next_load_generation + 1
+  local load_generation = next_load_generation
+  active_loads[bufnr] = load_generation
+  local function is_latest_load()
+    return active_loads[bufnr] == load_generation
+  end
+  local function finish_load()
+    if is_latest_load() then
+      active_loads[bufnr] = nil
+    end
+  end
 
   -- Find a window showing this buffer so we can save/restore cursor and
   -- ensure fold commands target the correct window during rendering.
@@ -122,6 +135,7 @@ function M.load_buffer(opts)
     end
   end
   local cursor_pos = win and vim.api.nvim_win_get_cursor(win) or nil
+  local window_view = win and vim.api.nvim_win_call(win, vim.fn.winsaveview) or nil
 
   local function restore_cursor()
     if cursor_pos then
@@ -130,9 +144,14 @@ function M.load_buffer(opts)
         local lines = vim.api.nvim_buf_line_count(bufnr)
         local new_cursor_pos = {
           math.min(cursor_pos[1], lines),
-          math.max(0, cursor_pos[2] - 1),
+          math.max(0, cursor_pos[2]),
         }
         vim.api.nvim_win_set_cursor(win, new_cursor_pos)
+        if window_view then
+          vim.api.nvim_win_call(win, function()
+            vim.fn.winrestview(window_view)
+          end)
+        end
       end
     end
   end
@@ -148,7 +167,11 @@ function M.load_buffer(opts)
     end)
 
     M.load_pull_diff(repo, id, hostname, function(obj)
+      if not is_latest_load() then
+        return
+      end
       if not vim.api.nvim_buf_is_valid(bufnr) then
+        finish_load()
         if opts.on_error then
           opts.on_error()
         end
@@ -157,6 +180,7 @@ function M.load_buffer(opts)
 
       local octo_buf = octo_buffers[bufnr]
       if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+        finish_load()
         if opts.on_local_changes then
           opts.on_local_changes()
         end
@@ -172,24 +196,56 @@ function M.load_buffer(opts)
         end
       end)
 
+      finish_load()
       if opts.on_reload then
         opts.on_reload()
       end
-    end, opts.on_error)
+    end, function()
+      if is_latest_load() then
+        finish_load()
+        if opts.on_error then
+          opts.on_error()
+        end
+      end
+    end)
     return
   end
 
+  local shell_rendered = false
   M.load(repo, kind, id, hostname, function(obj)
+    if not is_latest_load() then
+      return
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      finish_load()
+      if opts.on_error then
+        opts.on_error()
+      end
+      return
+    end
+
     local octo_buf = octo_buffers[bufnr]
-    if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+    if octo_buf and octo_buf:has_local_changes() and (opts.respect_local_changes or shell_rendered) then
+      finish_load()
       if opts.on_local_changes then
         opts.on_local_changes()
       end
       return
     end
 
+    if shell_rendered and win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+      cursor_pos = vim.api.nvim_win_get_cursor(win)
+      window_view = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+    end
+
     vim.api.nvim_buf_call(bufnr, function()
-      M.create_buffer(kind, obj, repo, false, hostname)
+      if shell_rendered and octo_buf then
+        octo_buf:update_node(obj)
+        octo_buf:render_issue()
+        octo_buf:render_signs()
+      else
+        M.create_buffer(kind, obj, repo, false, hostname)
+      end
 
       restore_cursor()
 
@@ -198,10 +254,27 @@ function M.load_buffer(opts)
       end
     end)
 
+    finish_load()
     if opts.on_reload then
       opts.on_reload()
     end
-  end)
+  end, {
+    on_shell = function(shell)
+      if not is_latest_load() or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      local octo_buf = octo_buffers[bufnr]
+      if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+        return
+      end
+
+      vim.api.nvim_buf_call(bufnr, function()
+        M.create_buffer(kind, shell, repo, false, hostname)
+        shell_rendered = true
+        restore_cursor()
+      end)
+    end,
+  })
 end
 
 ---@param repo string
@@ -223,34 +296,49 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
     return base_ref_oid .. "..." .. head_ref_oid
   end
 
-  local function fetch_diff(fingerprint, updated_at, title)
-    gh.api.get {
-      "/repos/{repo}/pulls/{number}",
-      format = { repo = repo, number = number },
-      opts = {
-        headers = { headers.diff },
-        hostname = hostname,
-        cb = gh.create_callback {
-          failure = function(stderr)
-            utils.print_err(stderr)
-            if on_error then
-              on_error()
-            end
-          end,
-          success = function(diff)
-            cb {
-              id = string.format("%s#%s:diff", repo, number),
-              number = tonumber(number),
-              title = title,
-              diff = diff,
-              diffFingerprint = fingerprint,
-              updatedAt = updated_at,
-            }
-          end,
-        },
-      },
+  local fingerprint, updated_at, title = "", nil, nil
+  local fingerprint_finished = false
+  local diff_finished = false
+  local diff_output ---@type string?
+  local failed = false
+
+  local function finish_if_ready()
+    if failed or not fingerprint_finished or not diff_finished then
+      return
+    end
+    cb {
+      id = string.format("%s#%s:diff", repo, number),
+      number = tonumber(number),
+      title = title,
+      diff = diff_output or "",
+      diffFingerprint = fingerprint,
+      updatedAt = updated_at,
     }
   end
+
+  -- The REST diff does not depend on the optional GraphQL fingerprint query.
+  gh.api.get {
+    "/repos/{repo}/pulls/{number}",
+    format = { repo = repo, number = number },
+    opts = {
+      headers = { headers.diff },
+      hostname = hostname,
+      cb = gh.create_callback {
+        failure = function(stderr)
+          failed = true
+          utils.print_err(stderr)
+          if on_error then
+            on_error()
+          end
+        end,
+        success = function(diff)
+          diff_output = diff
+          diff_finished = true
+          finish_if_ready()
+        end,
+      },
+    },
+  }
 
   gh.api.graphql {
     query = queries.pull_diff_fingerprint,
@@ -260,16 +348,120 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
       hostname = hostname,
       cb = gh.create_callback {
         failure = function()
-          fetch_diff("", nil, nil)
+          fingerprint_finished = true
+          finish_if_ready()
         end,
         success = function(output)
           local ok, resp = pcall(vim.json.decode, output)
           local pr = ok and vim.tbl_get(resp, "data", "repository", "pullRequest") or nil
-          if type(pr) ~= "table" then
-            fetch_diff("", nil, nil)
+          if type(pr) == "table" then
+            fingerprint = get_diff_fingerprint(pr)
+            updated_at = pr.updatedAt
+            title = pr.title
+          end
+          fingerprint_finished = true
+          finish_if_ready()
+        end,
+      },
+    },
+  }
+end
+
+---@type table<string, { expires_at: number, obj: table }>
+local fast_load_cache = {}
+---@type table<string, { success: fun(obj: table), failure: fun(stderr: string)? }[]>
+local fast_load_inflight = {}
+
+---@param repo string
+---@param kind "pull"|"pull_request"|"issue"|"discussion"
+---@param id integer|string
+---@param hostname string?
+---@param cb fun(obj: table): nil
+---@param on_error? fun(stderr: string): nil
+function M.load_preview(repo, kind, id, hostname, cb, on_error)
+  local normalized_kind = kind == "pull_request" and "pull" or kind
+  local owner, name = utils.split_repo(repo)
+  local host = hostname or config.values.github_hostname or utils.get_remote_host() or "github.com"
+  local cache_key = table.concat({ host, repo, normalized_kind, tostring(id) }, "|")
+  local now = vim.loop.hrtime() / 1000000000
+  local cached = fast_load_cache[cache_key]
+  if cached and cached.expires_at > now then
+    vim.schedule(function()
+      cb(vim.deepcopy(cached.obj))
+    end)
+    return
+  elseif cached then
+    fast_load_cache[cache_key] = nil
+  end
+
+  local waiting = fast_load_inflight[cache_key]
+  if waiting then
+    waiting[#waiting + 1] = { success = cb, failure = on_error }
+    return
+  end
+  fast_load_inflight[cache_key] = { { success = cb, failure = on_error } }
+
+  local query, fields
+  if normalized_kind == "pull" then
+    query = graphql("pull_request_fast_query", _G.octo_pv2_fragment)
+    fields = { owner = owner, name = name, number = tonumber(id), timelineCount = 20 }
+  elseif normalized_kind == "issue" then
+    query = graphql("issue_fast_query", _G.octo_pv2_fragment)
+    fields = { owner = owner, name = name, number = tonumber(id), timelineCount = 20 }
+  elseif normalized_kind == "discussion" then
+    query = queries.discussion_fast
+    fields = { owner = owner, name = name, number = tonumber(id) }
+  else
+    fast_load_inflight[cache_key] = nil
+    return
+  end
+
+  gh.api.graphql {
+    query = query,
+    fields = fields,
+    jq = ".",
+    opts = {
+      hostname = hostname,
+      cb = gh.create_callback {
+        failure = function(stderr)
+          local callbacks = fast_load_inflight[cache_key]
+          fast_load_inflight[cache_key] = nil
+          if callbacks then
+            for _, callback in ipairs(callbacks) do
+              if callback.failure then
+                callback.failure(stderr)
+              else
+                utils.print_err(stderr)
+              end
+            end
+          end
+        end,
+        success = function(output)
+          local ok, resp = pcall(vim.json.decode, output)
+          local obj = ok
+              and vim.tbl_get(
+                resp,
+                "data",
+                "repository",
+                normalized_kind == "pull" and "pullRequest" or normalized_kind
+              )
+            or nil
+          if type(obj) ~= "table" then
+            local callbacks = fast_load_inflight[cache_key]
+            fast_load_inflight[cache_key] = nil
+            for _, callback in ipairs(callbacks or {}) do
+              if callback.failure then
+                callback.failure "Fast query returned no object"
+              end
+            end
             return
           end
-          fetch_diff(get_diff_fingerprint(pr), pr.updatedAt, pr.title)
+          fast_load_cache[cache_key] = { expires_at = vim.loop.hrtime() / 1000000000 + 30, obj = vim.deepcopy(obj) }
+          local callbacks = fast_load_inflight[cache_key]
+          fast_load_inflight[cache_key] = nil
+          for _, callback in ipairs(callbacks or {}) do
+            callback.success(vim.deepcopy(obj))
+          end
         end,
       },
     },
@@ -281,7 +473,8 @@ end
 ---@param id? integer|string pull request, issue, or discussion number or release tag
 ---@param hostname string|nil optional GitHub Enterprise hostname
 ---@param cb fun(obj: octo.Issue|octo.PullRequest|octo.Discussion|octo.Release|octo.Repository): nil
-function M.load(repo, kind, id, hostname, cb)
+---@param opts? { on_shell?: fun(obj: octo.Issue|octo.PullRequest|octo.Discussion): nil }
+function M.load(repo, kind, id, hostname, cb, opts)
   local owner, name = utils.split_repo(repo)
 
   ---@type string, string, table<string, string|integer>
@@ -348,16 +541,274 @@ function M.load(repo, kind, id, hostname, cb)
     end
   end
 
-  gh.api.graphql {
-    query = query,
-    fields = fields,
-    paginate = true,
-    jq = ".",
-    hostname = hostname,
-    opts = {
-      cb = gh.create_callback { failure = utils.print_err, success = load_buffer },
-    },
-  }
+  local function load_paginated_fallback()
+    gh.api.graphql {
+      query = query,
+      fields = fields,
+      paginate = true,
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback { failure = utils.print_err, success = load_buffer },
+      },
+    }
+  end
+
+  local fallback_started = false
+  local function fallback()
+    if fallback_started then
+      return
+    end
+    fallback_started = true
+    load_paginated_fallback()
+  end
+
+  if kind == "discussion" then
+    if not id then
+      fallback()
+      return
+    end
+    M.load_preview(repo, kind, id, hostname, function(shell)
+      local shell_comments = shell.comments
+      local count = shell_comments and shell_comments.totalCount
+      local shell_nodes = shell_comments and shell_comments.nodes or {}
+      if type(count) ~= "number" or count < #shell_nodes then
+        fallback()
+        return
+      end
+
+      shell._timelineIncomplete = count > #shell_nodes
+      if opts and opts.on_shell then
+        opts.on_shell(shell)
+      end
+
+      local segments = {} ---@type table[][]
+      local full_response ---@type table?
+      local function request_page(before_cursor)
+        if fallback_started then
+          return
+        end
+        local page_fields = { owner = owner, name = name, number = id }
+        if before_cursor then
+          page_fields.beforeCursor = before_cursor
+        end
+        gh.api.graphql {
+          query = queries.discussion_full_recent,
+          fields = page_fields,
+          jq = ".",
+          opts = {
+            hostname = hostname,
+            cb = gh.create_callback {
+              failure = function()
+                fallback()
+              end,
+              success = function(output)
+                if fallback_started then
+                  return
+                end
+                local ok, response = pcall(vim.json.decode, output)
+                local discussion = ok and vim.tbl_get(response, "data", "repository", "discussion") or nil
+                local connection = type(discussion) == "table" and discussion.comments or nil
+                local page_info = type(connection) == "table" and connection.pageInfo or nil
+                if
+                  type(connection) ~= "table"
+                  or connection.totalCount ~= count
+                  or type(connection.nodes) ~= "table"
+                  or type(page_info) ~= "table"
+                then
+                  fallback()
+                  return
+                end
+
+                table.insert(segments, 1, connection.nodes)
+                if not full_response then
+                  full_response = response
+                end
+                if page_info.hasPreviousPage then
+                  if type(page_info.startCursor) ~= "string" then
+                    fallback()
+                    return
+                  end
+                  request_page(page_info.startCursor)
+                  return
+                end
+
+                local nodes = {} ---@type table[]
+                local seen = {} ---@type table<string, boolean>
+                for _, segment in ipairs(segments) do
+                  for _, comment in ipairs(segment) do
+                    local comment_id = comment ~= vim.NIL and type(comment) == "table" and comment.id or nil
+                    if comment_id == nil or not seen[comment_id] then
+                      nodes[#nodes + 1] = comment
+                      if comment_id then
+                        seen[comment_id] = true
+                      end
+                    end
+                  end
+                end
+                if #nodes ~= count or not full_response then
+                  fallback()
+                  return
+                end
+                local full_discussion = vim.tbl_get(full_response, "data", "repository", "discussion")
+                if type(full_discussion) ~= "table" then
+                  fallback()
+                  return
+                end
+                full_discussion.comments.nodes = nodes
+                full_discussion._timelineIncomplete = nil
+                load_buffer(vim.json.encode(full_response))
+              end,
+            },
+          },
+        }
+      end
+      request_page(nil)
+    end, function()
+      fallback()
+    end)
+    return
+  end
+
+  if kind ~= "pull" and kind ~= "issue" then
+    load_paginated_fallback()
+    return
+  end
+  if not id then
+    fallback()
+    return
+  end
+
+  M.load_preview(repo, kind, id, hostname, function(shell)
+    local shell_timeline = shell.timelineItems
+    local count = shell_timeline and shell_timeline.filteredCount
+    local shell_nodes = shell_timeline and shell_timeline.nodes or {}
+    if type(count) ~= "number" or count < #shell_nodes then
+      fallback()
+      return
+    end
+
+    shell._timelineIncomplete = count > #shell_nodes
+    if opts and opts.on_shell then
+      opts.on_shell(shell)
+    end
+
+    local page_query = kind == "pull" and queries.pull_request_timeline_page or queries.issue_timeline_page
+    local page_count = math.ceil(count / 100)
+    local pending = math.max(1, page_count)
+    local pages = {} ---@type table<integer, { filteredCount: integer, nodes: table[] }>
+    local full_response ---@type table?
+
+    local function finish_if_ready()
+      if fallback_started or pending > 0 then
+        return
+      end
+      local combined_nodes = {} ---@type table[]
+      local seen = {} ---@type table<string, boolean>
+      for page_index = 0, page_count - 1 do
+        local page = pages[page_index]
+        if not page or page.filteredCount ~= count then
+          fallback()
+          return
+        end
+        for _, item in ipairs(page.nodes) do
+          local node_id = item ~= vim.NIL and type(item) == "table" and item.id or nil
+          if node_id == nil or not seen[node_id] then
+            table.insert(combined_nodes, item)
+            if node_id then
+              seen[node_id] = true
+            end
+          end
+        end
+      end
+
+      if #combined_nodes ~= count or not full_response then
+        fallback()
+        return
+      end
+      local full_obj = vim.tbl_get(full_response, "data", "repository", key)
+      if type(full_obj) ~= "table" or type(full_obj.timelineItems) ~= "table" then
+        fallback()
+        return
+      end
+      full_obj.timelineItems.nodes = combined_nodes
+      full_obj._timelineIncomplete = nil
+      load_buffer(vim.json.encode(full_response))
+    end
+
+    local function receive_page(index, output)
+      if fallback_started then
+        return
+      end
+      local ok, response = pcall(vim.json.decode, output)
+      local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
+      if
+        type(connection) ~= "table"
+        or type(connection.filteredCount) ~= "number"
+        or type(connection.nodes) ~= "table"
+      then
+        fallback()
+        return
+      end
+      pages[index] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
+      pending = pending - 1
+      finish_if_ready()
+    end
+
+    gh.api.graphql {
+      query = query,
+      fields = fields,
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function()
+            fallback()
+          end,
+          success = function(output)
+            if fallback_started then
+              return
+            end
+            local ok, response = pcall(vim.json.decode, output)
+            local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
+            if
+              type(connection) ~= "table"
+              or type(connection.filteredCount) ~= "number"
+              or type(connection.nodes) ~= "table"
+            then
+              fallback()
+              return
+            end
+            full_response = response
+            pages[0] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
+            pending = pending - 1
+            finish_if_ready()
+          end,
+        },
+      },
+    }
+
+    for page_index = 1, page_count - 1 do
+      gh.api.graphql {
+        query = page_query,
+        fields = { owner = owner, name = name, number = id, skip = page_index * 100 },
+        jq = ".",
+        opts = {
+          hostname = hostname,
+          cb = gh.create_callback {
+            failure = function()
+              fallback()
+            end,
+            success = function(output)
+              receive_page(page_index, output)
+            end,
+          },
+        },
+      }
+    end
+  end, function()
+    fallback()
+  end)
 end
 
 function M.render_signs()
