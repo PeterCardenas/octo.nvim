@@ -355,6 +355,7 @@ query PullRequest($endCursor: String, $owner: String!, $name: String!, $number: 
       ...ReactionGroupsFragment
       %s
       timelineItems(first: 100, after: $endCursor) {
+        totalCount
         filteredCount
         pageInfo {
           hasNextPage
@@ -469,6 +470,7 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
       ...ReactionGroupsFragment
       %s
       timelineItems(first: 100, after: $endCursor) {
+        totalCount
         filteredCount
         pageInfo {
           hasNextPage
@@ -506,6 +508,13 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
   local issue_fragments_start = M.issue:find("fragment CrossReferencedEventFragment", 1, true)
   local pull_fragment_definitions = M.pull_request:sub(pull_fragments_start)
   local issue_fragment_definitions = M.issue:sub(issue_fragments_start)
+  local function replace_first(value, source, replacement)
+    local start = value:find(source, 1, true)
+    if not start then
+      return value
+    end
+    return value:sub(1, start - 1) .. replacement .. value:sub(start + #source)
+  end
   local function remove_fragment(definitions, fragment)
     local start = definitions:find(fragment, 1, true)
     if start then
@@ -513,16 +522,54 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
     end
     return definitions
   end
+  local pull_review_fast = [[
+fragment PullRequestReviewFastFragment on PullRequestReview {
+  id
+  databaseId
+  body
+  createdAt
+  viewerCanUpdate
+  viewerCanDelete
+  ...ReactionGroupsFragment
+  author { login }
+  viewerDidAuthor
+  state
+  comments(last: 100) {
+    totalCount
+    nodes { id }
+  }
+}
+]]
+  local pull_timeline_fast = replace_first(
+    replace_first(
+      fragments.pull_request_timeline_items_connection,
+      "fragment PullRequestTimelineItemsConnectionFragment",
+      "fragment PullRequestTimelineItemsFastConnectionFragment"
+    ),
+    "...PullRequestReviewFragment",
+    "...PullRequestReviewFastFragment"
+  )
+  local pull_fast_fragment_definitions = replace_first(
+    replace_first(pull_fragment_definitions, fragments.pull_request_timeline_items_connection, pull_timeline_fast),
+    fragments.pull_request_review,
+    pull_review_fast
+  )
   local pull_page_fragment_definitions = remove_fragment(
     remove_fragment(
       remove_fragment(
-        remove_fragment(pull_fragment_definitions, fragments.review_thread_information),
+        remove_fragment(pull_fast_fragment_definitions, fragments.review_thread_information),
         fragments.review_thread_comment
       ),
       fragments.label_connection
     ),
     fragments.assignee_connection
   )
+  local pull_request_body = M.pull_request:sub(1, pull_fragments_start - 1)
+  M.pull_request_fast_full = replace_first(
+    pull_request_body,
+    "...PullRequestTimelineItemsConnectionFragment",
+    "...PullRequestTimelineItemsFastConnectionFragment"
+  ) .. pull_fast_fragment_definitions
 
   M.pull_request_fast = [[
 query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
@@ -584,8 +631,9 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
         }
       }
       timelineItems(last: $timelineCount) {
+        totalCount
         filteredCount
-        ...PullRequestTimelineItemsConnectionFragment
+        ...PullRequestTimelineItemsFastConnectionFragment
       }
       reviewDecision
       latestOpinionatedReviews(first: 100) { nodes { state } }
@@ -609,7 +657,7 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
     }
   }
 }
-]] .. pull_fragment_definitions
+]] .. pull_fast_fragment_definitions
 
   M.issue_fast = [[
 query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
@@ -621,6 +669,7 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
       ...ReactionGroupsFragment
       %s
       timelineItems(last: $timelineCount) {
+        totalCount
         filteredCount
         ...IssueTimelineItemsConnectionFragment
       }
@@ -635,13 +684,15 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
 }
 ]] .. issue_fragment_definitions
 
+  -- GitHub underreports filteredCount on skip queries unless totalCount is selected as well.
   M.pull_request_timeline_page = [[
 query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(first: 100, skip: $skip) {
+        totalCount
         filteredCount
-        ...PullRequestTimelineItemsConnectionFragment
+        ...PullRequestTimelineItemsFastConnectionFragment
       }
     }
   }
@@ -653,6 +704,7 @@ query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       timelineItems(first: 100, skip: $skip) {
+        totalCount
         filteredCount
         ...IssueTimelineItemsConnectionFragment
       }

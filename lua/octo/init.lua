@@ -404,10 +404,10 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
   local query, fields
   if normalized_kind == "pull" then
     query = graphql("pull_request_fast_query", _G.octo_pv2_fragment)
-    fields = { owner = owner, name = name, number = tonumber(id), timelineCount = 20 }
+    fields = { owner = owner, name = name, number = tonumber(id), timelineCount = 10 }
   elseif normalized_kind == "issue" then
     query = graphql("issue_fast_query", _G.octo_pv2_fragment)
-    fields = { owner = owner, name = name, number = tonumber(id), timelineCount = 20 }
+    fields = { owner = owner, name = name, number = tonumber(id), timelineCount = 10 }
   elseif normalized_kind == "discussion" then
     query = queries.discussion_fast
     fields = { owner = owner, name = name, number = tonumber(id) }
@@ -479,8 +479,10 @@ function M.load(repo, kind, id, hostname, cb, opts)
 
   ---@type string, string, table<string, string|integer>
   local query, key, fields
+  local fast_pull_query ---@type string?
   if kind == "pull" then
     query = graphql("pull_request_query", _G.octo_pv2_fragment)
+    fast_pull_query = graphql("pull_request_fast_full_query", _G.octo_pv2_fragment)
     key = "pullRequest"
     fields = { owner = owner, name = name, number = id }
   elseif kind == "issue" then
@@ -694,6 +696,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
 
     local page_query = kind == "pull" and queries.pull_request_timeline_page or queries.issue_timeline_page
+    local phase_two_query = kind == "pull" and fast_pull_query or query
     local page_count = math.ceil(count / 100)
     local pending = math.max(1, page_count)
     local pages = {} ---@type table<integer, { filteredCount: integer, nodes: table[] }>
@@ -756,7 +759,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
 
     gh.api.graphql {
-      query = query,
+      query = phase_two_query,
       fields = fields,
       jq = ".",
       opts = {
