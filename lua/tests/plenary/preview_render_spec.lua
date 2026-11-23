@@ -92,6 +92,7 @@ describe("picker preview rendering", function()
   local original_timeline_order
   local original_load_preview
   local original_graphql
+  local original_auth_context
 
   before_each(function()
     original_buffers = _G.octo_buffers
@@ -99,6 +100,10 @@ describe("picker preview rendering", function()
     original_timeline_order = config.values.timeline_order
     original_load_preview = octo.load_preview
     original_graphql = gh.api.graphql
+    original_auth_context = gh.get_auth_context
+    gh.get_auth_context = function(hostname, callback)
+      callback { hostname = hostname, token = "test-token", fingerprint = "test-identity", env = {} }
+    end
     config.values.timeline_order = "newest_first"
     bufnr = vim.api.nvim_create_buf(false, true)
     _G.octo_buffers[bufnr] = { commentsMetadata = {}, threadsMetadata = {} }
@@ -109,6 +114,7 @@ describe("picker preview rendering", function()
     config.values.timeline_order = original_timeline_order
     octo.load_preview = original_load_preview
     gh.api.graphql = original_graphql
+    gh.get_auth_context = original_auth_context
     if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end
@@ -154,6 +160,54 @@ describe("picker preview rendering", function()
 
     assert.are.same(2, #deliveries)
     assert.are.same("SUCCESS", deliveries[2].object.statusCheckRollup.state)
+  end)
+
+  it("does not attach check results to a replacement PR preview object", function()
+    local preview_callback
+    octo.load_preview = function(_, _, _, _, callback)
+      preview_callback = callback
+    end
+    local check_requests = {}
+    gh.api.graphql = function(opts)
+      check_requests[#check_requests + 1] = opts
+    end
+    local deliveries = {}
+    octo.load_pull_preview("owner/repo", 42, nil, function(obj, cached)
+      deliveries[#deliveries + 1] = { object = obj, cached = cached }
+    end)
+
+    local cached = {
+      id = "pull-a",
+      number = 42,
+      baseRefOid = "base-a",
+      headRefOid = "head-a",
+    }
+    local fresh = {
+      id = "pull-b",
+      number = 42,
+      baseRefOid = "base-b",
+      headRefOid = "head-b",
+    }
+    preview_callback(cached, true)
+    preview_callback(fresh, false)
+
+    assert.are.same(2, #check_requests)
+    check_requests[1].opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { statusCheckRollup = { state = "OLD" } } } },
+      },
+      nil
+    )
+    assert.is_nil(fresh.statusCheckRollup)
+    check_requests[2].opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { statusCheckRollup = { state = "FRESH" } } } },
+      },
+      nil
+    )
+
+    assert.are.same("FRESH", fresh.statusCheckRollup.state)
+    assert.are.same("pull-b", deliveries[#deliveries].object.id)
   end)
 
   it("renders issue activity newest first and replaces previous preview content", function()

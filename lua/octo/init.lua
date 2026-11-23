@@ -1108,41 +1108,60 @@ end
 ---@param hostname string?
 ---@param cb fun(obj: table, cached: boolean): nil
 ---@param on_error? fun(stderr: string): nil
-function M.load_pull_preview(repo, number, hostname, cb, on_error)
+---@param auth_context? octo.AuthContext
+function M.load_pull_preview(repo, number, hostname, cb, on_error, auth_context)
+  local host = resolve_hostname(hostname)
+  if not auth_context then
+    gh.get_auth_context(host, function(context)
+      M.load_pull_preview(repo, number, hostname, cb, on_error, context)
+    end)
+    return
+  end
+
   local owner, name = utils.split_repo(repo)
   local latest_object ---@type table?
   local latest_is_cached = false
-  local checks_requested = false
+  local checks_requested = {} ---@type table<table, boolean>
 
   M.load_preview(repo, "pull", number, hostname, function(obj, is_cached)
     latest_object = obj
     latest_is_cached = is_cached
     cb(obj, is_cached)
-    if checks_requested then
+    if checks_requested[obj] then
       return
     end
-    checks_requested = true
+    checks_requested[obj] = true
+
+    local preview_object = obj
+    local base_ref_oid = obj.baseRefOid
+    local head_ref_oid = obj.headRefOid
     gh.api.graphql {
       query = queries.pull_request_checks,
       fields = { owner = owner, name = name, number = tonumber(number) },
       jq = ".",
       opts = {
-        hostname = hostname,
+        hostname = host,
+        auth_context = auth_context,
         cb = gh.create_callback {
           failure = function() end,
           success = function(output)
             local ok, response = pcall(vim.json.decode, output)
             local pull_request = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
-            if type(pull_request) ~= "table" or latest_object == nil then
+            if
+              type(pull_request) ~= "table"
+              or latest_object ~= preview_object
+              or preview_object.baseRefOid ~= base_ref_oid
+              or preview_object.headRefOid ~= head_ref_oid
+            then
               return
             end
-            latest_object.statusCheckRollup = pull_request.statusCheckRollup
-            cb(latest_object, latest_is_cached)
+            preview_object.statusCheckRollup = pull_request.statusCheckRollup
+            cb(preview_object, latest_is_cached)
           end,
         },
       },
     }
-  end, on_error)
+  end, on_error, auth_context)
 end
 
 ---@param repo string
