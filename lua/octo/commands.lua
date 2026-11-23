@@ -2450,33 +2450,24 @@ function M.show_pr_diff()
 end
 
 local function get_reaction_line(bufnr, extmark)
-  local prev_extmark = extmark
-  local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, prev_extmark, { details = true })
+  if not extmark then
+    return
+  end
+  local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, extmark, { details = true })
+  if not mark[1] then
+    return
+  end
   local _, end_line = utils.get_extmark_region(bufnr, mark)
-  return end_line + 3
+  return end_line and end_line + 3 or nil
 end
 
-local function get_reaction_info(bufnr, buffer)
-  local reaction_groups, reaction_line, insert_line, id
+local function get_reaction_info(buffer)
   local comment = buffer:get_comment_at_cursor()
   if comment then
-    -- found a comment at cursor
-    id = comment.id
-    reaction_groups = comment.reactionGroups
-    reaction_line = get_reaction_line(bufnr, comment.extmark)
-    if not comment.reactionLine then
-      insert_line = true
-    end
+    return comment.reactionGroups, comment.id
   elseif buffer:isIssue() or buffer:isPullRequest() or buffer:isDiscussion() then
-    -- using the issue body instead
-    id = buffer.node.id
-    reaction_groups = buffer.bodyMetadata.reactionGroups
-    reaction_line = get_reaction_line(bufnr, buffer.bodyMetadata.extmark)
-    if not buffer.bodyMetadata.reactionLine then
-      insert_line = true
-    end
+    return buffer.bodyMetadata.reactionGroups, buffer.node.id
   end
-  return reaction_line, reaction_groups, insert_line, id
 end
 
 function M.mark(opts)
@@ -2525,7 +2516,10 @@ function M.reaction_action(reaction)
     reaction = "HOORAY"
   end
 
-  local reaction_line, reaction_groups, insert_line, id = get_reaction_info(buffer.bufnr, buffer)
+  local reaction_groups, id = get_reaction_info(buffer)
+  if not reaction_groups or not id then
+    return
+  end
 
   local action
   for _, reaction_group in ipairs(reaction_groups) do
@@ -2555,9 +2549,17 @@ function M.reaction_action(reaction)
             reaction_groups = resp.data.removeReaction.subject.reactionGroups
           end
 
-          buffer:update_reactions_at_cursor(reaction_groups, reaction_line)
-          if action == "remove" and utils.count_reactions(reaction_groups) == 0 then
-            -- delete lines
+          local metadata = buffer:get_reaction_metadata(id)
+          if not metadata then
+            return
+          end
+          local has_reaction_line = metadata.reactionLine ~= nil
+          local reaction_line = metadata.reactionLine or get_reaction_line(buffer.bufnr, metadata.extmark)
+          if not reaction_line then
+            return
+          end
+          local has_reactions = utils.count_reactions(reaction_groups) > 0
+          if action == "remove" and not has_reactions and has_reaction_line then
             vim.api.nvim_buf_set_lines(buffer.bufnr, reaction_line - 1, reaction_line + 1, false, {})
             vim.api.nvim_buf_clear_namespace(
               buffer.bufnr,
@@ -2565,11 +2567,13 @@ function M.reaction_action(reaction)
               reaction_line - 1,
               reaction_line + 1
             )
-          elseif action == "add" and insert_line then
-            -- add lines
+          elseif action == "add" and not has_reaction_line then
             vim.api.nvim_buf_set_lines(buffer.bufnr, reaction_line - 1, reaction_line - 1, false, { "", "" })
           end
-          writers.write_reactions(buffer.bufnr, reaction_groups, reaction_line)
+          buffer:update_reactions_for_target(id, reaction_groups, reaction_line)
+          if has_reactions then
+            writers.write_reactions(buffer.bufnr, reaction_groups, reaction_line)
+          end
           buffer:update_metadata()
         end,
       },

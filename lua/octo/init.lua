@@ -191,24 +191,74 @@ function M.load_buffer(opts)
   end
   local cursor_pos = win and vim.api.nvim_win_get_cursor(win) or nil
   local window_view = win and vim.api.nvim_win_call(win, vim.fn.winsaveview) or nil
+  local cursor_comment_anchor ---@type { id: string?, databaseId: integer?, row_offset: integer, col: integer }?
+
+  local function capture_cursor_comment_anchor(buffer)
+    if
+      type(buffer.get_comment_at_line) ~= "function"
+      or not win
+      or not vim.api.nvim_win_is_valid(win)
+      or vim.api.nvim_win_get_buf(win) ~= bufnr
+    then
+      return
+    end
+    local position = vim.api.nvim_win_get_cursor(win)
+    local comment = buffer:get_comment_at_line(position[1])
+    if not comment or not comment.extmark then
+      return
+    end
+    local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, {})
+    if not mark[1] then
+      return
+    end
+    return {
+      id = comment.id,
+      databaseId = comment.databaseId,
+      row_offset = math.max(0, position[1] - (mark[1] + 1)),
+      col = position[2],
+    }
+  end
 
   local function restore_cursor()
-    if cursor_pos then
-      -- Refresh win reference — the window may have closed during the async load
-      if win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
-        local lines = vim.api.nvim_buf_line_count(bufnr)
-        local new_cursor_pos = {
-          math.min(cursor_pos[1], lines),
-          math.max(0, cursor_pos[2]),
-        }
-        vim.api.nvim_win_set_cursor(win, new_cursor_pos)
-        if window_view then
-          vim.api.nvim_win_call(win, function()
-            vim.fn.winrestview(window_view)
-          end)
+    if not cursor_pos or not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
+      return
+    end
+    if window_view then
+      vim.api.nvim_win_call(win, function()
+        vim.fn.winrestview(window_view)
+      end)
+    end
+
+    local restored_position ---@type integer[]|nil
+    local buffer = octo_buffers[bufnr]
+    if cursor_comment_anchor and buffer then
+      for _, comment in ipairs(buffer.commentsMetadata or {}) do
+        if
+          (cursor_comment_anchor.databaseId and comment.databaseId == cursor_comment_anchor.databaseId)
+          or (cursor_comment_anchor.id and comment.id == cursor_comment_anchor.id)
+        then
+          local mark =
+            vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
+          if mark[1] then
+            local first_line = mark[1] + 1
+            local last_line = mark[3].end_row + 1
+            restored_position = {
+              math.max(first_line, math.min(first_line + cursor_comment_anchor.row_offset, last_line)),
+              cursor_comment_anchor.col,
+            }
+            break
+          end
         end
       end
     end
+
+    if not restored_position then
+      restored_position = {
+        math.min(cursor_pos[1], vim.api.nvim_buf_line_count(bufnr)),
+        math.max(0, cursor_pos[2]),
+      }
+    end
+    vim.api.nvim_win_set_cursor(win, restored_position)
   end
 
   local function has_local_changes()
@@ -427,6 +477,9 @@ function M.load_buffer(opts)
       closed_comment_folds = capture_closed_comment_folds(octo_buf)
     end
     if shell_rendered and win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+      if octo_buf then
+        cursor_comment_anchor = capture_cursor_comment_anchor(octo_buf)
+      end
       cursor_pos = vim.api.nvim_win_get_cursor(win)
       window_view = vim.api.nvim_win_call(win, vim.fn.winsaveview)
     end
@@ -1539,9 +1592,14 @@ function M.create_buffer(kind, obj, repo, create, hostname)
   -- Navigate to anchor if one was set by Octo <url>
   local anchor = vim.b[bufnr].octo_pending_anchor
   if anchor then
-    vim.b[bufnr].octo_pending_anchor = nil
     vim.schedule(function()
-      M.navigate_to_anchor(octo_buffer, anchor)
+      if not vim.api.nvim_buf_is_valid(bufnr) or vim.b[bufnr].octo_pending_anchor ~= anchor then
+        return
+      end
+      local found = M.navigate_to_anchor(octo_buffer, anchor)
+      if found or octo_buffer.node._loadState ~= "shell" then
+        vim.b[bufnr].octo_pending_anchor = nil
+      end
     end)
   end
 end
@@ -1581,7 +1639,7 @@ end
 ---@param octo_buffer OctoBuffer
 ---@param anchor integer
 function M.navigate_to_anchor(octo_buffer, anchor)
-  octo_buffer:navigate_to_comment { databaseId = anchor }
+  return octo_buffer:navigate_to_comment { databaseId = anchor }
 end
 
 return M

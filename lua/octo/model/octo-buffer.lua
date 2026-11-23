@@ -1313,17 +1313,22 @@ end
 
 ---Navigate to a specific comment by its databaseId
 ---@param opts { id: string, databaseId: integer }
+---@return boolean whether the target comment was found and focused
 function OctoBuffer:navigate_to_comment(opts)
   for _, comment in ipairs(self.commentsMetadata) do
     if comment.databaseId == opts.databaseId or comment.id == opts.id then
       local mark =
         vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
+      if not mark[1] then
+        return false
+      end
       local start_line = mark[1] + 1
       vim.api.nvim_win_set_cursor(0, { start_line + 1, 0 })
       vim.cmd "normal! zz"
-      return
+      return true
     end
   end
+  return false
 end
 
 ---Gets the issue/PR body at cursor (if any)
@@ -1381,47 +1386,34 @@ function OctoBuffer:get_reactions_at_cursor()
   end
 end
 
----Updates the reactions groups at cursor (if any)
+---Find reaction metadata by its stable GraphQL subject id.
+---@param subject_id string
+---@return BodyMetadata|CommentMetadata|nil
+function OctoBuffer:get_reaction_metadata(subject_id)
+  if self.node.id == subject_id then
+    return self.bodyMetadata
+  end
+  for _, comment in ipairs(self.commentsMetadata) do
+    if comment.id == subject_id then
+      return comment
+    end
+  end
+end
+
+---Update reaction metadata for the original mutation target, not the current cursor.
+---@param subject_id string
 ---@param reaction_groups octo.ReactionGroupsFragment.reactionGroups[]
 ---@param reaction_line integer
-function OctoBuffer:update_reactions_at_cursor(reaction_groups, reaction_line)
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  local reactions_count = 0
-  for _, group in ipairs(reaction_groups) do
-    if group.users.totalCount > 0 then
-      reactions_count = reactions_count + 1
-    end
+function OctoBuffer:update_reactions_for_target(subject_id, reaction_groups, reaction_line)
+  local metadata = self:get_reaction_metadata(subject_id)
+  if not metadata then
+    return
   end
-
-  local comments = self.commentsMetadata
-  for i, comment in ipairs(comments) do
-    local mark =
-      vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
-    local start_line = mark[1] + 1
-    local end_line = mark[3].end_row + 1
-    if start_line <= cursor[1] and end_line >= cursor[1] then
-      -- cursor located in the body of a comment
-      -- update reaction groups
-      comments[i].reactionGroups = reaction_groups
-
-      -- update reaction line
-      if not comments[i].reactionLine and reactions_count > 0 then
-        comments[i].reactionLine = reaction_line
-      elseif reactions_count == 0 then
-        comments[i].reactionLine = nil
-      end
-      return
-    end
-  end
-
-  -- cursor not located at any comment, so updating issue
-  --  update reaction groups
-  self.bodyMetadata.reactionGroups = reaction_groups
-  local body_reaction_line = self.bodyMetadata.reactionLine
-  if not body_reaction_line and reactions_count > 0 then
-    self.bodyMetadata.reactionLine = reaction_line
-  elseif reactions_count == 0 then
-    self.bodyMetadata.reactionLine = nil
+  metadata.reactionGroups = reaction_groups
+  if utils.count_reactions(reaction_groups) > 0 then
+    metadata.reactionLine = metadata.reactionLine or reaction_line
+  else
+    metadata.reactionLine = nil
   end
 end
 
