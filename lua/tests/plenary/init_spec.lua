@@ -176,6 +176,61 @@ describe("Octo module:", function()
     }
   end
 
+  local function find_skip_request(requests, skip)
+    for _, request in ipairs(requests) do
+      if request.fields and request.fields.skip == skip then
+        return request
+      end
+    end
+    error("skip page not requested: " .. skip)
+  end
+
+  local function find_issue_details_request(requests)
+    for _, request in ipairs(requests) do
+      if
+        request.fields
+        and request.fields.number == 17
+        and request.fields.skip == nil
+        and not request.paginate
+        and request.query:find("timelineItems(first: 100, after:", 1, true)
+      then
+        return request
+      end
+    end
+    error "full issue details were not requested"
+  end
+
+  local function find_pull_details_request(requests)
+    for _, request in ipairs(requests) do
+      if
+        request.fields
+        and request.fields.skip == nil
+        and request.query:find("timelineItems(first: 100, after:", 1, true)
+      then
+        return request
+      end
+    end
+    error "full pull details were not requested"
+  end
+
+  local function find_request_by_query(requests, query)
+    for _, request in ipairs(requests) do
+      if request.query == query then
+        return request
+      end
+    end
+    error "query was not requested"
+  end
+
+  local function find_fallback_request(requests)
+    for _, request in ipairs(requests) do
+      if request.paginate then
+        return request
+      end
+    end
+    error "cursor pagination fallback was not requested"
+  end
+
   local function discussion_response(count, nodes)
     return vim.json.encode {
       data = {
@@ -374,10 +429,11 @@ describe("Octo module:", function()
 
       assert.is_table(loaded, "load should complete for " .. count .. " timeline nodes")
       assert.are.same(count, #loaded.timelineItems.nodes)
-      local expected_skips = {}
-      for skip = 100, count - 1, 100 do
+      local expected_skips = { 100, 200, 300 }
+      for skip = 400, count - 1, 100 do
         expected_skips[#expected_skips + 1] = skip
       end
+      table.sort(requested_skips)
       assert.are.same(expected_skips, requested_skips)
       if count == 101 then
         local groups = require("octo.ui.writers").order_timeline_groups(loaded.timelineItems.nodes, "oldest_first")
@@ -400,10 +456,11 @@ describe("Octo module:", function()
       callback { timelineItems = { filteredCount = 2, nodes = {} } }
     end
 
+    local requests, deliver_shell = setup_issue_load_requests()
     local fallback_used = false
     local loaded
-    local phase_two_callback
     gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
       if opts.paginate then
         fallback_used = true
         opts.opts.cb(
@@ -424,16 +481,14 @@ describe("Octo module:", function()
           },
           nil
         )
-      else
-        phase_two_callback = opts.opts.cb
       end
     end
 
     octo.load("owner/repo", "issue", 17, nil, function(obj)
       loaded = obj
     end)
-
-    phase_two_callback(
+    deliver_shell { timelineItems = { filteredCount = 2, nodes = {} } }
+    find_issue_details_request(requests).opts.cb(
       vim.json.encode {
         data = {
           repository = {
@@ -466,9 +521,10 @@ describe("Octo module:", function()
       end,
     })
 
-    assert.are.same(1, #requests)
-    assert.is_nil(requests[1].paginate)
-    requests[1].opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
+    local details_request = find_issue_details_request(requests)
+    assert.are.same(4, #requests)
+    assert.is_nil(details_request.paginate)
+    details_request.opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
 
     assert.are.same(0, shells)
@@ -490,7 +546,7 @@ describe("Octo module:", function()
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
 
     assert.are.same(1, shells)
-    requests[1].opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
+    find_issue_details_request(requests).opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
 
     assert.are.same("detail-node", loaded.timelineItems.nodes[1].id)
   end)
@@ -511,12 +567,12 @@ describe("Octo module:", function()
         shells = shells + 1
       end,
     })
-    requests[1].opts.cb(issue_response(101, nodes), nil)
+    find_issue_details_request(requests).opts.cb(issue_response(101, nodes), nil)
 
-    assert.are.same(2, #requests)
-    assert.are.same(queries.issue_timeline_page, requests[2].query)
-    assert.are.same(100, requests[2].fields.skip)
-    requests[2].opts.cb(issue_response(101, { { id = "node-101" } }), nil)
+    assert.are.same(4, #requests)
+    local page_request = find_skip_request(requests, 100)
+    assert.are.same(queries.issue_timeline_page, page_request.query)
+    page_request.opts.cb(issue_response(101, { { id = "node-101" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 101, nodes = { { id = "shell-node" } } } }
 
     assert.are.same(0, shells)
@@ -535,11 +591,11 @@ describe("Octo module:", function()
         shells = shells + 1
       end,
     })
-    requests[1].opts.cb("", "network failure")
+    find_issue_details_request(requests).opts.cb("", "network failure")
 
-    assert.are.same(2, #requests)
-    assert.is_true(requests[2].paginate)
-    requests[2].opts.cb(issue_response(1, { { id = "fallback-node" } }), nil)
+    local fallback_request = find_fallback_request(requests)
+    assert.is_true(fallback_request.paginate)
+    fallback_request.opts.cb(issue_response(1, { { id = "fallback-node" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "late-shell" } } } }
 
     assert.are.same(0, shells)
@@ -558,11 +614,11 @@ describe("Octo module:", function()
       loaded = obj
     end)
     deliver_shell { timelineItems = { filteredCount = 101, nodes = { { id = "shell-node" } } } }
-    requests[2].opts.cb("", "network failure")
+    find_skip_request(requests, 100).opts.cb("", "network failure")
 
-    assert.are.same(3, #requests)
-    assert.is_true(requests[3].paginate)
-    requests[3].opts.cb(issue_response(101, nodes), nil)
+    local fallback_request = find_fallback_request(requests)
+    assert.is_true(fallback_request.paginate)
+    fallback_request.opts.cb(issue_response(101, nodes), nil)
     assert.are.same(100, #loaded.timelineItems.nodes)
   end)
 
@@ -579,23 +635,27 @@ describe("Octo module:", function()
       end,
     })
 
-    assert.are.same(4, #requests)
-    assert.matches("timelineItems", requests[1].query)
-    assert.is_nil(requests[1].query:find("reviewThreads(last:100)", 1, true))
-    assert.is_nil(requests[1].query:find("rulesets(first: 10", 1, true))
-    assert.is_nil(requests[1].query:find("latestOpinionatedReviews", 1, true))
-    assert.are.same(queries.pull_request_review_threads, requests[2].query)
-    assert.are.same(queries.pull_request_rulesets, requests[3].query)
-    assert.are.same(queries.pull_request_checks, requests[4].query)
-    requests[1].opts.cb(pull_response(1, { { id = "timeline-node" } }), nil)
+    assert.are.same(7, #requests)
+    local details_request = find_pull_details_request(requests)
+    assert.matches("timelineItems", details_request.query)
+    assert.is_nil(details_request.query:find("reviewThreads(last:100)", 1, true))
+    assert.is_nil(details_request.query:find("rulesets(first: 10", 1, true))
+    assert.is_nil(details_request.query:find("latestOpinionatedReviews", 1, true))
+    assert.are.same(
+      queries.pull_request_review_threads,
+      find_request_by_query(requests, queries.pull_request_review_threads).query
+    )
+    assert.are.same(queries.pull_request_rulesets, find_request_by_query(requests, queries.pull_request_rulesets).query)
+    assert.are.same(queries.pull_request_checks, find_request_by_query(requests, queries.pull_request_checks).query)
+    details_request.opts.cb(pull_response(1, { { id = "timeline-node" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
-    requests[2].opts.cb(
+    find_request_by_query(requests, queries.pull_request_review_threads).opts.cb(
       vim.json.encode {
         data = { repository = { pullRequest = { reviewThreads = { nodes = { { id = "thread-id" } } } } } },
       },
       nil
     )
-    requests[3].opts.cb(
+    find_request_by_query(requests, queries.pull_request_rulesets).opts.cb(
       vim.json.encode {
         data = {
           repository = {
@@ -606,7 +666,7 @@ describe("Octo module:", function()
       },
       nil
     )
-    requests[4].opts.cb(
+    find_request_by_query(requests, queries.pull_request_checks).opts.cb(
       vim.json.encode {
         data = {
           repository = {
@@ -633,12 +693,12 @@ describe("Octo module:", function()
     octo.load("owner/repo", "pull", 17, nil, function(obj)
       loaded = obj
     end)
-    assert.are.same(queries.pull_request_review_threads, requests[2].query)
-    requests[2].opts.cb("", "network failure")
+    local threads_request = find_request_by_query(requests, queries.pull_request_review_threads)
+    threads_request.opts.cb("", "network failure")
 
-    assert.are.same(5, #requests)
-    assert.is_true(requests[5].paginate)
-    requests[5].opts.cb(
+    local fallback_request = find_fallback_request(requests)
+    assert.is_true(fallback_request.paginate)
+    fallback_request.opts.cb(
       vim.json.encode {
         data = {
           repository = {

@@ -81,6 +81,56 @@ local function get_env()
   return env
 end
 
+---@type table<string, string>
+local auth_tokens = {}
+---@type table<string, fun(token: string?)[]>
+local auth_token_waiters = {}
+
+---@param hostname string
+---@param callback fun(token: string?): nil
+local function get_auth_token(hostname, callback)
+  local cached = auth_tokens[hostname]
+  if cached then
+    callback(cached)
+    return
+  end
+
+  local waiting = auth_token_waiters[hostname]
+  if waiting then
+    waiting[#waiting + 1] = callback
+    return
+  end
+  auth_token_waiters[hostname] = { callback }
+
+  local ok = pcall(
+    vim.system,
+    { config.values.gh_cmd, "auth", "token", "--hostname", hostname },
+    { env = get_env(), text = true },
+    vim.schedule_wrap(function(result)
+      local token = result.code == 0 and vim.trim(result.stdout or "") or nil
+      if token and (token == "" or token:find "[\r\n]") then
+        token = nil
+      end
+      if token then
+        auth_tokens[hostname] = token
+      end
+
+      local callbacks = auth_token_waiters[hostname]
+      auth_token_waiters[hostname] = nil
+      for _, waiter in ipairs(callbacks or {}) do
+        waiter(token)
+      end
+    end)
+  )
+  if not ok then
+    local callbacks = auth_token_waiters[hostname]
+    auth_token_waiters[hostname] = nil
+    for _, waiter in ipairs(callbacks or {}) do
+      waiter(nil)
+    end
+  end
+end
+
 ---uses GH to get the name of the authenticated user
 ---@param remote_hostname string?
 function M.get_user_name(remote_hostname)
@@ -151,6 +201,11 @@ function M.setup()
       end
     end),
   }):start()
+  local hostname = config.values.github_hostname
+  if require("octo.utils").is_blank(hostname) then
+    hostname = require("octo.utils").get_remote_host()
+  end
+  get_auth_token(hostname or "github.com", function() end)
 end
 
 ---Create a callback function for the job
@@ -423,6 +478,230 @@ function M.create_graphql_opts(opts)
   return opts
 end
 
+local function resolve_api_hostname(hostname)
+  if not require("octo.utils").is_blank(hostname) then
+    return hostname
+  elseif not require("octo.utils").is_blank(config.values.github_hostname) then
+    return config.values.github_hostname
+  end
+  return require("octo.utils").get_remote_host() or "github.com"
+end
+
+---@param hostname string
+---@param path string
+---@param graphql_request boolean
+---@return string?
+local function direct_api_url(hostname, path, graphql_request)
+  if hostname:find "[/\\?#%s]" then
+    return nil
+  end
+  if graphql_request then
+    if hostname:lower() == "github.com" then
+      return "https://api.github.com/graphql"
+    end
+    return "https://" .. hostname .. "/api/graphql"
+  end
+  if not vim.startswith(path, "/") or vim.startswith(path, "//") then
+    return nil
+  end
+  if hostname:lower() == "github.com" then
+    return "https://api.github.com" .. path
+  end
+  return "https://" .. hostname .. "/api/v3" .. path
+end
+
+---@param value string
+---@return string
+local function quote_curl_config(value)
+  value = value:gsub("[\r\n]", "")
+  value = value:gsub("\\", "\\\\"):gsub('"', '\\"')
+  return '"' .. value .. '"'
+end
+
+---@param hostname string
+---@param url string
+---@param method "GET"|"POST"
+---@param body string?
+---@param request_headers string[]?
+---@param expects_json boolean
+---@param callback fun(output: string): nil
+---@param fallback fun(): nil
+local function request_with_curl(hostname, url, method, body, request_headers, expects_json, callback, fallback)
+  if vim.fn.executable "curl" ~= 1 then
+    fallback()
+    return
+  end
+
+  get_auth_token(hostname, function(token)
+    if not token then
+      fallback()
+      return
+    end
+
+    local config_lines = {
+      "silent",
+      "show-error",
+      "compressed",
+      "http2",
+      "fail-with-body",
+      "request = " .. quote_curl_config(method),
+      "url = " .. quote_curl_config(url),
+      "header = " .. quote_curl_config("Authorization: Bearer " .. token),
+    }
+    if method == "POST" then
+      table.insert(config_lines, 'header = "Content-Type: application/json"')
+      table.insert(config_lines, 'header = "X-Github-Next-Global-ID: 1"')
+      table.insert(config_lines, "header = " .. quote_curl_config("Accept: " .. table.concat(headers, ";")))
+    else
+      table.insert(config_lines, "header = " .. quote_curl_config("Accept: " .. table.concat(headers, ";")))
+    end
+    for _, header in ipairs(request_headers or {}) do
+      table.insert(config_lines, "header = " .. quote_curl_config(header))
+    end
+
+    local args = { "curl", "--config", "-" }
+    if body then
+      table.insert(args, "--data-binary")
+      table.insert(args, body)
+    end
+    local launched = pcall(
+      vim.system,
+      args,
+      { stdin = table.concat(config_lines, "\n"), text = true },
+      vim.schedule_wrap(function(result)
+        if result.code ~= 0 then
+          fallback()
+          return
+        end
+        local output = result.stdout or ""
+        if expects_json then
+          local decoded_ok, decoded = pcall(vim.json.decode, output)
+          if not decoded_ok or (type(decoded) == "table" and decoded.errors ~= nil) then
+            fallback()
+            return
+          end
+        end
+        callback(output)
+      end)
+    )
+    if not launched then
+      fallback()
+    end
+  end)
+end
+
+---@param graphql_opts table
+---@param run_opts RunOpts
+---@param args string[]
+---@return boolean
+local function try_graphql_direct(graphql_opts, run_opts, args)
+  if
+    type(run_opts.cb) ~= "function"
+    or run_opts.mode == "sync"
+    or run_opts.stream_cb
+    or run_opts.debug
+    or graphql_opts.paginate
+    or graphql_opts.slurp
+    or (graphql_opts.jq ~= nil and graphql_opts.jq ~= ".")
+  then
+    return false
+  end
+  for key in pairs(graphql_opts) do
+    if key ~= "f" and key ~= "F" and key ~= "jq" and key ~= "paginate" and key ~= "slurp" then
+      return false
+    end
+  end
+  local fields = graphql_opts.F
+  local raw_fields = graphql_opts.f
+  if type(fields) ~= "table" or type(raw_fields) ~= "table" or vim.tbl_count(raw_fields) ~= 1 then
+    return false
+  end
+  local query = raw_fields.query
+  if type(query) ~= "string" then
+    return false
+  end
+  local hostname = resolve_api_hostname(run_opts.hostname)
+  local url = direct_api_url(hostname, "/graphql", true)
+  if not url then
+    return false
+  end
+  local ok, body = pcall(vim.json.encode, { query = query, variables = fields })
+  if not ok or type(body) ~= "string" then
+    return false
+  end
+
+  request_with_curl(hostname, url, "POST", body, run_opts.headers, true, function(output)
+    run_opts.cb(output, nil, 0)
+  end, function()
+    run {
+      args = args,
+      mode = run_opts.mode,
+      cb = run_opts.cb,
+      stream_cb = run_opts.stream_cb,
+      headers = run_opts.headers,
+      hostname = run_opts.hostname,
+      debug = run_opts.debug,
+    }
+  end)
+  return true
+end
+
+---@param method Method?
+---@param opts table
+---@param run_opts RunOpts
+---@param args string[]
+---@return boolean
+local function try_rest_direct(method, opts, run_opts, args)
+  if
+    method ~= "GET"
+    or type(run_opts.cb) ~= "function"
+    or run_opts.mode == "sync"
+    or run_opts.stream_cb
+    or run_opts.debug
+    or opts.jq ~= nil
+    or opts.paginate
+    or opts.slurp
+    or opts.F
+    or opts.f
+  then
+    return false
+  end
+  local path = opts[1]
+  if type(path) ~= "string" then
+    return false
+  end
+  local hostname = resolve_api_hostname(run_opts.hostname)
+  local url = direct_api_url(hostname, path, false)
+  if not url then
+    return false
+  end
+
+  local expects_json = true
+  for _, header in ipairs(run_opts.headers or {}) do
+    if
+      header:find("application/vnd.github.v3.diff", 1, true) or header:find("application/vnd.github.v3.raw", 1, true)
+    then
+      expects_json = false
+      break
+    end
+  end
+
+  request_with_curl(hostname, url, "GET", nil, run_opts.headers, expects_json, function(output)
+    run_opts.cb(output, nil, 0)
+  end, function()
+    run {
+      args = args,
+      mode = run_opts.mode,
+      cb = run_opts.cb,
+      stream_cb = run_opts.stream_cb,
+      headers = run_opts.headers,
+      hostname = run_opts.hostname,
+      debug = run_opts.debug,
+    }
+  end)
+  return true
+end
+
 --- The gh.api commands
 ---@class octo.GH.api
 M.api = {}
@@ -450,6 +729,9 @@ function M.api.graphql(opts)
   local args = { "api", "graphql" }
   args = M.insert_args(args, graphql_opts, { ["_"] = "-" })
 
+  if try_graphql_direct(graphql_opts, run_opts, args) then
+    return
+  end
   return run {
     args = args,
     mode = run_opts.mode,
@@ -520,6 +802,9 @@ local function rest(method, opts)
     return
   end
 
+  if try_rest_direct(method, opts, run_opts, args) then
+    return
+  end
   return run {
     args = args,
     mode = run_opts.mode,

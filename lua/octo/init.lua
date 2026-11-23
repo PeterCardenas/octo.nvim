@@ -835,8 +835,62 @@ function M.load(repo, kind, id, hostname, cb, opts)
     load_buffer(vim.json.encode(full_response))
   end
 
-  local function start_page_fanout(count)
-    if expected_count then
+  local start_page_fanout ---@type fun(count: integer): nil
+  local request_timeline_page ---@type fun(page_index: integer): nil
+  local requested_pages = {} ---@type table<integer, boolean>
+
+  local function receive_timeline_page(page_index, output)
+    if fallback_started or load_completed then
+      return
+    end
+    local ok, response = pcall(vim.json.decode, output)
+    local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
+    if
+      type(connection) ~= "table"
+      or type(connection.filteredCount) ~= "number"
+      or type(connection.nodes) ~= "table"
+    then
+      fallback()
+      return
+    end
+    if expected_count ~= nil and connection.filteredCount ~= expected_count then
+      fallback()
+      return
+    end
+
+    pages[page_index] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
+    if expected_count == nil then
+      start_page_fanout(connection.filteredCount)
+      return
+    end
+    if page_index < page_count then
+      pending_pages = pending_pages - 1
+    end
+    finish_if_ready()
+  end
+
+  request_timeline_page = function(page_index)
+    requested_pages[page_index] = true
+    gh.api.graphql {
+      query = page_query,
+      fields = { owner = owner, name = name, number = id, skip = page_index * 100 },
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function()
+            fallback()
+          end,
+          success = function(output)
+            receive_timeline_page(page_index, output)
+          end,
+        },
+      },
+    }
+  end
+
+  start_page_fanout = function(count)
+    if expected_count ~= nil then
       if expected_count ~= count then
         fallback()
       end
@@ -844,45 +898,35 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
     expected_count = count
     page_count = math.ceil(count / 100)
-    pending_pages = math.max(0, page_count - 1)
+    local pages_to_request = {} ---@type integer[]
+    pending_pages = 0
     for page_index = 1, page_count - 1 do
-      gh.api.graphql {
-        query = page_query,
-        fields = { owner = owner, name = name, number = id, skip = page_index * 100 },
-        jq = ".",
-        opts = {
-          hostname = hostname,
-          cb = gh.create_callback {
-            failure = function()
-              fallback()
-            end,
-            success = function(output)
-              if fallback_started or load_completed then
-                return
-              end
-              local ok, response = pcall(vim.json.decode, output)
-              local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
-              if
-                type(connection) ~= "table"
-                or type(connection.filteredCount) ~= "number"
-                or type(connection.nodes) ~= "table"
-              then
-                fallback()
-                return
-              end
-              if connection.filteredCount ~= expected_count then
-                fallback()
-                return
-              end
-              pages[page_index] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
-              pending_pages = pending_pages - 1
-              finish_if_ready()
-            end,
-          },
-        },
-      }
+      if pages[page_index] then
+        if pages[page_index].filteredCount ~= count then
+          fallback()
+          return
+        end
+      else
+        pending_pages = pending_pages + 1
+        if not requested_pages[page_index] then
+          requested_pages[page_index] = true
+          pages_to_request[#pages_to_request + 1] = page_index
+        end
+      end
+    end
+    for _, page_index in ipairs(pages_to_request) do
+      request_timeline_page(page_index)
     end
     finish_if_ready()
+  end
+
+  -- Start the first pages before count discovery; their filteredCount can start
+  -- the remaining fanout while the shell and full-details calls are in flight.
+  for page_index = 1, 3 do
+    requested_pages[page_index] = true
+  end
+  for page_index = 1, 3 do
+    request_timeline_page(page_index)
   end
 
   -- Phase two carries the complete details and page zero. It is independent of
