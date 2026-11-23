@@ -168,8 +168,8 @@ end
 ---@param review_id string
 ---@param threads octo.ReviewThread[]
 local function initiate_pending_review(review, review_id, threads)
-  require("octo.reviews").close_browse_reviews_for_pull_request(review.pull_request)
   review.id = review_id
+  require("octo.reviews").close_browse_reviews_for_pull_request(review.pull_request)
   review:update_threads(threads)
 end
 

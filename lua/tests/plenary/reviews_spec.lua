@@ -1,6 +1,7 @@
 ---@diagnostic disable
 local reviews = require "octo.reviews"
 local Layout = require("octo.reviews.layout").Layout
+local Rev = require("octo.reviews.rev").Rev
 local utils = require "octo.utils"
 local eq = assert.are.same
 
@@ -276,6 +277,54 @@ describe("Reviews module:", function()
     pending_callback("pending-review", { make_thread() })
     eq("pending-review", flow.review.id)
     eq("pending body", flow.review.threads.thread_1.comments.nodes[1].body)
+  end)
+
+  local function assert_pending_review_tab_survives(action)
+    Layout.new = original_layout_new
+    utils.in_pr_branch = function()
+      return true
+    end
+
+    local pull_request = {
+      id = "pr_1",
+      repo = "owner/repo",
+      owner = "owner",
+      name = "repo",
+      number = 1,
+      left = Rev:new "base",
+      right = Rev:new "head",
+      get_changed_files = function(_, callback)
+        callback {}
+      end,
+    }
+    local review = setmetatable({ pull_request = pull_request, id = -1, threads = {}, files = {} }, {
+      __index = reviews.Review,
+    })
+    local pending_callback
+    review.retrieve_pending_state = function(_, callback)
+      pending_callback = callback
+    end
+
+    review[action](review)
+    local layout = review.layout
+    local tabpage = layout.tabpage
+    eq(true, vim.api.nvim_tabpage_is_valid(tabpage))
+    eq(review, reviews.reviews[tostring(tabpage)])
+
+    pending_callback("pending-review", { make_thread() })
+
+    eq("pending-review", review.id)
+    eq(true, vim.api.nvim_tabpage_is_valid(tabpage))
+    eq(review, reviews.reviews[tostring(tabpage)])
+    review:close_layout(layout)
+  end
+
+  it("keeps the freshly opened registered tab when resuming a pending review", function()
+    assert_pending_review_tab_survives "resume"
+  end)
+
+  it("keeps the freshly opened registered tab in the pending start-or-resume branch", function()
+    assert_pending_review_tab_survives "start_or_resume"
   end)
 
   it("opens the loading layout before starting a review and closes an older browse tab", function()
