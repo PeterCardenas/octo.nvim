@@ -417,8 +417,10 @@ describe("GitHub HTTP transport", function()
       },
     }
 
+    -- Wait for the complete record: the fake gh writes argv and token slots in two steps.
     assert.is_true(vim.wait(1000, function()
       return vim.fn.filereadable(temporary_token_output) == 1
+        and table.concat(vim.fn.readfile(temporary_token_output), "\\n"):find("|", 1, true) ~= nil
     end))
     local output = table.concat(vim.fn.readfile(temporary_token_output), "\\n")
     assert.is_true(output:find("--hostname github.com", 1, true) ~= nil)
@@ -454,8 +456,10 @@ describe("GitHub HTTP transport", function()
       },
     }
 
+    -- Wait for the complete record: the fake gh writes argv and token slots in two steps.
     assert.is_true(vim.wait(1000, function()
       return vim.fn.filereadable(temporary_token_output) == 1
+        and table.concat(vim.fn.readfile(temporary_token_output), "\\n"):find("|", 1, true) ~= nil
     end))
     local output = table.concat(vim.fn.readfile(temporary_token_output), "\\n")
     assert.is_true(output:find("--hostname tenant.ghe.com", 1, true) ~= nil)
@@ -491,8 +495,10 @@ describe("GitHub HTTP transport", function()
       },
     }
 
+    -- Wait for the complete record: the fake gh writes argv and token slots in two steps.
     assert.is_true(vim.wait(1000, function()
       return vim.fn.filereadable(temporary_token_output) == 1
+        and table.concat(vim.fn.readfile(temporary_token_output), "\\n"):find("|", 1, true) ~= nil
     end))
     local output = table.concat(vim.fn.readfile(temporary_token_output), "\\n")
     assert.is_true(output:find("--hostname octo-ghes.example", 1, true) ~= nil)
