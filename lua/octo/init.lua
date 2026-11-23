@@ -1822,6 +1822,7 @@ function M.create_buffer(kind, obj, repo, create, hostname)
     bufnr = bufnr,
     number = obj.number,
     repo = repo,
+    hostname = hostname,
     node = obj,
     kind = kind,
   }

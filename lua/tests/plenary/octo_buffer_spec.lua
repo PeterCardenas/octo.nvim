@@ -22,6 +22,33 @@ describe("OctoBuffer:clear()", function()
     end
   end)
 
+  it("carries the buffer hostname into pull-request review creation", function()
+    local model = require "octo.model.pull-request"
+    local original_create = model.create_with_merge_base
+    local received_opts
+    model.create_with_merge_base = function(opts)
+      received_opts = opts
+    end
+
+    local buffer = OctoBuffer:new {
+      bufnr = bufnr,
+      number = 17,
+      repo = "owner/repo",
+      hostname = "github.enterprise.internal",
+      kind = "pull",
+      node = {
+        id = "pr-node",
+        number = 17,
+        headRepository = { nameWithOwner = "owner/repo" },
+        headRefName = "topic",
+      },
+    }
+    buffer:get_pr(function() end)
+    model.create_with_merge_base = original_create
+
+    assert.are.same("github.enterprise.internal", received_opts.hostname)
+  end)
+
   it("skips native completion metadata requests when disabled", function()
     local config = require "octo.config"
     local gh = require "octo.gh"

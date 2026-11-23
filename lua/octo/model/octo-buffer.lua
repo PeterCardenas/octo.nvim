@@ -22,6 +22,7 @@ local loading_timeline_ns = vim.api.nvim_create_namespace "octo_timeline_loading
 ---@field bufnr integer
 ---@field number integer
 ---@field repo string
+---@field hostname string?
 ---@field kind octo.NodeKind|"reviewthread"
 ---@field titleMetadata TitleMetadata
 ---@field bodyMetadata BodyMetadata
@@ -40,6 +41,7 @@ OctoBuffer.__index = OctoBuffer
 ---  bufnr: integer,
 ---  number: integer,
 ---  repo: string,
+---  hostname?: string,
 ---  node: octo.PullRequest|octo.Issue|octo.Release|octo.Repository|octo.Discussion|table,
 ---  kind: string,
 ---  commentsMetadata: CommentMetadata[],
@@ -52,6 +54,7 @@ function OctoBuffer:new(opts)
     bufnr = opts.bufnr or vim.api.nvim_get_current_buf(),
     number = opts.number,
     repo = opts.repo,
+    hostname = opts.hostname,
     node = opts.node,
     titleMetadata = TitleMetadata:new(),
     bodyMetadata = BodyMetadata:new(),
@@ -1282,6 +1285,7 @@ function OctoBuffer:get_pr(callback, on_early, on_error)
     repo = self.repo,
     head_repo = self:pullRequest().headRepository.nameWithOwner,
     head_ref_name = self:pullRequest().headRefName,
+    hostname = self.hostname,
     number = self.number,
     id = self:pullRequest().id,
   }
