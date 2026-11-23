@@ -137,15 +137,16 @@ describe("Octo module:", function()
   local function seed_cached_issue(issue)
     config.values.persistent_cache.enabled = true
     local key = persistent_cache.key("github.com", "owner/repo", "issue", 17)
-    local complete = false
-    persistent_cache.write(key, {
-      object = issue,
-      rendered_lines = { "cached issue snapshot" },
-    }, function()
-      complete = true
+    local rendered_lines_key = persistent_cache.key("github.com", "owner/repo", "issue", 17, "rendered")
+    local complete = 0
+    persistent_cache.write(key, { object = issue }, function()
+      complete = complete + 1
+    end)
+    persistent_cache.write(rendered_lines_key, { rendered_text = "cached issue snapshot" }, function()
+      complete = complete + 1
     end)
     assert.is_true(vim.wait(5000, function()
-      return complete
+      return complete == 2
     end))
   end
 

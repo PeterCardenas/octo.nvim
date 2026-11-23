@@ -3,7 +3,7 @@ local vim = vim
 local uv = vim.uv
 
 local M = {}
-local SCHEMA_VERSION = 2
+local SCHEMA_VERSION = 3
 local MAX_CACHE_BYTES = 50 * 1024 * 1024
 local MAX_ENTRY_BYTES = MAX_CACHE_BYTES
 local CACHE_DIRECTORY = vim.fs.joinpath(vim.fn.stdpath "cache", "octo", "persistent")
@@ -49,13 +49,25 @@ local function ensure_directory(path, callback)
       callback(true)
       return
     end
-    uv.fs_mkdir(path, 448, function(err)
-      if not err then
-        callback(true)
+
+    local parent = vim.fs.dirname(path)
+    if parent == path then
+      callback(false)
+      return
+    end
+    ensure_directory(parent, function(parent_ready)
+      if not parent_ready then
+        callback(false)
         return
       end
-      uv.fs_stat(path, function(_, existing)
-        callback(existing ~= nil and existing.type == "directory")
+      uv.fs_mkdir(path, 448, function(err)
+        if not err then
+          callback(true)
+          return
+        end
+        uv.fs_stat(path, function(_, existing)
+          callback(existing ~= nil and existing.type == "directory")
+        end)
       end)
     end)
   end)
