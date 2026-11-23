@@ -9,7 +9,12 @@ describe("Octo module:", function()
   local original_cache_enabled
   local original_get
   local original_graphql
-  local original_cache_identity
+  local original_auth_context
+  local original_cache_key
+  local original_cache_read
+  local original_cache_write
+  local original_system
+  local original_system_fn
   local original_load_preview
   local original_load
   local original_load_pull_diff
@@ -26,13 +31,23 @@ describe("Octo module:", function()
     polling = require "octo.polling"
     config = require "octo.config"
     persistent_cache = require "octo.cache"
+    original_cache_key = persistent_cache.key
+    original_cache_read = persistent_cache.read
+    original_cache_write = persistent_cache.write
+    original_system = vim.system
+    original_system_fn = vim.fn.system
     original_cache_enabled = config.values.persistent_cache.enabled
     config.values.persistent_cache.enabled = false
     original_get = gh.api.get
     original_graphql = gh.api.graphql
-    original_cache_identity = gh.get_cache_identity
-    gh.get_cache_identity = function()
-      return "octo-test-user"
+    original_auth_context = gh.get_auth_context
+    gh.get_auth_context = function(hostname, callback)
+      callback {
+        hostname = hostname,
+        token = "octo-test-token",
+        fingerprint = "octo-test-user",
+        env = {},
+      }
     end
     original_load_preview = octo.load_preview
     original_load = octo.load
@@ -46,9 +61,14 @@ describe("Octo module:", function()
 
   after_each(function()
     config.values.persistent_cache.enabled = original_cache_enabled
+    persistent_cache.key = original_cache_key
+    persistent_cache.read = original_cache_read
+    persistent_cache.write = original_cache_write
+    vim.system = original_system
+    vim.fn.system = original_system_fn
     gh.api.get = original_get
     gh.api.graphql = original_graphql
-    gh.get_cache_identity = original_cache_identity
+    gh.get_auth_context = original_auth_context
     octo.load_preview = original_load_preview
     octo.load = original_load
     octo.load_pull_diff = original_load_pull_diff
@@ -149,6 +169,7 @@ describe("Octo module:", function()
   local function seed_cached_issue(issue)
     issue.body = issue.body or ""
     issue.timelineItems = issue.timelineItems or { nodes = {} }
+    issue.labels = issue.labels or { nodes = {} }
     issue._loadState = "complete"
     config.values.persistent_cache.enabled = true
     local key = persistent_cache.key("github.com", "owner/repo", "issue", 17, nil, "octo-test-user")
@@ -348,6 +369,58 @@ describe("Octo module:", function()
     octo.load_buffer { bufnr = bufnr }
 
     assert.is_false(load_started)
+  end)
+
+  it("uses a fresh asynchronous token identity for each load without synchronous shell calls", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issues/29"
+    config.values.persistent_cache.enabled = true
+    gh.get_auth_context = original_auth_context
+    local auth_callbacks = {}
+    local cache_identities = {}
+    persistent_cache.key = function(_, _, _, _, _, identity)
+      cache_identities[#cache_identities + 1] = identity
+      return "isolated-test-key"
+    end
+    persistent_cache.read = function() end
+    persistent_cache.write = function() end
+    gh.api.graphql = function() end
+    vim.fn.system = function()
+      error "synchronous vim.fn.system called on a buffer load"
+    end
+    vim.system = function(argv, _, callback)
+      assert.are.same("auth", argv[2])
+      assert.are.same("token", argv[3])
+      auth_callbacks[#auth_callbacks + 1] = callback
+      return {
+        kill = function() end,
+        wait = function()
+          error "vim.system():wait called on a buffer load"
+        end,
+      }
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.are.same(1, #auth_callbacks)
+    auth_callbacks[1] { code = 0, stdout = "account-a-secret" }
+    assert.is_true(vim.wait(100, function()
+      return #cache_identities >= 2
+    end))
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.are.same(2, #auth_callbacks)
+    auth_callbacks[2] { code = 0, stdout = "account-b-secret" }
+    assert.is_true(vim.wait(100, function()
+      return #cache_identities >= 4
+    end))
+
+    local seen = {}
+    for _, identity in ipairs(cache_identities) do
+      seen[identity] = true
+    end
+    assert.is_true(seen[vim.fn.sha256 "account-a-secret"])
+    assert.is_true(seen[vim.fn.sha256 "account-b-secret"])
+    assert.is_nil(seen["account-a-secret"])
+    assert.is_nil(seen["account-b-secret"])
   end)
 
   it("loads pull request diff buffers from octo URIs", function()

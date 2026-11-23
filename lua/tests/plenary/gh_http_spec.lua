@@ -52,6 +52,31 @@ describe("GitHub HTTP transport", function()
     end
   end)
 
+  it("resolves a fresh authenticated context when the active account changes", function()
+    local hostname = "octo-account-switch.example"
+    local contexts = {}
+    gh.get_auth_context(hostname, function(context)
+      contexts[#contexts + 1] = context
+    end)
+    complete_system(1, { code = 0, stdout = "account-a-token\n", stderr = "" })
+    assert.is_true(vim.wait(100, function()
+      return #contexts == 1
+    end))
+
+    gh.get_auth_context(hostname, function(context)
+      contexts[#contexts + 1] = context
+    end)
+    assert.are.same({ original_gh_cmd, "auth", "token", "--hostname", hostname }, calls[2].argv)
+    complete_system(2, { code = 0, stdout = "account-b-token\n", stderr = "" })
+    assert.is_true(vim.wait(100, function()
+      return #contexts == 2
+    end))
+
+    assert.are.same("account-a-token", contexts[1].token)
+    assert.are.same("account-b-token", contexts[2].token)
+    assert.are_not.same(contexts[1].fingerprint, contexts[2].fingerprint)
+  end)
+
   it("uses the gh token once per host and sends GraphQL over compressed HTTP/2", function()
     if vim.fn.executable "curl" ~= 1 then
       pending "curl is unavailable"

@@ -149,6 +149,73 @@ local function get_auth_token(hostname, callback)
   end
 end
 
+---@class octo.AuthContext
+---@field hostname string
+---@field token string?
+---@field fingerprint string?
+---@field env table<string, string|integer>
+
+---Resolve the active gh account for one load. Unlike the request-level token cache,
+---this deliberately runs for every load so an account switch cannot reuse old credentials.
+---@param hostname string
+---@param callback fun(context: octo.AuthContext): nil
+function M.get_auth_context(hostname, callback)
+  local env = vim.deepcopy(get_env())
+  local completed = false
+  local process ---@type vim.SystemObj?
+  local timer = vim.uv.new_timer()
+  local function finish(token)
+    if completed then
+      return
+    end
+    completed = true
+    if timer then
+      timer:stop()
+      timer:close()
+      timer = nil
+    end
+    callback {
+      hostname = hostname,
+      token = token,
+      fingerprint = token and vim.fn.sha256(token) or nil,
+      env = env,
+    }
+  end
+
+  local ok, child = pcall(
+    vim.system,
+    { config.values.gh_cmd, "auth", "token", "--hostname", hostname },
+    {
+      env = env,
+      text = true,
+    },
+    vim.schedule_wrap(function(result)
+      local token = result.code == 0 and vim.trim(result.stdout or "") or nil
+      if token and (token == "" or token:find "[\r\n]") then
+        token = nil
+      end
+      finish(token)
+    end)
+  )
+  if not ok then
+    finish(nil)
+    return
+  end
+  process = child
+  if timer then
+    timer:start(
+      config.values.timeout,
+      0,
+      vim.schedule_wrap(function()
+        if process then
+          pcall(process.kill, process, 15)
+        end
+        finish(nil)
+      end)
+    )
+  end
+end
+
 ---uses GH to get the name of the authenticated user
 ---@param remote_hostname string?
 function M.get_user_name(remote_hostname)
@@ -173,27 +240,6 @@ function M.get_user_name(remote_hostname)
   else
     require("octo.utils").error(stderr)
   end
-end
-
----Return the authenticated login for cache partitioning without exposing it in the cache key.
----@param hostname string
----@return string?
-function M.get_cache_identity(hostname)
-  if not Job or require("octo.utils").is_blank(hostname) then
-    return
-  end
-
-  ---@diagnostic disable-next-line: missing-fields
-  local job = Job:new {
-    enable_recording = true,
-    command = config.values.gh_cmd,
-    args = { "auth", "status", "--hostname", hostname },
-    env = get_env(),
-  }
-  job:sync(config.values.timeout)
-  local stderr = table.concat(job:stderr_result(), "\n")
-  local stdout = table.concat(job:result(), "\n")
-  return parse_user_name(stdout, stderr)
 end
 
 local scopes = {} ---@type string[]
@@ -309,11 +355,6 @@ local function run(opts)
   end
   local remote_hostname = require("octo.utils").get_remote_host()
 
-  -- Lazy load viewer name on the first gh command
-  if not vim.g.octo_viewer then
-    vim.g.octo_viewer = M.get_user_name(remote_hostname)
-  end
-
   opts = opts or {}
   local conf = config.values
   local mode = opts.mode or "async"
@@ -357,6 +398,13 @@ local function run(opts)
   end
 
   local env = get_env()
+  if opts.auth_context then
+    env = vim.tbl_deep_extend("force", env, opts.auth_context.env)
+    if opts.auth_context.token then
+      env.GH_TOKEN = opts.auth_context.token
+      env.GH_ENTERPRISE_TOKEN = opts.auth_context.token
+    end
+  end
   if opts.debug then
     env.GH_DEBUG = "1"
   end
@@ -613,14 +661,15 @@ local function request_with_curl(
   expects_json,
   callback,
   fallback,
-  retry_auth
+  retry_auth,
+  auth_context
 )
   if vim.fn.executable "curl" ~= 1 then
     fallback()
     return
   end
 
-  get_auth_token(hostname, function(token, env)
+  local function with_token(token, env)
     if not token then
       fallback()
       return
@@ -651,44 +700,81 @@ local function request_with_curl(
     end
 
     local args = { "curl", "-q", "--config", "-" }
-    local launched = pcall(
-      vim.system,
-      args,
-      { stdin = table.concat(config_lines, "\n"), env = env, text = true },
-      vim.schedule_wrap(function(result)
-        local output = result.stdout or ""
-        local auth_failure = (result.stderr or ""):find("401", 1, true) ~= nil or is_bad_credentials(output)
-        if auth_failure then
-          if not retry_auth then
-            auth_tokens[hostname] = nil
-            request_with_curl(hostname, url, method, body, request_headers, expects_json, callback, fallback, true)
-          else
-            fallback()
-          end
-          return
+    local finished = false
+    local process ---@type vim.SystemObj?
+    local timer = vim.uv.new_timer()
+    local function settle(result)
+      if finished then
+        return
+      end
+      finished = true
+      if timer then
+        timer:stop()
+        timer:close()
+        timer = nil
+      end
+      if not result then
+        fallback()
+        return
+      end
+      local output = result.stdout or ""
+      local auth_failure = (result.stderr or ""):find("401", 1, true) ~= nil or is_bad_credentials(output)
+      if auth_failure then
+        if not retry_auth and not auth_context then
+          auth_tokens[hostname] = nil
+          request_with_curl(hostname, url, method, body, request_headers, expects_json, callback, fallback, true)
+        else
+          fallback()
         end
-        if result.code ~= 0 then
+        return
+      end
+      if result.code ~= 0 then
+        fallback()
+        return
+      end
+      if expects_json then
+        local decoded_ok, decoded = pcall(vim.json.decode, output)
+        if
+          not decoded_ok
+          or (type(decoded) == "table" and decoded.errors ~= nil)
+          or contains_control_characters(decoded)
+        then
           fallback()
           return
         end
-        if expects_json then
-          local decoded_ok, decoded = pcall(vim.json.decode, output)
-          if
-            not decoded_ok
-            or (type(decoded) == "table" and decoded.errors ~= nil)
-            or contains_control_characters(decoded)
-          then
-            fallback()
-            return
-          end
-        end
-        callback(output)
-      end)
+      end
+      callback(output)
+    end
+    local launched, child = pcall(
+      vim.system,
+      args,
+      { stdin = table.concat(config_lines, "\n"), env = env, text = true },
+      vim.schedule_wrap(settle)
     )
     if not launched then
-      fallback()
+      settle(nil)
+      return
     end
-  end)
+    process = child
+    if timer then
+      timer:start(
+        config.values.timeout,
+        0,
+        vim.schedule_wrap(function()
+          if process then
+            pcall(process.kill, process, 15)
+          end
+          settle(nil)
+        end)
+      )
+    end
+  end
+
+  if auth_context then
+    with_token(auth_context.token, auth_context.env)
+  else
+    get_auth_token(hostname, with_token)
+  end
 end
 
 local direct_graphql_query_names = {
@@ -774,8 +860,9 @@ local function try_graphql_direct(graphql_opts, run_opts, args)
       headers = run_opts.headers,
       hostname = run_opts.hostname,
       debug = run_opts.debug,
+      auth_context = run_opts.auth_context,
     }
-  end)
+  end, false, run_opts.auth_context)
   return true
 end
 
@@ -828,8 +915,9 @@ local function try_rest_direct(method, opts, run_opts, args)
       headers = run_opts.headers,
       hostname = run_opts.hostname,
       debug = run_opts.debug,
+      auth_context = run_opts.auth_context,
     }
-  end)
+  end, false, run_opts.auth_context)
   return true
 end
 
@@ -871,6 +959,7 @@ function M.api.graphql(opts)
     headers = run_opts.headers,
     hostname = run_opts.hostname,
     debug = run_opts.debug,
+    auth_context = run_opts.auth_context,
   }
 end
 
@@ -944,6 +1033,7 @@ local function rest(method, opts)
     headers = run_opts.headers,
     hostname = run_opts.hostname,
     debug = run_opts.debug,
+    auth_context = run_opts.auth_context,
   }
 end
 
@@ -1014,6 +1104,7 @@ local function create_subcommand(command)
           headers = run_opts.headers,
           hostname = run_opts.hostname,
           debug = run_opts.debug,
+          auth_context = run_opts.auth_context,
         }
       end
     end,

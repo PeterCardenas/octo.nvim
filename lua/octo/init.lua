@@ -27,6 +27,8 @@ _G.octo_buffers = {}
 
 local M = {}
 local next_load_generation = 0
+local next_auth_generation = 0
+local active_auth_loads = {} ---@type table<integer, integer>
 local active_loads = {} ---@type table<integer, integer>
 local cached_indicator_ns = vim.api.nvim_create_namespace "octo_persistent_cache"
 
@@ -83,6 +85,7 @@ end
 ---@param bufnr integer
 function M.invalidate_load(bufnr)
   active_loads[bufnr] = nil
+  active_auth_loads[bufnr] = nil
 end
 
 function M.setup(user_config)
@@ -178,6 +181,41 @@ function M.load_buffer(opts)
     end
     id = number
   end
+
+  if not opts.auth_context_resolved then
+    next_auth_generation = next_auth_generation + 1
+    local auth_generation = next_auth_generation
+    active_auth_loads[bufnr] = auth_generation
+    if vim.api.nvim_buf_is_valid(bufnr) and not vim.b[bufnr].octo_cached then
+      local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      if #current_lines == 1 and current_lines[1] == "" then
+        local label = kind == "pull" and "pull request" or kind
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+          string.format("Loading %s #%s from %s…", label, id, repo),
+        })
+        vim.bo[bufnr].filetype = "octo"
+        vim.bo[bufnr].modified = false
+        vim.bo[bufnr].modifiable = false
+        vim.b[bufnr].octo_loading_skeleton = true
+      end
+    end
+    gh.get_auth_context(resolve_hostname(hostname), function(auth_context)
+      if
+        active_auth_loads[bufnr] ~= auth_generation
+        or not vim.api.nvim_buf_is_valid(bufnr)
+        or vim.api.nvim_buf_get_name(bufnr) ~= bufname
+      then
+        return
+      end
+      active_auth_loads[bufnr] = nil
+      opts.auth_context = auth_context
+      opts.auth_context_resolved = true
+      M.load_buffer(opts)
+    end)
+    return
+  end
+
+  local auth_context = opts.auth_context
   next_load_generation = next_load_generation + 1
   local load_generation = next_load_generation
   active_loads[bufnr] = load_generation
@@ -204,7 +242,6 @@ function M.load_buffer(opts)
     end
     load_error_handled = true
     finish_load()
-    clear_cached_mark(bufnr)
     if vim.api.nvim_buf_is_valid(bufnr) then
       local was_skeleton = vim.b[bufnr].octo_loading_skeleton
       vim.b[bufnr].octo_loading_skeleton = nil
@@ -221,6 +258,8 @@ function M.load_buffer(opts)
     end
     if opts.on_error then
       opts.on_error()
+    else
+      utils.print_err(string.format("Failed to revalidate %s buffer %s", kind, id))
     end
   end
 
@@ -429,9 +468,8 @@ function M.load_buffer(opts)
   local cache_key ---@type string?
   if config.values.persistent_cache.enabled and cacheable_kind then
     local host = resolve_hostname(hostname)
-    local identity = require("octo.gh").get_cache_identity(host)
-    if identity then
-      cache_key = persistent_cache.key(host, repo, kind, id, nil, identity)
+    if auth_context and auth_context.fingerprint then
+      cache_key = persistent_cache.key(host, repo, kind, id, nil, auth_context.fingerprint)
     end
 
     ---@param object table
@@ -582,7 +620,7 @@ function M.load_buffer(opts)
       if opts.on_reload then
         opts.on_reload()
       end
-    end, handle_load_error)
+    end, handle_load_error, auth_context)
     return
   end
 
@@ -692,6 +730,8 @@ function M.load_buffer(opts)
       end
 
       vim.api.nvim_buf_call(bufnr, function()
+        vim.bo[bufnr].modifiable = true
+        vim.bo[bufnr].readonly = false
         M.create_buffer(kind, shell, repo, false, hostname)
         shell_rendered = true
         if is_cached then
@@ -703,6 +743,7 @@ function M.load_buffer(opts)
       end)
     end,
     on_error = handle_load_error,
+    auth_context = auth_context,
   })
 end
 
@@ -711,7 +752,8 @@ end
 ---@param hostname string|nil
 ---@param cb fun(obj: table): nil
 ---@param on_error? fun()
-function M.load_pull_diff(repo, number, hostname, cb, on_error)
+---@param auth_context? octo.AuthContext
+function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
   local owner, name = utils.split_repo(repo)
   local function get_diff_fingerprint(pr)
     if not pr then
@@ -752,6 +794,7 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
     opts = {
       headers = { headers.diff },
       hostname = hostname,
+      auth_context = auth_context,
       cb = function(diff, stderr, status)
         if status == nil or status == 0 then
           diff_output = diff or ""
@@ -774,6 +817,7 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
     jq = ".",
     opts = {
       hostname = hostname,
+      auth_context = auth_context,
       cb = gh.create_callback {
         failure = function()
           fingerprint_finished = true
@@ -823,11 +867,18 @@ local fast_load_inflight = {}
 ---@param hostname string?
 ---@param cb fun(obj: octo.LoadShell, cached: boolean): nil
 ---@param on_error? fun(stderr: string): nil
-function M.load_preview(repo, kind, id, hostname, cb, on_error)
+---@param auth_context? octo.AuthContext
+function M.load_preview(repo, kind, id, hostname, cb, on_error, auth_context)
   local normalized_kind = kind == "pull_request" and "pull" or kind
   local owner, name = utils.split_repo(repo)
   local host = resolve_hostname(hostname)
-  local identity = require("octo.gh").get_cache_identity(host)
+  if not auth_context then
+    gh.get_auth_context(host, function(context)
+      M.load_preview(repo, kind, id, hostname, cb, on_error, context)
+    end)
+    return
+  end
+  local identity = auth_context.fingerprint
   local identity_key = identity and vim.fn.sha256(host .. "\0" .. identity) or tostring(vim.loop.hrtime())
   local cache_key = table.concat({ host, identity_key, repo, normalized_kind, tostring(id) }, "|")
   local preview_key = config.values.persistent_cache.enabled
@@ -904,6 +955,7 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
     jq = ".",
     opts = {
       hostname = host,
+      auth_context = auth_context,
       cb = gh.create_callback {
         failure = function(stderr)
           local waiting = fast_load_inflight[cache_key]
@@ -1004,6 +1056,7 @@ end
 ---@field on_skeleton? fun(): nil
 ---@field on_shell? fun(obj: octo.LoadShell, cached: boolean): nil
 ---@field on_error? fun(): nil
+---@field auth_context? octo.AuthContext
 
 ---@param kind octo.NodeKind
 ---@param id? integer|string pull request, issue, or discussion number or release tag
@@ -1116,6 +1169,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       jq = ".",
       opts = {
         hostname = hostname,
+        auth_context = opts and opts.auth_context,
         cb = gh.create_callback {
           failure = fail,
           success = function(output)
@@ -1165,6 +1219,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
         jq = ".",
         opts = {
           hostname = hostname,
+          auth_context = opts and opts.auth_context,
           cb = gh.create_callback {
             failure = function()
               fallback()
@@ -1258,7 +1313,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       end
     end, function()
       fallback()
-    end)
+    end, opts and opts.auth_context)
 
     -- Give the fast paint request the first slot before starting full pagination.
     request_page(nil)
@@ -1408,6 +1463,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       jq = ".",
       opts = {
         hostname = hostname,
+        auth_context = opts and opts.auth_context,
         cb = gh.create_callback {
           failure = function()
             if expected_count ~= nil and page_index >= page_count then
@@ -1482,7 +1538,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
   end, function()
     fallback()
-  end)
+  end, opts and opts.auth_context)
 
   -- Two overlap pages can reveal the count while shell and details are in flight.
   for page_index = 1, 2 do
@@ -1499,6 +1555,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     jq = ".",
     opts = {
       hostname = hostname,
+      auth_context = opts and opts.auth_context,
       cb = gh.create_callback {
         failure = function()
           fallback()
@@ -1539,6 +1596,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       jq = ".",
       opts = {
         hostname = hostname,
+        auth_context = opts and opts.auth_context,
         cb = gh.create_callback {
           failure = function()
             fallback()
@@ -1566,6 +1624,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       jq = ".",
       opts = {
         hostname = hostname,
+        auth_context = opts and opts.auth_context,
         cb = gh.create_callback {
           failure = function()
             fallback()
@@ -1601,6 +1660,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       jq = ".",
       opts = {
         hostname = hostname,
+        auth_context = opts and opts.auth_context,
         cb = gh.create_callback {
           failure = function()
             fallback()

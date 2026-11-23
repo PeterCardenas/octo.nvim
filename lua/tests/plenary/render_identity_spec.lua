@@ -4,6 +4,7 @@ local config = require "octo.config"
 local octo = require "octo"
 local polling = require "octo.polling"
 local constants = require "octo.constants"
+local gh = require "octo.gh"
 local utils = require "octo.utils"
 
 local function make_comment(id, database_id)
@@ -55,12 +56,17 @@ describe("render identity across progressive updates", function()
   local original_load
   local original_track
   local original_cache_enabled
+  local original_auth_context
   local load_requests
 
   before_each(function()
     original_load = octo.load
     original_track = polling.track_buffer
     original_cache_enabled = config.values.persistent_cache.enabled
+    original_auth_context = gh.get_auth_context
+    gh.get_auth_context = function(hostname, callback)
+      callback { hostname = hostname, token = "test-token", fingerprint = "test-identity", env = {} }
+    end
     config.values.persistent_cache.enabled = false
     polling.track_buffer = function() end
     load_requests = nil
@@ -73,6 +79,7 @@ describe("render identity across progressive updates", function()
     octo.load = original_load
     polling.track_buffer = original_track
     config.values.persistent_cache.enabled = original_cache_enabled
+    gh.get_auth_context = original_auth_context
     if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end
