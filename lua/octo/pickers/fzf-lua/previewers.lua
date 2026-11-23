@@ -62,25 +62,23 @@ function M.issue(formatted_issues, title)
     local entry = formatted_issues[entry_str]
 
     local number = entry.value
-    require("octo").load_preview(entry.repo, entry.kind, number, nil, function(obj, is_cached)
-      if self.preview_bufnr == tmpbuf and vim.api.nvim_buf_is_valid(tmpbuf) then
-        local state = utils.get_displayed_state(entry.kind == "issue", obj.state, obj.stateReason)
-
-        if entry.kind == "discussion" then
-          writers.discussion_preview(obj, tmpbuf)
-        else
-          writers.write_title(tmpbuf, obj.title, 1)
-          writers.write_details(tmpbuf, obj, false, true) -- include_status = true for preview
-          writers.write_body(tmpbuf, obj)
-          writers.write_state(tmpbuf, state:upper(), number)
-          local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
-          writers.write_block(tmpbuf, { "", "" }, reactions_line)
-          writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
-          vim.bo[tmpbuf].filetype = "octo"
-        end
-        require("octo").set_cached_indicator(tmpbuf, is_cached)
+    local octo = require "octo"
+    local function render_preview(obj, is_cached)
+      if self.preview_bufnr ~= tmpbuf or not vim.api.nvim_buf_is_valid(tmpbuf) then
+        return
       end
-    end)
+      if entry.kind == "discussion" then
+        writers.discussion_preview(obj, tmpbuf)
+      else
+        writers.issue_preview(obj, tmpbuf)
+      end
+      octo.set_cached_indicator(tmpbuf, is_cached)
+    end
+    if entry.kind == "pull" or entry.kind == "pull_request" then
+      octo.load_pull_preview(entry.repo, number, nil, render_preview)
+    else
+      octo.load_preview(entry.repo, entry.kind, number, nil, render_preview)
+    end
 
     self:set_preview_buf(tmpbuf)
     self:update_border(entry.ordinal)
@@ -115,27 +113,26 @@ function M.search(search_type)
     local number = tonumber(match())
 
     local repo = owner .. "/" .. name
-    require("octo").load_preview(repo, kind, number, nil, function(obj, is_cached)
-      if self.preview_bufnr == tmpbuf and vim.api.nvim_buf_is_valid(tmpbuf) then
-        if kind == "discussion" then
-          writers.discussion_preview(obj, tmpbuf)
-        else
-          local state = utils.get_displayed_state(kind == "issue", obj.state, obj.stateReason)
-
-          writers.write_title(tmpbuf, obj.title, 1)
-          writers.write_details(tmpbuf, obj, false, true) -- include_status = true for preview
-          writers.write_body(tmpbuf, obj)
-          writers.write_state(tmpbuf, state:upper(), number)
-          local reactions_line = vim.api.nvim_buf_line_count(tmpbuf) - 1
-          writers.write_block(tmpbuf, { "", "" }, reactions_line)
-          writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
-        end
-        vim.b[tmpbuf].bufpath =
-          string.format("octo://%s/%s/%s/%s", owner, name, kind == "pull_request" and "pull" or kind, number)
-        vim.bo[tmpbuf].filetype = "octo"
-        require("octo").set_cached_indicator(tmpbuf, is_cached)
+    local octo = require "octo"
+    local function render_preview(obj, is_cached)
+      if self.preview_bufnr ~= tmpbuf or not vim.api.nvim_buf_is_valid(tmpbuf) then
+        return
       end
-    end)
+      if kind == "discussion" then
+        writers.discussion_preview(obj, tmpbuf)
+      else
+        writers.issue_preview(obj, tmpbuf)
+      end
+      vim.b[tmpbuf].bufpath =
+        string.format("octo://%s/%s/%s/%s", owner, name, kind == "pull_request" and "pull" or kind, number)
+      vim.bo[tmpbuf].filetype = "octo"
+      octo.set_cached_indicator(tmpbuf, is_cached)
+    end
+    if kind == "pull" or kind == "pull_request" then
+      octo.load_pull_preview(repo, number, nil, render_preview)
+    else
+      octo.load_preview(repo, kind, number, nil, render_preview)
+    end
 
     self:set_preview_buf(tmpbuf)
     -- self:update_border(number.." "..description)

@@ -4020,39 +4020,133 @@ function M.write_virtual_text(bufnr, ns, line, chunks)
   end
 end
 
----@param obj any
+local preview_namespace_ids = {
+  constants.OCTO_COMMENT_NS,
+  constants.OCTO_COMMENT_VT_NS,
+  constants.OCTO_THREAD_NS,
+  constants.OCTO_TITLE_NS,
+  constants.OCTO_TITLE_VT_NS,
+  constants.OCTO_REPO_VT_NS,
+  constants.OCTO_REACTIONS_VT_NS,
+  constants.OCTO_DETAILS_VT_NS,
+  constants.OCTO_EVENT_VT_NS,
+  constants.OCTO_EMPTY_MSG_VT_NS,
+}
+
+---@param bufnr integer
+---@param kind "issue"|"pull"|"discussion"
+---@param obj table
+---@param render fun(): nil
+local function render_preview(bufnr, kind, obj, render)
+  if not _G.octo_buffers then
+    _G.octo_buffers = {}
+  end
+  local previous_buffer = octo_buffers[bufnr]
+  local preview_buffer = {
+    number = obj.number,
+    kind = kind,
+    node = obj,
+    commentsMetadata = {},
+    threadsMetadata = {},
+    isIssue = function(self)
+      return self.kind == "issue"
+    end,
+    isPullRequest = function(self)
+      return self.kind == "pull"
+    end,
+    isDiscussion = function(self)
+      return self.kind == "discussion"
+    end,
+    issue = function(self)
+      return self.node
+    end,
+    pullRequest = function(self)
+      return self.node
+    end,
+    discussion = function(self)
+      return self.node
+    end,
+  }
+  folds.clear_pending(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+  for _, namespace in ipairs(preview_namespace_ids) do
+    vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+  end
+  pcall(vim.api.nvim_buf_call, bufnr, function()
+    vim.cmd "silent! normal! zE"
+  end)
+  octo_buffers[bufnr] = preview_buffer
+  local ok, err = pcall(render)
+  octo_buffers[bufnr] = previous_buffer
+  if not ok then
+    error(err)
+  end
+end
+
+---@param obj octo.Discussion
 ---@param bufnr integer
 function M.discussion_preview(obj, bufnr)
-  -- clear the buffer
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+  render_preview(bufnr, "discussion", obj, function()
+    local state = obj.closed and "CLOSED" or "OPEN"
+    M.write_title(bufnr, tostring(obj.title), 1)
+    M.write_state(bufnr, state, obj.number)
+    M.write_discussion_details(bufnr, obj)
+    M.write_body(bufnr, obj, 13)
 
-  local state = obj.closed and "CLOSED" or "OPEN"
-  M.write_title(bufnr, tostring(obj.title), 1)
-  M.write_state(bufnr, state, obj.number)
-  M.write_discussion_details(bufnr, obj)
-  M.write_body(bufnr, obj, 13)
+    if obj.answer and obj.answer ~= vim.NIL then
+      local line = vim.api.nvim_buf_line_count(bufnr) + 1
+      M.write_discussion_answer(bufnr, obj, line)
+    end
 
-  if obj.answer and obj.answer ~= vim.NIL then
-    local line = vim.api.nvim_buf_line_count(bufnr) + 1
-    M.write_discussion_answer(bufnr, obj, line)
-  end
+    local comments = {} ---@type octo.DiscussionComment[]
+    for _, comment in ipairs(obj.comments.nodes or {}) do
+      if type(comment) == "table" and comment ~= vim.NIL then
+        comments[#comments + 1] = comment
+      end
+    end
+    if config.values.timeline_order == "newest_first" then
+      local left, right = 1, #comments
+      while left < right do
+        comments[left], comments[right] = comments[right], comments[left]
+        left = left + 1
+        right = right - 1
+      end
+    end
+    for _, comment in ipairs(comments) do
+      M.write_comment(bufnr, comment, "DiscussionComment")
+      local replies = comment.replies
+      if type(replies) == "table" and type(replies.nodes) == "table" then
+        for _, reply in ipairs(replies.nodes) do
+          if type(reply) == "table" and reply ~= vim.NIL then
+            M.write_comment(bufnr, reply, "DiscussionComment")
+          end
+        end
+      end
+    end
 
-  vim.api.nvim_buf_call(bufnr, function()
-    vim.cmd "set filetype=octo"
+    vim.api.nvim_buf_call(bufnr, function()
+      vim.cmd "set filetype=octo"
+    end)
   end)
 end
 
----@param obj any
+---@param obj octo.Issue|octo.PullRequest
 ---@param bufnr integer
 function M.issue_preview(obj, bufnr)
-  M.write_title(bufnr, obj.title, 1)
-  M.write_details(bufnr, obj, nil, true)
-  M.write_body(bufnr, obj)
-  local reactions_line = vim.api.nvim_buf_line_count(bufnr) - 1
-  M.write_block(bufnr, { "", "" }, reactions_line)
-  M.write_reactions(bufnr, obj.reactionGroups, reactions_line)
-  vim.api.nvim_buf_call(bufnr, function()
-    vim.cmd "set filetype=octo"
+  local kind = obj.commits and "pull" or "issue"
+  render_preview(bufnr, kind, obj, function()
+    M.write_title(bufnr, obj.title, 1)
+    M.write_details(bufnr, obj, nil, true)
+    M.write_body(bufnr, obj)
+    local reactions_line = vim.api.nvim_buf_line_count(bufnr) - 1
+    M.write_block(bufnr, { "", "" }, reactions_line)
+    M.write_reactions(bufnr, obj.reactionGroups, reactions_line)
+    if obj.timelineItems and type(obj.timelineItems.nodes) == "table" then
+      M.write_timeline_items(bufnr, obj)
+    end
+    vim.api.nvim_buf_call(bufnr, function()
+      vim.cmd "set filetype=octo"
+    end)
   end)
 end
 

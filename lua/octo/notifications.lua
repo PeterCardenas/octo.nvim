@@ -101,10 +101,16 @@ function M.fetch_preview(owner, name, number, kind, on_success)
   end
 
   if kind == "issue" or kind == "pull_request" or kind == "discussion" then
-    local node_kind = kind == "pull_request" and "pull" or kind
-    require("octo").load_preview(owner .. "/" .. name, node_kind, number, nil, on_success, function(stderr)
+    local octo = require "octo"
+    local repo = owner .. "/" .. name
+    local on_error = function(stderr)
       utils.print_err(stderr)
-    end)
+    end
+    if kind == "pull_request" then
+      octo.load_pull_preview(repo, number, nil, on_success, on_error)
+    else
+      octo.load_preview(repo, kind, number, nil, on_success, on_error)
+    end
   end
 end
 

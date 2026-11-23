@@ -818,6 +818,49 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
   }
 end
 
+---Load a fast PR preview and attach its check summary when the lightweight query completes.
+---@param repo string
+---@param number integer|string
+---@param hostname string?
+---@param cb fun(obj: table, cached: boolean): nil
+---@param on_error? fun(stderr: string): nil
+function M.load_pull_preview(repo, number, hostname, cb, on_error)
+  local owner, name = utils.split_repo(repo)
+  local latest_object ---@type table?
+  local latest_is_cached = false
+  local checks_requested = false
+
+  M.load_preview(repo, "pull", number, hostname, function(obj, is_cached)
+    latest_object = obj
+    latest_is_cached = is_cached
+    cb(obj, is_cached)
+    if checks_requested then
+      return
+    end
+    checks_requested = true
+    gh.api.graphql {
+      query = queries.pull_request_checks,
+      fields = { owner = owner, name = name, number = tonumber(number) },
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function() end,
+          success = function(output)
+            local ok, response = pcall(vim.json.decode, output)
+            local pull_request = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
+            if type(pull_request) ~= "table" or latest_object == nil then
+              return
+            end
+            latest_object.statusCheckRollup = pull_request.statusCheckRollup
+            cb(latest_object, latest_is_cached)
+          end,
+        },
+      },
+    }
+  end, on_error)
+end
+
 ---@param repo string
 ---@class octo.LoadOpts
 ---@field on_skeleton? fun(): nil
