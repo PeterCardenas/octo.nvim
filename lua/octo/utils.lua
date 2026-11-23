@@ -1805,7 +1805,7 @@ query($owner: String!, $name: String!, $ref: String!) {
     end
   end
 
-  local function create_pull_request(obj, repo, head_repo)
+  local function create_pull_request(obj, repo, head_repo, hostname)
     if type(obj) ~= "table" or type(obj.number) ~= "number" then
       return false
     end
@@ -1816,17 +1816,19 @@ query($owner: String!, $name: String!, $ref: String!) {
       number = obj.number,
       id = obj.id,
       head_ref_name = obj.headRefName,
+      hostname = hostname,
     }
     PullRequest.create_with_merge_base(opts, obj, cb, on_early, on_error)
     return true
   end
 
-  local function load_pull_request_metadata(base_repo, number, id, head_repo)
+  local function load_pull_request_metadata(base_repo, number, id, head_repo, hostname)
     local owner, name = M.split_repo(base_repo)
     gh.api.graphql {
       query = metadata_query,
       F = { owner = owner, name = name, number = number },
       opts = {
+        hostname = hostname,
         cb = function(output, stderr, status)
           if (status ~= nil and status ~= 0) or (stderr and not M.is_blank(stderr)) or M.is_blank(output) then
             report_error("Failed to fetch pull request metadata: " .. (stderr or "empty response"))
@@ -1847,7 +1849,7 @@ query($owner: String!, $name: String!, $ref: String!) {
           obj.id = id or obj.id
           local head_repository_name = type(obj.headRepository) == "table" and obj.headRepository.nameWithOwner or nil
           local resolved_head_repo = head_repository_name or head_repo or base_repo
-          if not create_pull_request(obj, base_repo, resolved_head_repo) then
+          if not create_pull_request(obj, base_repo, resolved_head_repo, hostname) then
             report_error "Pull request metadata is incomplete"
           end
         end,
@@ -1908,7 +1910,7 @@ query($owner: String!, $name: String!, $ref: String!) {
     end
   end
 
-  local function fallback_to_gh_pr_view()
+  local function fallback_to_gh_pr_view(hostname)
     gh.run {
       args = { "pr", "view", "--json", "id,number,headRepositoryOwner,headRepository,isCrossRepository,url" },
       cb = function(output, stderr, status)
@@ -1949,7 +1951,7 @@ query($owner: String!, $name: String!, $ref: String!) {
           report_error "Failed to identify the repository for current branch PR"
           return
         end
-        load_pull_request_metadata(base_repo, pr.number, pr.id, nil)
+        load_pull_request_metadata(base_repo, pr.number, pr.id, nil, hostname)
       end,
     }
   end
@@ -1968,7 +1970,7 @@ query($owner: String!, $name: String!, $ref: String!) {
       hostname = head_repository.host,
       cb = function(output, stderr, status)
         if (status ~= nil and status ~= 0) or (stderr and not M.is_blank(stderr)) or M.is_blank(output) then
-          fallback_to_gh_pr_view()
+          fallback_to_gh_pr_view(head_repository.host)
           return
         end
         local ok, response = pcall(vim.json.decode, output)
@@ -1985,9 +1987,9 @@ query($owner: String!, $name: String!, $ref: String!) {
         if
           not pull_request
           or not base_repo
-          or not create_pull_request(pull_request, base_repo, head_repository.repo)
+          or not create_pull_request(pull_request, base_repo, head_repository.repo, head_repository.host)
         then
-          fallback_to_gh_pr_view()
+          fallback_to_gh_pr_view(head_repository.host)
         end
       end,
     },

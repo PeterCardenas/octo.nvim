@@ -2,6 +2,7 @@
 local reviews = require "octo.reviews"
 local Layout = require("octo.reviews.layout").Layout
 local Rev = require("octo.reviews.rev").Rev
+local gh = require "octo.gh"
 local utils = require "octo.utils"
 local eq = assert.are.same
 
@@ -10,6 +11,7 @@ describe("Reviews module:", function()
   local original_layout_new
   local original_in_pr_branch
   local original_utils_error
+  local original_graphql
 
   before_each(function()
     vim.cmd "tabonly!"
@@ -17,6 +19,7 @@ describe("Reviews module:", function()
     original_layout_new = Layout.new
     original_in_pr_branch = utils.in_pr_branch
     original_utils_error = utils.error
+    original_graphql = gh.api.graphql
     reviews.reviews = {}
   end)
 
@@ -26,6 +29,30 @@ describe("Reviews module:", function()
     Layout.new = original_layout_new
     utils.in_pr_branch = original_in_pr_branch
     utils.error = original_utils_error
+    gh.api.graphql = original_graphql
+  end)
+
+  it("carries the pull request host through review-thread queries", function()
+    local request
+    gh.api.graphql = function(opts)
+      request = opts
+      opts.opts.cb(
+        vim.json.encode { data = { repository = { pullRequest = { reviewThreads = { nodes = {} } } } } },
+        "",
+        0
+      )
+    end
+    local review = setmetatable({
+      pull_request = {
+        hostname = "github.enterprise.internal",
+        owner = "owner",
+        name = "repo",
+        number = 17,
+      },
+    }, { __index = reviews.Review })
+
+    review:populate_threads(function() end)
+    eq("github.enterprise.internal", request.opts.hostname)
   end)
 
   it("uses markdown for the review submission buffer", function()

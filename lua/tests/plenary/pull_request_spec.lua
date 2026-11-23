@@ -62,6 +62,25 @@ describe("PullRequest:get_changed_files", function()
     utils.commit_exists = original_commit_exists
   end)
 
+  it("carries the resolved host through changed-file requests", function()
+    local request
+    gh.api.get = function(opts)
+      request = opts
+      opts.opts.cb("[]", "")
+    end
+
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      hostname = "github.enterprise.internal",
+      changed_files_count = 0,
+    }, { __index = PullRequest })
+    pr:get_changed_files(function() end)
+
+    eq("github.enterprise.internal", request.opts.hostname)
+  end)
+
   it("requests metadata-sized pages concurrently and emits them in file order", function()
     local requests = {}
     gh.api.get = function(opts)

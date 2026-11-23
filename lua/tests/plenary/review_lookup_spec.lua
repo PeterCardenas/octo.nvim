@@ -40,11 +40,12 @@ describe("current branch review lookup", function()
     vim.fn.system = original_system
   end)
 
-  local function stub_head_remote(repo)
+  local function stub_head_remote(repo, hostname)
+    hostname = hostname or "github.com"
     utils.parse_git_remote = function()
-      local remotes = { origin = { repo = repo, host = "github.com" } }
+      local remotes = { origin = { repo = repo, host = hostname } }
       if remote_name ~= "" then
-        remotes[remote_name] = { repo = repo, host = "github.com" }
+        remotes[remote_name] = { repo = repo, host = hostname }
       end
       return remotes
     end
@@ -116,6 +117,41 @@ describe("current branch review lookup", function()
     eq({ phase = "ready" }, received_pr)
     assert(query_options.query:find("associatedPullRequests", 1, true))
     assert(not query_options.query:find("timelineItems", 1, true))
+  end)
+
+  it("carries the resolved enterprise host into the pull request model", function()
+    local hostname = "github.enterprise.internal"
+    stub_head_remote("owner/repo", hostname)
+    local request_options
+    local create_options
+    gh.api.graphql = function(opts)
+      request_options = opts
+      opts.opts.cb(
+        vim.json.encode {
+          data = {
+            repository = {
+              ref = {
+                associatedPullRequests = { nodes = { make_pr(12, "owner/repo", "owner/repo", branch) } },
+              },
+            },
+          },
+        },
+        "",
+        0
+      )
+    end
+    gh.run = function()
+      error "gh pr view should not run for an associated PR"
+    end
+    pull_request_model.create_with_merge_base = function(opts, _, callback)
+      create_options = opts
+      callback { id = opts.id }
+    end
+
+    utils.get_pull_request_for_current_branch(function() end)
+
+    eq(hostname, request_options.opts.hostname)
+    eq(hostname, create_options.hostname)
   end)
 
   it("falls back to gh pr view and preserves cross-repository base resolution", function()

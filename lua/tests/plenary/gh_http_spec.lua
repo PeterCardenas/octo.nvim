@@ -232,6 +232,50 @@ describe("GitHub HTTP transport", function()
     assert.are.same(4, #calls)
   end)
 
+  it("uses gh_env for curl and refreshes cached tokens when gh_env changes", function()
+    local hostname = "octo-proxy-env.example"
+    local received = 0
+    config.values.gh_env = { https_proxy = "http://proxy-one", OCTO_AUTH_CONTEXT = "one" }
+    local function request()
+      gh.api.graphql {
+        query = require("octo.gh.queries").discussion_fast,
+        fields = { owner = "octo", name = "repo", number = 7 },
+        jq = ".",
+        opts = {
+          hostname = hostname,
+          cb = function()
+            received = received + 1
+          end,
+        },
+      }
+    end
+
+    request()
+    complete_system(1, { code = 0, stdout = "token-one" })
+    assert.is_true(vim.wait(100, function()
+      return #calls == 2
+    end))
+    assert.are.same("http://proxy-one", calls[2].opts.env.https_proxy)
+    complete_system(2, { code = 0, stdout = '{"data":{}}' })
+
+    config.values.gh_env = { https_proxy = "http://proxy-two", OCTO_AUTH_CONTEXT = "two" }
+    request()
+    assert.is_true(vim.wait(100, function()
+      return #calls == 3
+    end))
+    assert.are.same("auth", calls[3].argv[2])
+    complete_system(3, { code = 0, stdout = "token-two" })
+    assert.is_true(vim.wait(100, function()
+      return #calls == 4
+    end))
+    assert.are.same("http://proxy-two", calls[4].opts.env.https_proxy)
+    assert.is_true(calls[4].opts.stdin:find("token-two", 1, true) ~= nil)
+    complete_system(4, { code = 0, stdout = '{"data":{}}' })
+    assert.is_true(vim.wait(100, function()
+      return received == 2
+    end))
+  end)
+
   it("falls back to gh when token retrieval fails", function()
     make_fallback_command()
     local loaded

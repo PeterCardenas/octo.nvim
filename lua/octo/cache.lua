@@ -26,9 +26,10 @@ end
 ---@param kind string
 ---@param number integer|string
 ---@param variant? string
+---@param authenticated_identity string
 ---@return string
-function M.key(host, repo, kind, number, variant)
-  local parts = { host, repo, kind, tostring(number) }
+function M.key(host, repo, kind, number, variant, authenticated_identity)
+  local parts = { host, vim.fn.sha256(host .. "\0" .. authenticated_identity), repo, kind, tostring(number) }
   if variant then
     parts[#parts + 1] = variant
   end

@@ -46,6 +46,7 @@ function Review:create(callback, on_error)
   gh.api.graphql {
     f = { query = query },
     opts = {
+      hostname = self.pull_request.hostname,
       cb = gh.create_callback {
         failure = function(message)
           if on_error then
@@ -71,6 +72,7 @@ function Review:populate_threads(callback, on_error)
     query = queries.review_threads,
     F = { owner = self.pull_request.owner, name = self.pull_request.name, number = self.pull_request.number },
     opts = {
+      hostname = self.pull_request.hostname,
       cb = gh.create_callback {
         failure = function(message)
           if on_error then
@@ -128,6 +130,7 @@ function Review:retrieve(callback, on_error)
     query = queries.pending_review_threads,
     F = { owner = self.pull_request.owner, name = self.pull_request.name, number = self.pull_request.number },
     opts = {
+      hostname = self.pull_request.hostname,
       cb = gh.create_callback {
         failure = function(message)
           if on_error then
@@ -427,6 +430,7 @@ function Review:discard(opts)
     query = queries.pending_review_threads,
     F = { owner = self.pull_request.owner, name = self.pull_request.name, number = self.pull_request.number },
     opts = {
+      hostname = self.pull_request.hostname,
       cb = function(output, stderr)
         if stderr and not utils.is_blank(stderr) then
           utils.error(stderr)
@@ -455,6 +459,7 @@ function Review:discard(opts)
             gh.api.graphql {
               f = { query = delete_query },
               opts = {
+                hostname = self.pull_request.hostname,
                 cb = gh.create_callback {
                   success = function()
                     self.id = default_id

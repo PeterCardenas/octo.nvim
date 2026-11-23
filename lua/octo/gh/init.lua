@@ -81,53 +81,71 @@ local function get_env()
   return env
 end
 
----@type table<string, string>
+---@param env table<string, string|integer>
+---@return string
+local function env_signature(env)
+  local keys = vim.tbl_keys(env)
+  table.sort(keys)
+  local values = {}
+  for _, key in ipairs(keys) do
+    values[#values + 1] = key .. "\0" .. tostring(env[key])
+  end
+  return vim.fn.sha256(table.concat(values, "\1"))
+end
+
+---@type table<string, { token: string, env_signature: string }>
 local auth_tokens = {}
----@type table<string, fun(token: string?)[]>
+---@type table<string, fun(token: string?, env: table<string, string|integer>)[]>
 local auth_token_waiters = {}
 
 ---@param hostname string
----@param callback fun(token: string?): nil
+---@param callback fun(token: string?, env: table<string, string|integer>): nil
 local function get_auth_token(hostname, callback)
+  local env = get_env()
+  local signature = env_signature(env)
   local cached = auth_tokens[hostname]
+  if cached and cached.env_signature ~= signature then
+    auth_tokens[hostname] = nil
+    cached = nil
+  end
   if cached then
-    callback(cached)
+    callback(cached.token, env)
     return
   end
 
-  local waiting = auth_token_waiters[hostname]
+  local waiter_key = hostname .. "\0" .. signature
+  local waiting = auth_token_waiters[waiter_key]
   if waiting then
     waiting[#waiting + 1] = callback
     return
   end
-  auth_token_waiters[hostname] = { callback }
+  auth_token_waiters[waiter_key] = { callback }
+
+  local function finish(token)
+    if token and env_signature(get_env()) == signature then
+      auth_tokens[hostname] = { token = token, env_signature = signature }
+    end
+    local callbacks = auth_token_waiters[waiter_key]
+    auth_token_waiters[waiter_key] = nil
+    for _, waiter in ipairs(callbacks or {}) do
+      waiter(token, env)
+    end
+  end
 
   local ok = pcall(
     vim.system,
     { config.values.gh_cmd, "auth", "token", "--hostname", hostname },
-    { env = get_env(), text = true },
+    { env = env, text = true },
     vim.schedule_wrap(function(result)
       local token = result.code == 0 and vim.trim(result.stdout or "") or nil
       if token and (token == "" or token:find "[\r\n]") then
         token = nil
       end
-      if token then
-        auth_tokens[hostname] = token
-      end
-
-      local callbacks = auth_token_waiters[hostname]
-      auth_token_waiters[hostname] = nil
-      for _, waiter in ipairs(callbacks or {}) do
-        waiter(token)
-      end
+      finish(token)
     end)
   )
   if not ok then
-    local callbacks = auth_token_waiters[hostname]
-    auth_token_waiters[hostname] = nil
-    for _, waiter in ipairs(callbacks or {}) do
-      waiter(nil)
-    end
+    finish(nil)
   end
 end
 
@@ -155,6 +173,27 @@ function M.get_user_name(remote_hostname)
   else
     require("octo.utils").error(stderr)
   end
+end
+
+---Return the authenticated login for cache partitioning without exposing it in the cache key.
+---@param hostname string
+---@return string?
+function M.get_cache_identity(hostname)
+  if not Job or require("octo.utils").is_blank(hostname) then
+    return
+  end
+
+  ---@diagnostic disable-next-line: missing-fields
+  local job = Job:new {
+    enable_recording = true,
+    command = config.values.gh_cmd,
+    args = { "auth", "status", "--hostname", hostname },
+    env = get_env(),
+  }
+  job:sync(config.values.timeout)
+  local stderr = table.concat(job:stderr_result(), "\n")
+  local stdout = table.concat(job:result(), "\n")
+  return parse_user_name(stdout, stderr)
 end
 
 local scopes = {} ---@type string[]
@@ -581,7 +620,7 @@ local function request_with_curl(
     return
   end
 
-  get_auth_token(hostname, function(token)
+  get_auth_token(hostname, function(token, env)
     if not token then
       fallback()
       return
@@ -615,7 +654,7 @@ local function request_with_curl(
     local launched = pcall(
       vim.system,
       args,
-      { stdin = table.concat(config_lines, "\n"), env = get_env(), text = true },
+      { stdin = table.concat(config_lines, "\n"), env = env, text = true },
       vim.schedule_wrap(function(result)
         local output = result.stdout or ""
         local auth_failure = (result.stderr or ""):find("401", 1, true) ~= nil or is_bad_credentials(output)

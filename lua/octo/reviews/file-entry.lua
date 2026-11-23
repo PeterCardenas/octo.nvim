@@ -146,6 +146,7 @@ function FileEntry:toggle_viewed()
     query = query,
     F = { path = self.path, pullRequestId = self.pull_request.id },
     opts = {
+      hostname = self.pull_request.hostname,
       cb = gh.create_callback {
         failure = utils.print_err,
         success = function()

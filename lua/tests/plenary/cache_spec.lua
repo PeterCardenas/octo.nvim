@@ -5,7 +5,7 @@ local original_enabled
 local test_keys = {}
 
 local function unique_key()
-  local key = cache.key("cache-test", "owner/repo", "issue", vim.uv.hrtime())
+  local key = cache.key("cache-test", "owner/repo", "issue", vim.uv.hrtime(), nil, "cache-test-user")
   test_keys[#test_keys + 1] = key
   return key
 end
@@ -49,6 +49,15 @@ describe("Persistent stale-while-revalidate cache", function()
     for _, key in ipairs(test_keys) do
       vim.uv.fs_unlink(entry_path(key), function() end)
     end
+  end)
+
+  it("isolates cache entries by a non-reversible authenticated identity hash", function()
+    local alice_key = cache.key("github.com", "owner/repo", "issue", 17, nil, "alice")
+    local bob_key = cache.key("github.com", "owner/repo", "issue", 17, nil, "bob")
+
+    assert.are_not.same(alice_key, bob_key)
+    assert.is_nil(alice_key:find("alice", 1, true))
+    assert.is_nil(bob_key:find("bob", 1, true))
   end)
 
   it("ignores and removes corrupt cache files", function()

@@ -9,6 +9,7 @@ describe("Octo module:", function()
   local original_cache_enabled
   local original_get
   local original_graphql
+  local original_cache_identity
   local original_load_preview
   local original_load
   local original_create_buffer
@@ -27,6 +28,10 @@ describe("Octo module:", function()
     config.values.persistent_cache.enabled = false
     original_get = gh.api.get
     original_graphql = gh.api.graphql
+    original_cache_identity = gh.get_cache_identity
+    gh.get_cache_identity = function()
+      return "octo-test-user"
+    end
     original_load_preview = octo.load_preview
     original_load = octo.load
     original_create_buffer = octo.create_buffer
@@ -39,6 +44,7 @@ describe("Octo module:", function()
     config.values.persistent_cache.enabled = original_cache_enabled
     gh.api.get = original_get
     gh.api.graphql = original_graphql
+    gh.get_cache_identity = original_cache_identity
     octo.load_preview = original_load_preview
     octo.load = original_load
     octo.create_buffer = original_create_buffer
@@ -139,8 +145,9 @@ describe("Octo module:", function()
     issue.timelineItems = issue.timelineItems or { nodes = {} }
     issue._loadState = "complete"
     config.values.persistent_cache.enabled = true
-    local key = persistent_cache.key("github.com", "owner/repo", "issue", 17)
-    local rendered_lines_key = persistent_cache.key("github.com", "owner/repo", "issue", 17, "rendered")
+    local key = persistent_cache.key("github.com", "owner/repo", "issue", 17, nil, "octo-test-user")
+    local rendered_lines_key =
+      persistent_cache.key("github.com", "owner/repo", "issue", 17, "rendered", "octo-test-user")
     local complete = 0
     persistent_cache.write(key, { object = issue }, function()
       complete = complete + 1
@@ -1050,7 +1057,7 @@ describe("Octo module:", function()
 
   it("rejects incomplete full-object cache payloads before rendering", function()
     config.values.persistent_cache.enabled = true
-    local cache_key = persistent_cache.key("github.com", "owner/repo", "issue", 73)
+    local cache_key = persistent_cache.key("github.com", "owner/repo", "issue", 73, nil, "octo-test-user")
     local written = false
     persistent_cache.write(cache_key, { object = { id = "incomplete" } }, function()
       written = true

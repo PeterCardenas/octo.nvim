@@ -424,7 +424,10 @@ function M.load_buffer(opts)
   local cache_key ---@type string?
   if config.values.persistent_cache.enabled and cacheable_kind then
     local host = resolve_hostname(hostname)
-    cache_key = persistent_cache.key(host, repo, kind, id)
+    local identity = require("octo.gh").get_cache_identity(host)
+    if identity then
+      cache_key = persistent_cache.key(host, repo, kind, id, nil, identity)
+    end
 
     ---@param object table
     ---@return boolean
@@ -520,7 +523,9 @@ function M.load_buffer(opts)
       end)
     end
 
-    persistent_cache.read(cache_key, render_cached_object)
+    if cache_key then
+      persistent_cache.read(cache_key, render_cached_object)
+    end
   end
 
   if kind == "pull_diff" then
@@ -817,8 +822,13 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
   local normalized_kind = kind == "pull_request" and "pull" or kind
   local owner, name = utils.split_repo(repo)
   local host = resolve_hostname(hostname)
-  local cache_key = table.concat({ host, repo, normalized_kind, tostring(id) }, "|")
-  local preview_key = persistent_cache.key(host, repo, normalized_kind, id, "preview")
+  local identity = require("octo.gh").get_cache_identity(host)
+  local identity_key = identity and vim.fn.sha256(host .. "\0" .. identity) or tostring(vim.loop.hrtime())
+  local cache_key = table.concat({ host, identity_key, repo, normalized_kind, tostring(id) }, "|")
+  local preview_key = config.values.persistent_cache.enabled
+      and identity
+      and persistent_cache.key(host, repo, normalized_kind, id, "preview", identity)
+    or nil
   local query, fields
   if normalized_kind == "pull" then
     query = graphql("pull_request_fast_query", _G.octo_pv2_fragment)
@@ -869,13 +879,15 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
     fast_load_inflight[cache_key] = callbacks
   end
 
-  persistent_cache.read(preview_key, function(cached_obj)
-    if type(cached_obj) == "table" then
-      for _, callback in ipairs(callbacks) do
-        deliver_cached(callback, cached_obj)
+  if preview_key then
+    persistent_cache.read(preview_key, function(cached_obj)
+      if type(cached_obj) == "table" then
+        for _, callback in ipairs(callbacks) do
+          deliver_cached(callback, cached_obj)
+        end
       end
-    end
-  end)
+    end)
+  end
 
   if #callbacks > 1 then
     return
@@ -886,7 +898,7 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
     fields = fields,
     jq = ".",
     opts = {
-      hostname = hostname,
+      hostname = host,
       cb = gh.create_callback {
         failure = function(stderr)
           local waiting = fast_load_inflight[cache_key]
@@ -924,7 +936,9 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
             expires_at = vim.loop.hrtime() / 1000000000 + 30,
             obj = vim.deepcopy(preview_obj),
           }
-          persistent_cache.write(preview_key, preview_obj)
+          if preview_key then
+            persistent_cache.write(preview_key, preview_obj)
+          end
           local waiting = fast_load_inflight[cache_key]
           fast_load_inflight[cache_key] = nil
           for _, callback in ipairs(waiting or {}) do

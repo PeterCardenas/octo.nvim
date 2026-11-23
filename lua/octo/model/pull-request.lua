@@ -12,6 +12,7 @@ local M = {}
 ---@field repo string
 ---@field head_repo string
 ---@field head_ref_name string
+---@field hostname string?
 ---@field owner string
 ---@field name string
 ---@field number integer
@@ -34,6 +35,7 @@ PullRequest.__index = PullRequest
 ---@field repo string
 ---@field head_repo string
 ---@field head_ref_name string
+---@field hostname? string
 ---@field number integer
 ---@field id string
 ---@field left Rev
@@ -73,6 +75,7 @@ function PullRequest:new(opts)
     repo = opts.repo,
     head_repo = opts.head_repo,
     head_ref_name = opts.head_ref_name,
+    hostname = opts.hostname,
     number = opts.number,
     owner = "",
     name = "",
@@ -123,6 +126,7 @@ function PullRequest:get_diff(pr)
     format = { repo = pr.repo, number = pr.number },
     paginate = true,
     opts = {
+      hostname = pr.hostname,
       headers = { headers.diff },
       cb = gh.create_callback {
         success = function(diff)
@@ -161,6 +165,7 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
         "/repos/{repo}/pulls/{number}/files?per_page={per_page}&page={page}",
         format = { repo = self.repo, number = self.number, per_page = 100, page = page },
         opts = {
+          hostname = self.hostname,
           cb = gh.create_callback {
             failure = function(message)
               failed = true
@@ -246,6 +251,7 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
       "/repos/{repo}/pulls/{number}/files?per_page={per_page}&page={page}",
       format = { repo = self.repo, number = self.number, per_page = 100, page = page },
       opts = {
+        hostname = self.hostname,
         cb = gh.create_callback {
           failure = function(message)
             failed = true
@@ -310,6 +316,7 @@ function PullRequest:get_commit_changed_files(rev, callback)
       "/repos/{repo}/commits/{commit_sha}?per_page=100&page={page}",
       format = { repo = self.repo, commit_sha = rev.commit, page = page },
       opts = {
+        hostname = self.hostname,
         cb = gh.create_callback {
           success = function(output)
             ---@type {
@@ -356,7 +363,7 @@ function PullRequest:get_commit_changed_files(rev, callback)
 end
 
 ---Helper function to create a PullRequest with merge base
----@param opts { repo: string, head_repo: string, head_ref_name: string, number: integer, id: string, bufnr?: integer }
+---@param opts { repo: string, head_repo: string, head_ref_name: string, hostname?: string, number: integer, id: string, bufnr?: integer }
 ---@param obj octo.PullRequest
 ---@param cb fun(pull_request: PullRequest)
 ---@param on_early? fun(pull_request: PullRequest): nil
@@ -387,6 +394,7 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
       files = obj.files.nodes,
       changed_files_count = obj.changedFiles,
       left_commit_known = left_commit_known,
+      hostname = opts.hostname,
     })
     return PullRequest:new(pr_opts)
   end
@@ -452,6 +460,7 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
     endpoint,
     jq = ".merge_base_commit.sha",
     opts = {
+      hostname = opts.hostname,
       cb = callback,
     },
   }
