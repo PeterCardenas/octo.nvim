@@ -94,6 +94,15 @@ function OctoBuffer:new(opts)
   end
 
   setmetatable(this, self)
+  local previous_buffer = octo_buffers[this.bufnr]
+  if
+    previous_buffer
+    and type(previous_buffer.node) == "table"
+    and previous_buffer.node._loadState == "shell"
+    and type(previous_buffer.fail_completion_waiters) == "function"
+  then
+    previous_buffer:fail_completion_waiters "Octo buffer shell was replaced by a reload"
+  end
   octo_buffers[this.bufnr] = this
   return this
 end
@@ -1406,17 +1415,26 @@ end
 ---Gets the reactions groups at cursor (if any)
 function OctoBuffer:get_reactions_at_cursor()
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local body_reaction_line = self.bodyMetadata.reactionLine
-  if body_reaction_line and body_reaction_line == cursor[1] then
+  local function get_live_reaction_line(metadata)
+    if not metadata or not metadata.extmark or not metadata.reactionLine then
+      return
+    end
+    local mark =
+      vim.api.nvim_buf_get_extmark_by_id(self.bufnr, constants.OCTO_COMMENT_NS, metadata.extmark, { details = true })
+    if not mark[1] then
+      return
+    end
+    local _, end_line = utils.get_extmark_region(self.bufnr, mark)
+    return end_line and end_line + 3 or nil
+  end
+
+  if get_live_reaction_line(self.bodyMetadata) == cursor[1] then
     return self.node.id
   end
 
-  local comments_metadata = self.commentsMetadata
-  if comments_metadata then
-    for _, c in pairs(comments_metadata) do
-      if c.reactionLine and c.reactionLine == cursor[1] then
-        return c.id
-      end
+  for _, comment in ipairs(self.commentsMetadata) do
+    if get_live_reaction_line(comment) == cursor[1] then
+      return comment.id
     end
   end
 end
@@ -1446,7 +1464,7 @@ function OctoBuffer:update_reactions_for_target(subject_id, reaction_groups, rea
   end
   metadata.reactionGroups = reaction_groups
   if utils.count_reactions(reaction_groups) > 0 then
-    metadata.reactionLine = metadata.reactionLine or reaction_line
+    metadata.reactionLine = reaction_line
   else
     metadata.reactionLine = nil
   end

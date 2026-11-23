@@ -90,12 +90,10 @@ local function ensure_cache_directory(callback)
   local octo_directory = vim.fs.dirname(CACHE_DIRECTORY)
   ensure_directory(octo_directory, function(parent_ready)
     if not parent_ready then
-      callback()
+      callback(false)
       return
     end
-    ensure_directory(CACHE_DIRECTORY, function()
-      callback()
-    end)
+    ensure_directory(CACHE_DIRECTORY, callback)
   end)
 end
 
@@ -276,7 +274,13 @@ local function write_entry(queued)
     return
   end
 
-  ensure_cache_directory(function()
+  ensure_cache_directory(function(directory_ready)
+    if not directory_ready then
+      if queued.callback then
+        queued.callback()
+      end
+      return
+    end
     next_temp_id = next_temp_id + 1
     local target = queued.path
     local temporary = target

@@ -49,6 +49,24 @@ describe("OctoBuffer:clear()", function()
     assert.are.same("github.enterprise.internal", received_opts.hostname)
   end)
 
+  it("drains shell waiters when a reload replaces the shell model", function()
+    local first_model = OctoBuffer:new { bufnr = bufnr, node = { _loadState = "shell" } }
+    local complete_calls = 0
+    local failures = {}
+    first_model:when_complete(function()
+      complete_calls = complete_calls + 1
+    end, function(message)
+      failures[#failures + 1] = message
+    end)
+
+    local replacement = OctoBuffer:new { bufnr = bufnr, node = { _loadState = "shell" } }
+
+    assert.are.same(0, complete_calls)
+    assert.are.same(1, #failures)
+    assert.is_truthy(failures[1]:find("replaced", 1, true))
+    assert.are.same(replacement, _G.octo_buffers[bufnr])
+  end)
+
   it("skips native completion metadata requests when disabled", function()
     local config = require "octo.config"
     local gh = require "octo.gh"

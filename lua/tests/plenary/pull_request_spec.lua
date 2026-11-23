@@ -441,6 +441,32 @@ describe("PullRequest:get_changed_files", function()
     eq("Changed file count changed while loading (expected 2, received 1)", error_message)
   end)
 
+  it("accepts a successful merge-base compare with informational stderr", function()
+    gh.api.get = function(opts)
+      opts.opts.cb("merge-base-sha", "hint: using cached credentials", 0)
+    end
+    local ready_pull_request
+
+    pull_request_model.create_with_merge_base({
+      repo = "owner/repo",
+      head_repo = "owner/repo",
+      head_ref_name = "topic",
+      number = 1,
+      id = "pr-node",
+    }, {
+      baseRefOid = "base-sha",
+      headRefOid = "head-sha",
+      baseRefName = "main",
+      headRefName = "topic",
+      changedFiles = 0,
+      files = { nodes = {} },
+    }, function(pr)
+      ready_pull_request = pr
+    end)
+
+    eq("merge-base-sha", ready_pull_request.left.commit)
+  end)
+
   it("compares cross-fork PR revisions by immutable OIDs", function()
     local original_commit_exists = utils.commit_exists
     local original_get = gh.api.get

@@ -381,6 +381,46 @@ describe("Reviews module:", function()
     eq(0, mutation_requests)
   end)
 
+  it("ignores a start-review success after its originating layout closes", function()
+    local flow = make_review_flow()
+    local mutation_request
+    gh.api.graphql = function(opts)
+      mutation_request = opts
+    end
+
+    flow.review:start()
+    local layout = flow.get_layout()
+    flow.get_thread_callback() {
+      data = {
+        repository = {
+          pullRequest = {
+            baseRefOid = "base",
+            headRefOid = "head",
+            reviewThreads = { nodes = {} },
+          },
+        },
+      },
+    }
+    layout:close()
+    mutation_request.opts.cb(
+      vim.json.encode {
+        data = {
+          addPullRequestReview = {
+            pullRequestReview = {
+              id = "new-review",
+              pullRequest = { reviewThreads = { nodes = {} } },
+            },
+          },
+        },
+      },
+      nil,
+      0
+    )
+
+    eq(-1, flow.review.id)
+    eq({}, flow.review.threads)
+  end)
+
   it("does not start a review when file loading fails before thread verification returns", function()
     local flow = make_review_flow()
     local mutation_requests = 0

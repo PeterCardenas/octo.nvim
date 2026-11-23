@@ -197,6 +197,130 @@ describe("render identity across progressive updates", function()
     assert.is_true(vim.tbl_contains(lines, "Body for target"))
   end)
 
+  it("keeps an anchor missed by a cached complete object until live data arrives", function()
+    octo.load = function(_, _, _, _, callback, opts)
+      load_requests = { callback = callback, opts = opts }
+    end
+    vim.b[bufnr].octo_pending_anchor = 303
+    octo.load_buffer { bufnr = bufnr }
+    octo.create_buffer(
+      "discussion",
+      make_discussion({ make_comment("cached-comment", 101) }, 2, "complete"),
+      "owner/repo",
+      false
+    )
+
+    assert.is_true(vim.wait(1000, function()
+      return _G.octo_buffers[bufnr] ~= nil
+    end))
+    assert.are.same(303, vim.b[bufnr].octo_pending_anchor)
+
+    load_requests.callback(make_discussion({ make_comment("live-anchor", 303) }, 2, "complete"))
+
+    assert.is_true(vim.wait(1000, function()
+      return vim.b[bufnr].octo_pending_anchor == nil
+    end))
+    assert.are.same("live-anchor", _G.octo_buffers[bufnr]:get_comment_at_cursor().id)
+  end)
+
+  it("navigates a URL anchor only in a window displaying the target buffer", function()
+    vim.b[bufnr].octo_pending_anchor = 303
+    local target_win = vim.api.nvim_get_current_win()
+    vim.cmd "vsplit"
+    local other_win = vim.api.nvim_get_current_win()
+    local other_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(other_win, other_buf)
+    vim.api.nvim_win_set_cursor(other_win, { 1, 0 })
+
+    vim.api.nvim_win_call(target_win, function()
+      octo.create_buffer(
+        "discussion",
+        make_discussion({ make_comment("live-anchor", 303) }, 1, "complete"),
+        "owner/repo",
+        false
+      )
+    end)
+
+    assert.is_true(vim.wait(1000, function()
+      return vim.b[bufnr].octo_pending_anchor == nil
+    end))
+    local anchor_comment = vim.api.nvim_win_call(target_win, function()
+      return _G.octo_buffers[bufnr]:get_comment_at_cursor()
+    end)
+    assert.are.same("live-anchor", anchor_comment.id)
+    assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(other_win))
+
+    vim.api.nvim_win_close(other_win, true)
+    vim.api.nvim_buf_delete(other_buf, { force = true })
+  end)
+
+  it("does not treat a reaction-only line insertion as a local edit before live completion", function()
+    local loads = {}
+    octo.load = function(_, _, _, _, callback, opts)
+      loads[#loads + 1] = { callback = callback, opts = opts }
+    end
+    local requests = {}
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+    local empty_reaction = {
+      { content = "HEART", viewerHasReacted = false, users = { totalCount = 0, nodes = {} } },
+    }
+    local reacted = {
+      { content = "HEART", viewerHasReacted = true, users = { totalCount = 1, nodes = {} } },
+    }
+    local target = make_comment("target", 303, empty_reaction)
+    local local_changes = 0
+
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_local_changes = function()
+        local_changes = local_changes + 1
+      end,
+    }
+    loads[1].opts.on_shell(make_discussion({ target }, 1, "shell"), false)
+    local buffer = _G.octo_buffers[bufnr]
+    local mark =
+      vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, buffer.commentsMetadata[1].extmark, {
+        details = true,
+      })
+    local body_start = utils.get_extmark_region(bufnr, mark)
+    vim.api.nvim_win_set_cursor(0, { body_start + 1, 0 })
+    commands.reaction_action "heart"
+    requests[1].opts.cb(vim.json.encode { data = { addReaction = { subject = { reactionGroups = reacted } } } }, nil)
+
+    assert.is_false(vim.bo[bufnr].modified)
+    loads[1].callback(make_discussion({ make_comment("target", 303, reacted) }, 1, "complete"))
+
+    assert.are.same(0, local_changes)
+    assert.are.same("complete", _G.octo_buffers[bufnr].node._loadState)
+  end)
+
+  it("resolves reaction cursor targeting from live marks after rows shift", function()
+    local reacted = {
+      { content = "HEART", viewerHasReacted = true, users = { totalCount = 1, nodes = {} } },
+    }
+    octo.create_buffer(
+      "discussion",
+      make_discussion({ make_comment("target", 303, reacted) }, 1, "complete"),
+      "owner/repo",
+      false
+    )
+    local buffer = _G.octo_buffers[bufnr]
+    local metadata = buffer.commentsMetadata[1]
+    local stale_reaction_line = metadata.reactionLine
+    vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { "inserted row one", "inserted row two" })
+    local mark =
+      vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, metadata.extmark, { details = true })
+    local _, end_line = utils.get_extmark_region(bufnr, mark)
+    local live_reaction_line = end_line + 3
+    assert.are_not.same(stale_reaction_line, live_reaction_line)
+
+    vim.api.nvim_win_set_cursor(0, { live_reaction_line, 0 })
+
+    assert.are.same("target", buffer:get_reactions_at_cursor())
+  end)
+
   it("restores the cursor to the same comment after new items shift its row", function()
     octo.load = function(_, _, _, _, callback, opts)
       load_requests = { callback = callback, opts = opts }

@@ -7,6 +7,7 @@ describe("Octo module:", function()
   local config
   local persistent_cache
   local original_cache_enabled
+  local original_enable_native_completion
   local original_get
   local original_graphql
   local original_auth_context
@@ -38,6 +39,7 @@ describe("Octo module:", function()
     original_system = vim.system
     original_system_fn = vim.fn.system
     original_cache_enabled = config.values.persistent_cache.enabled
+    original_enable_native_completion = config.values.enable_native_completion
     config.values.persistent_cache.enabled = false
     original_get = gh.api.get
     original_graphql = gh.api.graphql
@@ -63,6 +65,7 @@ describe("Octo module:", function()
 
   after_each(function()
     config.values.persistent_cache.enabled = original_cache_enabled
+    config.values.enable_native_completion = original_enable_native_completion
     persistent_cache.key = original_cache_key
     persistent_cache.read = original_cache_read
     persistent_cache.write = original_cache_write
@@ -892,6 +895,34 @@ describe("Octo module:", function()
     assert.are.same(10, #loaded.timelineItems.nodes)
   end)
 
+  it("defers invalid successful speculative page responses until the page count is known", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local fallback_used = false
+    local loaded
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+      if opts.paginate then
+        fallback_used = true
+      end
+    end
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end)
+    find_skip_request(requests, 198).opts.cb('{"data":{"repository":null}}', nil, 0)
+    assert.is_false(fallback_used, "invalid speculative pages are not known to be required yet")
+    deliver_shell { timelineItems = { filteredCount = 10, nodes = {} } }
+    local nodes = {}
+    for index = 1, 10 do
+      nodes[index] = { id = "item-" .. index }
+    end
+    find_issue_details_request(requests).opts.cb(issue_response(10, nodes), nil, 0)
+
+    assert.is_false(fallback_used)
+    assert.is_table(loaded)
+    assert.are.same(10, #loaded.timelineItems.nodes)
+  end)
+
   it("does not treat a cached shell count as authoritative during revalidation", function()
     local requests, deliver_shell = setup_issue_load_requests()
     local fallback_used = false
@@ -1171,6 +1202,7 @@ describe("Octo module:", function()
     end, function()
       errors = errors + 1
     end)
+    assert.is_nil(diff_request, "the initial PR revision must be established before reading the diff")
     assert.are.same(1, #fingerprint_requests)
     fingerprint_requests[1].opts.cb(
       vim.json.encode {
@@ -1192,21 +1224,34 @@ describe("Octo module:", function()
     assert.are.same(1, errors)
   end)
 
-  it("starts pull diff fingerprint and REST requests concurrently", function()
+  it("establishes the PR fingerprint before requesting its diff", function()
     local requests = {}
+    local diff_request
+    local fingerprint_request
     gh.api.get = function(opts)
       requests[#requests + 1] = "diff"
+      diff_request = opts
       assert.are.same("/repos/{repo}/pulls/{number}", opts[1])
     end
     gh.api.graphql = function(opts)
       requests[#requests + 1] = "fingerprint"
+      fingerprint_request = opts
       assert.is_string(opts.query)
       assert.matches("baseRefOid", opts.query)
     end
 
     octo.load_pull_diff("owner/repo", 7, nil, function() end)
 
-    assert.are.same({ "diff", "fingerprint" }, requests)
+    assert.are.same({ "fingerprint" }, requests)
+    fingerprint_request.opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { baseRefOid = "base", headRefOid = "head" } } },
+      },
+      nil,
+      0
+    )
+    assert.are.same({ "fingerprint", "diff", "fingerprint" }, requests)
+    assert.is_table(diff_request)
   end)
 
   it("keeps a cached marker and surfaces an error when revalidation fails", function()
@@ -1333,15 +1378,23 @@ describe("Octo module:", function()
     assert.is_nil(vim.b[bufnr].octo_cached)
   end)
 
-  it("contains cached render failures and keeps live completion available", function()
+  it("rolls back a partial real cache render so live completion can paint", function()
     config.values.persistent_cache.enabled = true
+    config.values.enable_native_completion = false
     local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
     local cached = {
       id = "cached",
       number = 17,
       title = "Cached issue",
       body = "",
+      url = "https://github.com/owner/repo/issues/17",
+      author = { login = "author" },
+      state = "OPEN",
+      createdAt = "2026-01-01T00:00:00Z",
+      updatedAt = "2026-01-01T00:00:00Z",
+      assignees = {},
       labels = { nodes = {} },
+      reactionGroups = {},
       timelineItems = { nodes = {} },
       _loadState = "complete",
     }
@@ -1350,33 +1403,38 @@ describe("Octo module:", function()
     end
     local requests = install_async_load_stubs()
     local render_attempts = 0
-    octo.create_buffer = function()
+    octo.create_buffer = function(...)
       render_attempts = render_attempts + 1
-      error "corrupt cached object reached renderer"
+      return original_create_buffer(...)
     end
 
     octo.load_buffer { bufnr = bufnr }
-    assert.is_true(vim.wait(100, function()
+    assert.is_true(vim.wait(1000, function()
       return render_attempts == 1
     end))
+    assert.is_nil(_G.octo_buffers[bufnr])
     assert.is_nil(vim.b[bufnr].octo_cached)
-
-    octo.create_buffer = function(_, obj)
-      _G.octo_buffers[bufnr] = {
-        node = obj,
-        commentsMetadata = {},
-        threadsMetadata = {},
-        has_local_changes = function()
-          return false
-        end,
-      }
+    assert.is_true(vim.b[bufnr].octo_loading_skeleton)
+    assert.is_false(vim.bo[bufnr].modified)
+    assert.is_false(vim.bo[bufnr].modifiable)
+    assert.are.same({ "Loading issue #17 from owner/repo…" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    for _, namespace in pairs(vim.api.nvim_get_namespaces()) do
+      assert.are.same({}, vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, {}))
     end
+
     requests[1].callback {
       id = "fresh",
       number = 17,
       title = "Fresh issue",
       body = "",
+      url = "https://github.com/owner/repo/issues/17",
+      author = { login = "author" },
+      state = "OPEN",
+      createdAt = "2026-01-01T00:00:00Z",
+      updatedAt = "2026-01-01T00:00:00Z",
+      assignees = { nodes = {} },
       labels = { nodes = {} },
+      reactionGroups = {},
       timelineItems = { nodes = {} },
     }
 

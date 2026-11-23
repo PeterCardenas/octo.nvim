@@ -128,7 +128,15 @@ describe("picker preview rendering", function()
     _G.octo_pv2_fragment = ""
     assert.is_nil(queries.pull_request_fast:find("reviewThreads(last: 0)", 1, true))
 
-    local shell = { id = "pull-id", number = 42, title = "Pull request", body = "", commits = { totalCount = 1 } }
+    local shell = {
+      id = "pull-id",
+      number = 42,
+      title = "Pull request",
+      body = "",
+      baseRefOid = "base-a",
+      headRefOid = "head-a",
+      commits = { totalCount = 1 },
+    }
     octo.load_preview = function(_, _, _, _, callback)
       callback(vim.deepcopy(shell), false)
     end
@@ -150,6 +158,8 @@ describe("picker preview rendering", function()
         data = {
           repository = {
             pullRequest = {
+              baseRefOid = "base-a",
+              headRefOid = "head-a",
               statusCheckRollup = { state = "SUCCESS", contexts = { nodes = {} } },
             },
           },
@@ -194,20 +204,76 @@ describe("picker preview rendering", function()
     assert.are.same(2, #check_requests)
     check_requests[1].opts.cb(
       vim.json.encode {
-        data = { repository = { pullRequest = { statusCheckRollup = { state = "OLD" } } } },
+        data = {
+          repository = {
+            pullRequest = {
+              baseRefOid = "base-a",
+              headRefOid = "head-a",
+              statusCheckRollup = { state = "OLD" },
+            },
+          },
+        },
       },
       nil
     )
     assert.is_nil(fresh.statusCheckRollup)
     check_requests[2].opts.cb(
       vim.json.encode {
-        data = { repository = { pullRequest = { statusCheckRollup = { state = "FRESH" } } } },
+        data = {
+          repository = {
+            pullRequest = {
+              baseRefOid = "base-b",
+              headRefOid = "head-b",
+              statusCheckRollup = { state = "FRESH" },
+            },
+          },
+        },
       },
       nil
     )
 
     assert.are.same("FRESH", fresh.statusCheckRollup.state)
     assert.are.same("pull-b", deliveries[#deliveries].object.id)
+  end)
+
+  it("ignores check results for a server-side revision newer than the preview", function()
+    local preview_callback
+    octo.load_preview = function(_, _, _, _, callback)
+      preview_callback = callback
+    end
+    local check_request
+    gh.api.graphql = function(opts)
+      check_request = opts
+    end
+    local deliveries = {}
+    octo.load_pull_preview("owner/repo", 42, nil, function(obj, cached)
+      deliveries[#deliveries + 1] = { object = obj, cached = cached }
+    end)
+    local preview = {
+      id = "pull-id",
+      number = 42,
+      baseRefOid = "base-a",
+      headRefOid = "head-a",
+    }
+    preview_callback(preview, false)
+    check_request.opts.cb(
+      vim.json.encode {
+        data = {
+          repository = {
+            pullRequest = {
+              baseRefOid = "base-b",
+              headRefOid = "head-b",
+              statusCheckRollup = { state = "NEWER REVISION" },
+            },
+          },
+        },
+      },
+      nil,
+      0
+    )
+
+    assert.are.same(1, #deliveries)
+    assert.is_nil(preview.statusCheckRollup)
   end)
 
   it("renders issue activity newest first and replaces previous preview content", function()

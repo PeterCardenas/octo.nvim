@@ -696,6 +696,8 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      baseRefOid
+      headRefOid
       statusCheckRollup {
         state
         contexts(first: 100) {

@@ -165,18 +165,36 @@ end
 ---@field on_error? fun()
 
 ---@param octo_buffer OctoBuffer
-local function navigate_to_pending_anchor(octo_buffer)
+---@param live_complete? boolean
+local function navigate_to_pending_anchor(octo_buffer, live_complete)
   local bufnr = octo_buffer.bufnr
   local anchor = vim.b[bufnr].octo_pending_anchor
   if not anchor then
     return
   end
+  local target_win ---@type integer?
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == bufnr then
+      target_win = win
+      break
+    end
+  end
+  if not target_win then
+    return
+  end
   vim.schedule(function()
-    if not vim.api.nvim_buf_is_valid(bufnr) or vim.b[bufnr].octo_pending_anchor ~= anchor then
+    if
+      not vim.api.nvim_buf_is_valid(bufnr)
+      or not vim.api.nvim_win_is_valid(target_win)
+      or vim.api.nvim_win_get_buf(target_win) ~= bufnr
+      or vim.b[bufnr].octo_pending_anchor ~= anchor
+    then
       return
     end
-    local found = M.navigate_to_anchor(octo_buffer, anchor)
-    if found or octo_buffer.node._loadState ~= "shell" then
+    local found = vim.api.nvim_win_call(target_win, function()
+      return M.navigate_to_anchor(octo_buffer, anchor)
+    end)
+    if found or (live_complete and octo_buffer.node._loadState ~= "shell") then
       vim.b[bufnr].octo_pending_anchor = nil
     end
   end)
@@ -636,6 +654,99 @@ function M.load_buffer(opts)
       return { object = node }
     end
 
+    local function capture_cache_render_state()
+      local state = {
+        lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+        modified = vim.bo[bufnr].modified,
+        modifiable = vim.bo[bufnr].modifiable,
+        readonly = vim.bo[bufnr].readonly,
+        filetype = vim.bo[bufnr].filetype,
+        buftype = vim.bo[bufnr].buftype,
+        bufhidden = vim.bo[bufnr].bufhidden,
+        swapfile = vim.bo[bufnr].swapfile,
+        cached = vim.b[bufnr].octo_cached,
+        loading_skeleton = vim.b[bufnr].octo_loading_skeleton,
+        pending_anchor = vim.b[bufnr].octo_pending_anchor,
+        model = octo_buffers[bufnr],
+        marks = {},
+      }
+      for _, namespace in pairs(vim.api.nvim_get_namespaces()) do
+        for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, { details = true })) do
+          local details = mark[4]
+          if not details.ephemeral then
+            state.marks[#state.marks + 1] = {
+              namespace = namespace,
+              id = mark[1],
+              row = mark[2],
+              col = mark[3],
+              details = vim.deepcopy(details),
+            }
+          end
+        end
+      end
+      return state
+    end
+
+    local function restore_cache_render_state(state)
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      vim.bo[bufnr].modifiable = true
+      vim.bo[bufnr].readonly = false
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, state.lines)
+      for _, namespace in pairs(vim.api.nvim_get_namespaces()) do
+        vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+      end
+      local mark_options = {
+        "end_row",
+        "end_col",
+        "end_right_gravity",
+        "hl_group",
+        "hl_eol",
+        "hl_mode",
+        "virt_text",
+        "virt_text_pos",
+        "virt_text_win_col",
+        "virt_text_hide",
+        "virt_text_repeat_linebreak",
+        "virt_lines",
+        "virt_lines_above",
+        "virt_lines_leftcol",
+        "priority",
+        "right_gravity",
+        "conceal",
+        "spell",
+        "url",
+        "sign_text",
+        "sign_hl_group",
+        "number_hl_group",
+        "line_hl_group",
+        "cursorline_hl_group",
+        "undo_restore",
+        "invalidate",
+      }
+      for _, mark in ipairs(state.marks) do
+        local options = { id = mark.id }
+        for _, key in ipairs(mark_options) do
+          if mark.details[key] ~= nil then
+            options[key] = mark.details[key]
+          end
+        end
+        vim.api.nvim_buf_set_extmark(bufnr, mark.namespace, mark.row, mark.col, options)
+      end
+      vim.bo[bufnr].filetype = state.filetype
+      vim.bo[bufnr].buftype = state.buftype
+      vim.bo[bufnr].bufhidden = state.bufhidden
+      vim.bo[bufnr].swapfile = state.swapfile
+      vim.b[bufnr].octo_cached = state.cached
+      vim.b[bufnr].octo_loading_skeleton = state.loading_skeleton
+      vim.b[bufnr].octo_pending_anchor = state.pending_anchor
+      octo_buffers[bufnr] = state.model
+      vim.bo[bufnr].modified = state.modified
+      vim.bo[bufnr].readonly = state.readonly
+      vim.bo[bufnr].modifiable = state.modifiable
+    end
+
     local function render_cached_object(cache_entry)
       if
         not is_latest_load()
@@ -661,6 +772,7 @@ function M.load_buffer(opts)
         then
           return
         end
+        local render_state = capture_cache_render_state()
         local rendered = pcall(vim.api.nvim_buf_call, bufnr, function()
           vim.bo[bufnr].modifiable = true
           vim.bo[bufnr].readonly = false
@@ -677,16 +789,7 @@ function M.load_buffer(opts)
           restore_cursor()
         end)
         if not rendered then
-          octo_buffers[bufnr] = nil
-          clear_cached_mark(bufnr)
-          if vim.b[bufnr].octo_loading_skeleton then
-            vim.bo[bufnr].modifiable = true
-            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-              string.format("Loading %s #%s from %s…", kind, id, repo),
-            })
-            vim.bo[bufnr].modified = false
-            vim.bo[bufnr].modifiable = false
-          end
+          pcall(restore_cache_render_state, render_state)
         end
       end)
     end
@@ -808,8 +911,9 @@ function M.load_buffer(opts)
       end
 
       restore_cursor()
-      if shell_rendered and octo_buf then
-        navigate_to_pending_anchor(octo_buf)
+      local completed_buffer = octo_buffers[bufnr]
+      if completed_buffer then
+        navigate_to_pending_anchor(completed_buffer, true)
       end
 
       if opts.verbose then
@@ -906,46 +1010,53 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
   local verification_started = false
   local fingerprint_verified = false
 
-  local function finish_if_ready()
+  local finish_if_ready
+  local function start_verification()
+    if fingerprint == "" or verification_started then
+      return
+    end
+    verification_started = true
+    gh.api.graphql {
+      query = queries.pull_diff_fingerprint,
+      F = { owner = owner, name = name, number = tonumber(number) },
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        auth_context = auth_context,
+        cb = gh.create_callback {
+          failure = function(stderr)
+            failed = true
+            utils.print_err(stderr)
+            if on_error then
+              on_error()
+            end
+          end,
+          success = function(output)
+            local ok, response = pcall(vim.json.decode, output)
+            local pr = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
+            local confirmed = type(pr) == "table" and get_diff_fingerprint(pr) or ""
+            if confirmed ~= fingerprint then
+              failed = true
+              utils.print_err "PR revision changed while fetching its diff; retry the diff load"
+              if on_error then
+                on_error()
+              end
+              return
+            end
+            fingerprint_verified = true
+            finish_if_ready()
+          end,
+        },
+      },
+    }
+  end
+
+  finish_if_ready = function()
     if failed or not fingerprint_finished or not diff_finished then
       return
     end
     if fingerprint ~= "" and not verification_started then
-      verification_started = true
-      local owner, name = utils.split_repo(repo)
-      gh.api.graphql {
-        query = queries.pull_diff_fingerprint,
-        F = { owner = owner, name = name, number = tonumber(number) },
-        jq = ".",
-        opts = {
-          hostname = hostname,
-          auth_context = auth_context,
-          cb = gh.create_callback {
-            failure = function(stderr)
-              failed = true
-              utils.print_err(stderr)
-              if on_error then
-                on_error()
-              end
-            end,
-            success = function(output)
-              local ok, response = pcall(vim.json.decode, output)
-              local pr = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
-              local confirmed = type(pr) == "table" and get_diff_fingerprint(pr) or ""
-              if confirmed ~= fingerprint then
-                failed = true
-                utils.print_err "PR revision changed while fetching its diff; retry the diff load"
-                if on_error then
-                  on_error()
-                end
-                return
-              end
-              fingerprint_verified = true
-              finish_if_ready()
-            end,
-          },
-        },
-      }
+      start_verification()
       return
     end
     if fingerprint ~= "" and not fingerprint_verified then
@@ -961,29 +1072,35 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
     }
   end
 
-  -- The REST diff does not depend on the optional GraphQL fingerprint query.
-  gh.api.get {
-    "/repos/{repo}/pulls/{number}",
-    format = { repo = repo, number = number },
-    opts = {
-      headers = { headers.diff },
-      hostname = hostname,
-      auth_context = auth_context,
-      cb = function(diff, stderr, status)
-        if status == nil or status == 0 then
-          diff_output = diff or ""
-          diff_finished = true
-          finish_if_ready()
-        else
-          failed = true
-          utils.print_err(stderr or "")
-          if on_error then
-            on_error()
+  local diff_request_started = false
+  local function request_diff()
+    if diff_request_started then
+      return
+    end
+    diff_request_started = true
+    gh.api.get {
+      "/repos/{repo}/pulls/{number}",
+      format = { repo = repo, number = number },
+      opts = {
+        headers = { headers.diff },
+        hostname = hostname,
+        auth_context = auth_context,
+        cb = function(diff, stderr, status)
+          if status == nil or status == 0 then
+            diff_output = diff or ""
+            diff_finished = true
+            finish_if_ready()
+          else
+            failed = true
+            utils.print_err(stderr or "")
+            if on_error then
+              on_error()
+            end
           end
-        end
-      end,
-    },
-  }
+        end,
+      },
+    }
+  end
 
   gh.api.graphql {
     query = queries.pull_diff_fingerprint,
@@ -995,6 +1112,7 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
       cb = gh.create_callback {
         failure = function()
           fingerprint_finished = true
+          request_diff()
           finish_if_ready()
         end,
         success = function(output)
@@ -1006,6 +1124,9 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error, auth_context)
             title = pr.title
           end
           fingerprint_finished = true
+          request_diff()
+          -- The initial snapshot pins the request; overlap confirmation with the diff read.
+          start_verification()
           finish_if_ready()
         end,
       },
@@ -1258,6 +1379,12 @@ function M.load_pull_preview(repo, number, hostname, cb, on_error, auth_context)
             local pull_request = ok and vim.tbl_get(response, "data", "repository", "pullRequest") or nil
             if
               type(pull_request) ~= "table"
+              or type(base_ref_oid) ~= "string"
+              or base_ref_oid == ""
+              or type(head_ref_oid) ~= "string"
+              or head_ref_oid == ""
+              or pull_request.baseRefOid ~= base_ref_oid
+              or pull_request.headRefOid ~= head_ref_oid
               or latest_object ~= preview_object
               or preview_object.baseRefOid ~= base_ref_oid
               or preview_object.headRefOid ~= head_ref_oid
@@ -1661,7 +1788,11 @@ function M.load(repo, kind, id, hostname, cb, opts)
       or type(connection.filteredCount) ~= "number"
       or type(connection.nodes) ~= "table"
     then
-      fallback()
+      if expected_count == nil then
+        failed_pages[page_index] = true
+      else
+        fallback()
+      end
       return
     end
     if expected_count ~= nil and connection.filteredCount ~= expected_count then

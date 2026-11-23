@@ -2564,6 +2564,7 @@ function M.reaction_action(reaction)
           if not reaction_line then
             return
           end
+          local was_modified = vim.bo[bufnr].modified
           local has_reactions = utils.count_reactions(reaction_groups) > 0
           if action == "remove" and not has_reactions and has_reaction_line then
             vim.api.nvim_buf_set_lines(bufnr, reaction_line - 1, reaction_line + 1, false, {})
@@ -2581,6 +2582,9 @@ function M.reaction_action(reaction)
             writers.write_reactions(bufnr, reaction_groups, reaction_line)
           end
           current_buffer:update_metadata()
+          if not was_modified then
+            vim.bo[bufnr].modified = false
+          end
         end,
       },
     },

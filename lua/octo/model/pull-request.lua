@@ -505,30 +505,35 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
     end)
   end
 
-  local callback = gh.create_callback {
-    success = function(merge_base_sha)
-      if type(merge_base_sha) ~= "string" or merge_base_sha == "" or merge_base_sha == "null" then
-        use_base_oid_fallback "Failed to resolve merge base: compare response did not include a merge-base SHA"
-        return
-      end
+  local function resolve_merge_base(merge_base_sha)
+    if type(merge_base_sha) ~= "string" or merge_base_sha == "" or merge_base_sha == "null" then
+      use_base_oid_fallback "Failed to resolve merge base: compare response did not include a merge-base SHA"
+      return
+    end
 
-      if not pr then
-        finish_when_file_metadata_ready(create_pull_request(merge_base_sha, true))
-        return
-      end
+    if not pr then
+      finish_when_file_metadata_ready(create_pull_request(merge_base_sha, true))
+      return
+    end
 
-      pr.left = Rev:new(merge_base_sha)
-      finish_when_file_metadata_ready(pr)
-      utils.commit_exists(merge_base_sha, function(exists)
-        pr.local_left = exists
-        pr.left_ready = true
-        notify_file_metadata_ready(pr)
-      end)
-    end,
-    failure = function(stderr)
-      use_base_oid_fallback("Failed to fetch merge base: " .. stderr)
-    end,
-  }
+    pr.left = Rev:new(merge_base_sha)
+    finish_when_file_metadata_ready(pr)
+    utils.commit_exists(merge_base_sha, function(exists)
+      pr.local_left = exists
+      pr.left_ready = true
+      notify_file_metadata_ready(pr)
+    end)
+  end
+
+  local callback = function(output, stderr, status)
+    if status ~= nil and status ~= 0 then
+      use_base_oid_fallback("Failed to fetch merge base: " .. (stderr or "compare request failed"))
+    elseif output then
+      resolve_merge_base(output)
+    else
+      use_base_oid_fallback("Failed to fetch merge base: " .. (stderr or "compare response is empty"))
+    end
+  end
 
   gh.api.get {
     endpoint,

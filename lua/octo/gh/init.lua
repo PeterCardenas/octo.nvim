@@ -121,7 +121,19 @@ local function get_auth_token(hostname, callback)
   end
   auth_token_waiters[waiter_key] = { callback }
 
+  local finished = false
+  local process ---@type vim.SystemObj?
+  local timer = vim.uv.new_timer()
   local function finish(token)
+    if finished then
+      return
+    end
+    finished = true
+    if timer then
+      timer:stop()
+      timer:close()
+      timer = nil
+    end
     if token and env_signature(get_env()) == signature then
       auth_tokens[hostname] = { token = token, env_signature = signature }
     end
@@ -132,7 +144,7 @@ local function get_auth_token(hostname, callback)
     end
   end
 
-  local ok = pcall(
+  local ok, child = pcall(
     vim.system,
     { config.values.gh_cmd, "auth", "token", "--hostname", hostname },
     { env = env, text = true },
@@ -146,6 +158,20 @@ local function get_auth_token(hostname, callback)
   )
   if not ok then
     finish(nil)
+    return
+  end
+  process = child
+  if timer then
+    timer:start(
+      config.values.timeout,
+      0,
+      vim.schedule_wrap(function()
+        if process then
+          pcall(process.kill, process, 15)
+        end
+        finish(nil)
+      end)
+    )
   end
 end
 
@@ -413,6 +439,16 @@ local function run(opts)
     env.GH_DEBUG = "1"
   end
 
+  local async_finished = false
+  local timer ---@type uv.uv_timer_t|nil
+  local function close_async_timer()
+    if timer then
+      timer:stop()
+      timer:close()
+      timer = nil
+    end
+  end
+
   ---@diagnostic disable-next-line: missing-fields
   local job = Job:new {
     enable_recording = true,
@@ -424,7 +460,12 @@ local function run(opts)
       end
     end),
     on_exit = vim.schedule_wrap(function(j_self, status, _)
-      if mode == "async" and opts.cb then
+      if mode ~= "async" or async_finished then
+        return
+      end
+      async_finished = true
+      close_async_timer()
+      if opts.cb then
         local output = table.concat(j_self:result(), "\n")
         if do_slurp then
           output = native_slurp(output)
@@ -444,6 +485,29 @@ local function run(opts)
     return output, table.concat(job:stderr_result(), "\n")
   else
     job:start()
+    if not async_finished then
+      timer = vim.uv.new_timer()
+      if timer then
+        timer:start(
+          conf.timeout,
+          0,
+          vim.schedule_wrap(function()
+            if async_finished then
+              return
+            end
+            async_finished = true
+            close_async_timer()
+            if job.pid then
+              pcall(vim.uv.kill, job.pid, 15)
+            end
+            pcall(job.shutdown, job, 124, 15)
+            if opts.cb then
+              opts.cb("", "gh command timed out", 124)
+            end
+          end)
+        )
+      end
+    end
   end
 end
 

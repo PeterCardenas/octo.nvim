@@ -163,6 +163,46 @@ describe("Persistent stale-while-revalidate cache", function()
     assert.is_true(vim.uv.fs_stat(entry_path(key)) ~= nil)
   end)
 
+  it("aborts cache writes when securing the cache directory fails", function()
+    local key = unique_key()
+    local octo_directory = vim.fs.joinpath(vim.fn.stdpath "cache", "octo")
+    local original_lstat = vim.uv.fs_lstat
+    local original_chmod = vim.uv.fs_chmod
+    local original_open = vim.uv.fs_open
+    local opens = 0
+    local completed = false
+    vim.uv.fs_lstat = function(path, callback)
+      if path == octo_directory then
+        callback(nil, { type = "directory" })
+      else
+        original_lstat(path, callback)
+      end
+    end
+    vim.uv.fs_chmod = function(path, _, callback)
+      if path == octo_directory then
+        callback "EACCES"
+      else
+        original_chmod(path, 448, callback)
+      end
+    end
+    vim.uv.fs_open = function(...)
+      opens = opens + 1
+      return original_open(...)
+    end
+
+    cache.write(key, cached_issue "denied", function()
+      completed = true
+    end)
+    assert.is_true(vim.wait(1000, function()
+      return completed
+    end))
+
+    vim.uv.fs_lstat = original_lstat
+    vim.uv.fs_chmod = original_chmod
+    vim.uv.fs_open = original_open
+    assert.are.same(0, opens)
+  end)
+
   it("tightens existing cache directories and files to private permissions", function()
     local key = unique_key()
     local path = entry_path(key)

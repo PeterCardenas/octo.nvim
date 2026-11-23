@@ -387,6 +387,64 @@ describe("GitHub HTTP transport", function()
     assert.are.same('{"data":{"fallback":true}}', vim.trim(loaded.output))
   end)
 
+  it("times out the legacy auth-token lookup and falls back to gh", function()
+    config.values.timeout = 10
+    make_fallback_command()
+    local killed = false
+    local loaded
+    vim.system = function(argv)
+      assert.are.same("auth", argv[2])
+      return {
+        kill = function()
+          killed = true
+        end,
+      }
+    end
+    gh.api.graphql {
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
+      jq = ".",
+      opts = {
+        hostname = "octo-legacy-auth-timeout.example",
+        cb = function(output)
+          loaded = output
+        end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return loaded ~= nil
+    end))
+    assert.is_true(killed)
+    assert.are.same({ data = { fallback = true } }, vim.json.decode(loaded))
+  end)
+
+  it("times out asynchronous gh fallback jobs", function()
+    config.values.timeout = 10
+    temporary_command = vim.fn.tempname()
+    vim.fn.writefile({ "#!/bin/sh", "exec sleep 5" }, temporary_command)
+    vim.fn.setfperm(temporary_command, "rwx------")
+    config.values.gh_cmd = temporary_command
+    local received
+    gh.api.graphql {
+      query = "mutation { addComment(input: {}) { clientMutationId } }",
+      fields = {},
+      jq = ".",
+      opts = {
+        hostname = "octo-gh-timeout.example",
+        cb = function(output, stderr, status)
+          received = { output = output, stderr = stderr, status = status }
+        end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return received ~= nil
+    end))
+    assert.are.same(124, received.status)
+    assert.is_truthy(received.stderr:find("timed out", 1, true))
+  end)
+
   it("times out auth lookup and kills the asynchronous gh process", function()
     config.values.timeout = 10
     local killed = false
