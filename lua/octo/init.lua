@@ -759,6 +759,11 @@ function M.load(repo, kind, id, hostname, cb, opts)
   local page_query = kind == "pull" and queries.pull_request_timeline_page or queries.issue_timeline_page
   local phase_two_query = kind == "pull" and fast_pull_query or query
   local details_received = false
+  local review_threads_received = kind ~= "pull"
+  local ruleset_details_received = kind ~= "pull"
+  local pull_review_threads ---@type table?
+  local pull_rulesets ---@type table?
+  local latest_opinionated_reviews ---@type table?
   local expected_count ---@type integer?
   local page_count = 0
   local pending_pages = 0
@@ -766,7 +771,14 @@ function M.load(repo, kind, id, hostname, cb, opts)
   local full_response ---@type table?
 
   local function finish_if_ready()
-    if fallback_started or load_completed or not details_received or pending_pages > 0 then
+    if
+      fallback_started
+      or load_completed
+      or not details_received
+      or pending_pages > 0
+      or not review_threads_received
+      or not ruleset_details_received
+    then
       return
     end
     local combined_nodes = {} ---@type table[]
@@ -798,6 +810,21 @@ function M.load(repo, kind, id, hostname, cb, opts)
       return
     end
     full_obj.timelineItems.nodes = combined_nodes
+    if kind == "pull" then
+      local repository = vim.tbl_get(full_response, "data", "repository")
+      if
+        type(repository) ~= "table"
+        or not pull_review_threads
+        or not pull_rulesets
+        or not latest_opinionated_reviews
+      then
+        fallback()
+        return
+      end
+      full_obj.reviewThreads = pull_review_threads
+      full_obj.latestOpinionatedReviews = latest_opinionated_reviews
+      repository.rulesets = pull_rulesets
+    end
     full_obj._timelineIncomplete = nil
     load_buffer(vim.json.encode(full_response))
   end
@@ -892,6 +919,71 @@ function M.load(repo, kind, id, hostname, cb, opts)
       },
     },
   }
+
+  if kind == "pull" then
+    gh.api.graphql {
+      query = queries.pull_request_review_threads,
+      fields = fields,
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function()
+            fallback()
+          end,
+          success = function(output)
+            if fallback_started or load_completed then
+              return
+            end
+            local ok, response = pcall(vim.json.decode, output)
+            local threads = ok and vim.tbl_get(response, "data", "repository", "pullRequest", "reviewThreads") or nil
+            if type(threads) ~= "table" or type(threads.nodes) ~= "table" then
+              fallback()
+              return
+            end
+            pull_review_threads = threads
+            review_threads_received = true
+            finish_if_ready()
+          end,
+        },
+      },
+    }
+    gh.api.graphql {
+      query = queries.pull_request_rulesets,
+      fields = fields,
+      jq = ".",
+      opts = {
+        hostname = hostname,
+        cb = gh.create_callback {
+          failure = function()
+            fallback()
+          end,
+          success = function(output)
+            if fallback_started or load_completed then
+              return
+            end
+            local ok, response = pcall(vim.json.decode, output)
+            local repository = ok and vim.tbl_get(response, "data", "repository") or nil
+            local pull_request = type(repository) == "table" and repository.pullRequest or nil
+            local rulesets = type(repository) == "table" and repository.rulesets or nil
+            local opinionated_reviews = type(pull_request) == "table" and pull_request.latestOpinionatedReviews or nil
+            if
+              type(rulesets) ~= "table"
+              or type(opinionated_reviews) ~= "table"
+              or type(opinionated_reviews.nodes) ~= "table"
+            then
+              fallback()
+              return
+            end
+            pull_rulesets = rulesets
+            latest_opinionated_reviews = opinionated_reviews
+            ruleset_details_received = true
+            finish_if_ready()
+          end,
+        },
+      },
+    }
+  end
 
   M.load_preview(repo, kind, id, hostname, function(shell)
     if fallback_started or load_completed or details_received then

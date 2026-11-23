@@ -522,6 +522,27 @@ query($endCursor: String, $owner: String!, $name: String!, $number: Int!) {
     end
     return definitions
   end
+  local function remove_field(query, field)
+    local start = assert(query:find(field, 1, true), "query field missing: " .. field)
+    local open = assert(query:find("{", start, true), "query field has no selection: " .. field)
+    local depth = 0
+    for index = open, #query do
+      local char = query:sub(index, index)
+      if char == "{" then
+        depth = depth + 1
+      elseif char == "}" then
+        depth = depth - 1
+        if depth == 0 then
+          local finish = index
+          if query:sub(finish + 1, finish + 1) == "\n" then
+            finish = finish + 1
+          end
+          return query:sub(1, start - 1) .. query:sub(finish + 1)
+        end
+      end
+    end
+    error("unterminated query field: " .. field)
+  end
   local pull_review_fast = [[
 fragment PullRequestReviewFastFragment on PullRequestReview {
   id
@@ -554,6 +575,10 @@ fragment PullRequestReviewFastFragment on PullRequestReview {
     fragments.pull_request_review,
     pull_review_fast
   )
+  local pull_shell_fragment_definitions = remove_fragment(
+    remove_fragment(pull_fast_fragment_definitions, fragments.review_thread_information),
+    fragments.review_thread_comment
+  )
   local pull_page_fragment_definitions = remove_fragment(
     remove_fragment(
       remove_fragment(
@@ -565,13 +590,21 @@ fragment PullRequestReviewFastFragment on PullRequestReview {
     fragments.assignee_connection
   )
   local pull_request_body = M.pull_request:sub(1, pull_fragments_start - 1)
+  local pull_request_fast_body = remove_field(
+    remove_field(
+      remove_field(pull_request_body, "rulesets(first: 10, includeParents: true)"),
+      "reviewThreads(last:100)"
+    ),
+    "latestOpinionatedReviews(first: 100)"
+  )
   M.pull_request_fast_full = replace_first(
-    pull_request_body,
+    pull_request_fast_body,
     "...PullRequestTimelineItemsConnectionFragment",
     "...PullRequestTimelineItemsFastConnectionFragment"
-  ) .. pull_fast_fragment_definitions
+  ) .. pull_shell_fragment_definitions
 
-  M.pull_request_fast = [[
+  M.pull_request_fast = remove_field(
+    [[
 query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -636,7 +669,6 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
         ...PullRequestTimelineItemsFastConnectionFragment
       }
       reviewDecision
-      latestOpinionatedReviews(first: 100) { nodes { state } }
       labels(first: 20) { ...LabelConnectionFragment }
       assignees(first: 20) { ...AssigneeConnectionFragment }
       reviewRequests(first: 20) {
@@ -657,7 +689,73 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
     }
   }
 }
-]] .. pull_fast_fragment_definitions
+]],
+    "reviewThreads(last: 0)"
+  ) .. pull_shell_fragment_definitions
+
+  M.pull_request_review_threads = [[
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: 100) {
+        nodes {
+          ...ReviewThreadInformationFragment
+          comments(first: 100) {
+            nodes { ...ReviewThreadCommentFragment }
+          }
+        }
+      }
+    }
+  }
+}
+]] .. fragments.reaction_groups .. fragments.review_thread_information .. fragments.review_thread_comment
+
+  M.pull_request_rulesets = [[
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    rulesets(first: 10, includeParents: true) {
+      nodes {
+        name
+        enforcement
+        target
+        conditions {
+          refName {
+            include
+            exclude
+          }
+        }
+        rules(first: 25) {
+          nodes {
+            type
+            parameters {
+              ... on PullRequestParameters {
+                requiredApprovingReviewCount
+                dismissStaleReviewsOnPush
+                requireCodeOwnerReview
+                requireLastPushApproval
+                requiredReviewThreadResolution
+              }
+              ... on RequiredStatusChecksParameters {
+                requiredStatusChecks {
+                  context
+                }
+                strictRequiredStatusChecksPolicy
+              }
+            }
+          }
+        }
+      }
+    }
+    pullRequest(number: $number) {
+      latestOpinionatedReviews(first: 100) {
+        nodes {
+          state
+        }
+      }
+    }
+  }
+}
+]]
 
   M.issue_fast = [[
 query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {

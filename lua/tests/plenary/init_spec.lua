@@ -126,6 +126,26 @@ describe("Octo module:", function()
     end, queries
   end
 
+  local function setup_pull_load_requests()
+    local fragments = require "octo.gh.fragments"
+    local queries = require "octo.gh.queries"
+    fragments.setup()
+    queries.setup()
+    _G.octo_pv2_fragment = ""
+
+    local requests = {}
+    local shell_callback
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+    octo.load_preview = function(_, _, _, _, callback)
+      shell_callback = callback
+    end
+    return requests, function(shell)
+      shell_callback(shell)
+    end, queries
+  end
+
   local function issue_response(count, nodes)
     return vim.json.encode {
       data = {
@@ -134,6 +154,21 @@ describe("Octo module:", function()
             id = "issue-id",
             number = 17,
             title = "Issue",
+            timelineItems = { filteredCount = count, nodes = nodes },
+          },
+        },
+      },
+    }
+  end
+
+  local function pull_response(count, nodes)
+    return vim.json.encode {
+      data = {
+        repository = {
+          pullRequest = {
+            id = "pull-id",
+            number = 17,
+            title = "Pull request",
             timelineItems = { filteredCount = count, nodes = nodes },
           },
         },
@@ -529,6 +564,83 @@ describe("Octo module:", function()
     assert.is_true(requests[3].paginate)
     requests[3].opts.cb(issue_response(101, nodes), nil)
     assert.are.same(100, #loaded.timelineItems.nodes)
+  end)
+
+  it("fetches pull details, review threads, and rulesets concurrently and merges them", function()
+    local requests, deliver_shell, queries = setup_pull_load_requests()
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "pull", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+
+    assert.are.same(3, #requests)
+    assert.matches("timelineItems", requests[1].query)
+    assert.is_nil(requests[1].query:find("reviewThreads(last:100)", 1, true))
+    assert.is_nil(requests[1].query:find("rulesets(first: 10", 1, true))
+    assert.is_nil(requests[1].query:find("latestOpinionatedReviews", 1, true))
+    assert.are.same(queries.pull_request_review_threads, requests[2].query)
+    assert.are.same(queries.pull_request_rulesets, requests[3].query)
+    requests[1].opts.cb(pull_response(1, { { id = "timeline-node" } }), nil)
+    deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
+    requests[2].opts.cb(
+      vim.json.encode {
+        data = { repository = { pullRequest = { reviewThreads = { nodes = { { id = "thread-id" } } } } } },
+      },
+      nil
+    )
+    requests[3].opts.cb(
+      vim.json.encode {
+        data = {
+          repository = {
+            rulesets = { nodes = { { name = "required reviews" } } },
+            pullRequest = { latestOpinionatedReviews = { nodes = { { state = "APPROVED" } } } },
+          },
+        },
+      },
+      nil
+    )
+
+    assert.are.same(0, shells)
+    assert.are.same("thread-id", loaded.reviewThreads.nodes[1].id)
+    assert.are.same("required reviews", loaded._rulesets.nodes[1].name)
+    assert.are.same("APPROVED", loaded.latestOpinionatedReviews.nodes[1].state)
+  end)
+
+  it("falls back when a parallel pull review-thread query fails", function()
+    local requests, _, queries = setup_pull_load_requests()
+    local loaded
+
+    octo.load("owner/repo", "pull", 17, nil, function(obj)
+      loaded = obj
+    end)
+    assert.are.same(queries.pull_request_review_threads, requests[2].query)
+    requests[2].opts.cb("", "network failure")
+
+    assert.are.same(4, #requests)
+    assert.is_true(requests[4].paginate)
+    requests[4].opts.cb(
+      vim.json.encode {
+        data = {
+          repository = {
+            rulesets = { nodes = {} },
+            pullRequest = {
+              id = "pull-id",
+              number = 17,
+              timelineItems = { nodes = { { id = "fallback-node" } } },
+            },
+          },
+        },
+      },
+      nil
+    )
+
+    assert.are.same("fallback-node", loaded.timelineItems.nodes[1].id)
   end)
 
   it("starts full discussion details concurrently and ignores a late shell after details win", function()
