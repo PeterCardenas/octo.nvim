@@ -429,8 +429,8 @@ describe("Octo module:", function()
 
       assert.is_table(loaded, "load should complete for " .. count .. " timeline nodes")
       assert.are.same(count, #loaded.timelineItems.nodes)
-      local expected_skips = { 100, 200, 300 }
-      for skip = 400, count - 1, 100 do
+      local expected_skips = { 100, 200, 300, 400, 500, 600 }
+      for skip = 700, count - 1, 100 do
         expected_skips[#expected_skips + 1] = skip
       end
       table.sort(requested_skips)
@@ -508,6 +508,28 @@ describe("Octo module:", function()
     assert.are.same(3, #loaded.timelineItems.nodes)
   end)
 
+  it("paints a loading skeleton before speculative timeline requests start", function()
+    local requests = {}
+    local preview_callback
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+    octo.load_preview = function(_, _, _, _, callback)
+      preview_callback = callback
+    end
+
+    local events = {}
+    octo.load("owner/repo", "issue", 17, nil, function() end, {
+      on_skeleton = function()
+        events[#events + 1] = "skeleton"
+      end,
+    })
+
+    assert.are.same("skeleton", events[1])
+    assert.are.same(7, #requests)
+    assert.is_function(preview_callback)
+  end)
+
   it("starts full issue details concurrently and ignores a late shell after details win", function()
     local requests, deliver_shell = setup_issue_load_requests()
     local loaded
@@ -522,7 +544,7 @@ describe("Octo module:", function()
     })
 
     local details_request = find_issue_details_request(requests)
-    assert.are.same(4, #requests)
+    assert.are.same(7, #requests)
     assert.is_nil(details_request.paginate)
     details_request.opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
@@ -569,7 +591,7 @@ describe("Octo module:", function()
     })
     find_issue_details_request(requests).opts.cb(issue_response(101, nodes), nil)
 
-    assert.are.same(4, #requests)
+    assert.are.same(7, #requests)
     local page_request = find_skip_request(requests, 100)
     assert.are.same(queries.issue_timeline_page, page_request.query)
     page_request.opts.cb(issue_response(101, { { id = "node-101" } }), nil)
@@ -635,7 +657,7 @@ describe("Octo module:", function()
       end,
     })
 
-    assert.are.same(7, #requests)
+    assert.are.same(10, #requests)
     local details_request = find_pull_details_request(requests)
     assert.matches("timelineItems", details_request.query)
     assert.is_nil(details_request.query:find("reviewThreads(last:100)", 1, true))
@@ -886,6 +908,17 @@ describe("Octo module:", function()
     requests[1].callback { id = "complete" }
 
     assert.are.same(1, vim.fn.foldclosed(3))
+  end)
+
+  it("shows a non-editable loading skeleton for an empty issue buffer", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local requests = install_async_load_stubs()
+
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_skeleton()
+
+    assert.are.same({ "Loading issue #17 from owner/repo…" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    assert.is_false(vim.bo[bufnr].modifiable)
   end)
 
   it("preserves the cursor moved during phase two and rerenders discussion buffers as discussions", function()

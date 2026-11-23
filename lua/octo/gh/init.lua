@@ -518,6 +518,24 @@ local function quote_curl_config(value)
   return '"' .. value .. '"'
 end
 
+local function contains_control_characters(value)
+  if type(value) == "string" then
+    for index = 1, #value do
+      local byte = value:byte(index)
+      if byte and byte < 32 and byte ~= 9 and byte ~= 10 and byte ~= 13 then
+        return true
+      end
+    end
+  elseif type(value) == "table" then
+    for key, child in pairs(value) do
+      if contains_control_characters(key) or contains_control_characters(child) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
 ---@param hostname string
 ---@param url string
 ---@param method "GET"|"POST"
@@ -576,7 +594,11 @@ local function request_with_curl(hostname, url, method, body, request_headers, e
         local output = result.stdout or ""
         if expects_json then
           local decoded_ok, decoded = pcall(vim.json.decode, output)
-          if not decoded_ok or (type(decoded) == "table" and decoded.errors ~= nil) then
+          if
+            not decoded_ok
+            or (type(decoded) == "table" and decoded.errors ~= nil)
+            or contains_control_characters(decoded)
+          then
             fallback()
             return
           end
@@ -676,17 +698,15 @@ local function try_rest_direct(method, opts, run_opts, args)
     return false
   end
 
-  local expects_json = true
   for _, header in ipairs(run_opts.headers or {}) do
     if
       header:find("application/vnd.github.v3.diff", 1, true) or header:find("application/vnd.github.v3.raw", 1, true)
     then
-      expects_json = false
-      break
+      return false
     end
   end
 
-  request_with_curl(hostname, url, "GET", nil, run_opts.headers, expects_json, function(output)
+  request_with_curl(hostname, url, "GET", nil, run_opts.headers, true, function(output)
     run_opts.cb(output, nil, 0)
   end, function()
     run {

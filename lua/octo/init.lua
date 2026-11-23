@@ -313,6 +313,23 @@ function M.load_buffer(opts)
       opts.on_reload()
     end
   end, {
+    on_skeleton = function()
+      if not vim.api.nvim_buf_is_valid(bufnr) or octo_buffers[bufnr] then
+        return
+      end
+      local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      if #current_lines ~= 1 or current_lines[1] ~= "" then
+        return
+      end
+      local label = kind == "pull" and "pull request" or kind
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        string.format("Loading %s #%s from %s…", label, id, repo),
+      })
+      vim.bo[bufnr].filetype = "octo"
+      vim.bo[bufnr].modified = false
+      vim.bo[bufnr].modifiable = false
+      vim.b[bufnr].octo_loading_skeleton = true
+    end,
     on_shell = function(shell)
       if not is_latest_load() or not vim.api.nvim_buf_is_valid(bufnr) then
         return
@@ -522,11 +539,15 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
 end
 
 ---@param repo string
+---@class octo.LoadOpts
+---@field on_skeleton? fun(): nil
+---@field on_shell? fun(obj: octo.Issue|octo.PullRequest|octo.Discussion): nil
+
 ---@param kind octo.NodeKind
 ---@param id? integer|string pull request, issue, or discussion number or release tag
 ---@param hostname string|nil optional GitHub Enterprise hostname
 ---@param cb fun(obj: octo.Issue|octo.PullRequest|octo.Discussion|octo.Release|octo.Repository): nil
----@param opts? { on_shell?: fun(obj: octo.Issue|octo.PullRequest|octo.Discussion): nil }
+---@param opts? octo.LoadOpts
 function M.load(repo, kind, id, hostname, cb, opts)
   local owner, name = utils.split_repo(repo)
   local load_completed = false
@@ -630,6 +651,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
     if not id then
       fallback()
       return
+    end
+    if opts and opts.on_skeleton then
+      opts.on_skeleton()
     end
 
     local details_received = false
@@ -920,12 +944,16 @@ function M.load(repo, kind, id, hostname, cb, opts)
     finish_if_ready()
   end
 
+  if opts and opts.on_skeleton then
+    opts.on_skeleton()
+  end
+
   -- Start the first pages before count discovery; their filteredCount can start
   -- the remaining fanout while the shell and full-details calls are in flight.
-  for page_index = 1, 3 do
+  for page_index = 1, 6 do
     requested_pages[page_index] = true
   end
-  for page_index = 1, 3 do
+  for page_index = 1, 6 do
     request_timeline_page(page_index)
   end
 
@@ -1278,6 +1306,11 @@ function M.create_buffer(kind, obj, repo, create, hostname)
     end
   else
     bufnr = vim.api.nvim_get_current_buf()
+  end
+
+  if vim.b[bufnr].octo_loading_skeleton then
+    vim.bo[bufnr].modifiable = true
+    vim.b[bufnr].octo_loading_skeleton = nil
   end
 
   local octo_buffer = OctoBuffer:new {

@@ -191,7 +191,9 @@ To open a referenced issue, PR, or discussion in a particular editor window
 from another plugin, call
 `require("octo.utils").open_buffer(repo, number, { winid = winid })`.
 Octo retains that window through its asynchronous lookup and reports an error
-if it closes. Without `winid`, it opens in the current window as before.
+if it closes. Without `winid`, it opens in the current window as before. A new
+empty issue, pull request, or discussion buffer first shows a non-editable
+loading skeleton, then replaces it with fetched content as it arrives.
 
 ## 🔧 Configuration
 
