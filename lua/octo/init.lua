@@ -787,6 +787,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       return
     end
     load_completed = true
+    obj._loadState = "complete"
     cb(obj)
   end
 
@@ -992,6 +993,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       end
 
       expected_count = count
+      shell._loadState = "shell"
       shell._timelineIncomplete = count > #shell_nodes
       if opts and opts.on_shell then
         opts.on_shell(shell, is_cached)
@@ -1340,6 +1342,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     if details_received or fallback_started or load_completed then
       return
     end
+    shell._loadState = "shell"
     shell._timelineIncomplete = count > #shell_nodes
     if opts and opts.on_shell then
       opts.on_shell(shell, is_cached)

@@ -4032,7 +4032,7 @@ function M.discussion_preview(obj, bufnr)
   M.write_discussion_details(bufnr, obj)
   M.write_body(bufnr, obj, 13)
 
-  if obj.answer ~= vim.NIL then
+  if obj.answer and obj.answer ~= vim.NIL then
     local line = vim.api.nvim_buf_line_count(bufnr) + 1
     M.write_discussion_answer(bufnr, obj, line)
   end
@@ -4226,8 +4226,10 @@ function M.write_timeline_items(bufnr, obj)
 
         -- A review can have 0+ threads
         local threads = {}
-        for _, comment in ipairs(item.comments.nodes) do
-          for _, reviewThread in ipairs(obj.reviewThreads.nodes) do
+        local comments = item.comments and item.comments ~= vim.NIL and item.comments.nodes or {}
+        local review_threads = obj.reviewThreads and obj.reviewThreads ~= vim.NIL and obj.reviewThreads.nodes or {}
+        for _, comment in ipairs(comments) do
+          for _, reviewThread in ipairs(review_threads) do
             if comment.id == reviewThread.comments.nodes[1].id then
               -- found a thread for the current review
               table.insert(threads, reviewThread)

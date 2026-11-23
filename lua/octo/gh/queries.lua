@@ -170,6 +170,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   ---@field filteredCount integer
 
   ---@class octo.PullRequest : octo.ReactionGroupsFragment
+  ---@field _loadState? "shell"|"complete"
   ---@field id string
   ---@field isDraft boolean
   ---@field number integer
@@ -443,6 +444,7 @@ query PullRequest($endCursor: String, $owner: String!, $name: String!, $number: 
   --- @field filteredCount integer
 
   ---@class octo.Issue : octo.fragments.IssueInformation, octo.ReactionGroupsFragment
+  ---@field _loadState? "shell"|"complete"
   ---@field participants { nodes: { login: string }[] }
   ---@field parent octo.fragments.Issue
   ---@field projectItems? octo.fragments.ProjectsV2Connection
@@ -1213,6 +1215,7 @@ query($owner: String!, $name: String!) {
   ---}
 
   ---@class octo.Discussion : octo.fragments.DiscussionDetails
+  ---@field _loadState? "shell"|"complete"
   ---@field _timelineIncomplete? boolean
   ---@field labels octo.fragments.LabelConnection
   ---@field comments {

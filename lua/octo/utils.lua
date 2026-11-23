@@ -2423,7 +2423,12 @@ end
 function M.count_discussion_replies(discussion)
   local total_replies = 0
   for _, comment in ipairs(discussion.comments.nodes) do
-    total_replies = total_replies + comment.replies.totalCount
+    if type(comment) == "table" and comment ~= vim.NIL then
+      local replies = comment.replies
+      if type(replies) == "table" and replies ~= vim.NIL and type(replies.totalCount) == "number" then
+        total_replies = total_replies + replies.totalCount
+      end
+    end
   end
 
   return total_replies

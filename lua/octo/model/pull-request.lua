@@ -362,6 +362,16 @@ end
 ---@param on_early? fun(pull_request: PullRequest): nil
 ---@param on_error? fun(message: string): nil
 function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
+  if obj._loadState == "shell" then
+    local message = "Cannot start a review while pull request details are still loading"
+    if on_error then
+      on_error(message)
+    else
+      utils.error(message)
+    end
+    return
+  end
+
   local Rev = require("octo.reviews.rev").Rev
   local owner, name = utils.split_repo(opts.repo)
   local pr ---@type PullRequest?

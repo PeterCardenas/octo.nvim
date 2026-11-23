@@ -28,6 +28,7 @@ local loading_timeline_ns = vim.api.nvim_create_namespace "octo_timeline_loading
 ---@field commentsMetadata CommentMetadata[]
 ---@field threadsMetadata ThreadMetadata[]
 ---@field private node octo.PullRequest|octo.Issue|octo.Release|octo.Discussion|octo.Repository|table
+---@field private complete_waiters? (fun(): nil)[]
 ---@field taggable_users? string[] list of taggable users for the buffer. Trigger with @
 ---@field owner? string
 ---@field name? string
@@ -94,7 +95,26 @@ M.OctoBuffer = OctoBuffer
 
 ---@param node octo.PullRequest|octo.Issue|octo.Discussion|octo.Release|octo.Repository
 function OctoBuffer:update_node(node)
+  local shell_was_replaced = self.node._loadState == "shell" and node._loadState ~= "shell"
   self.node = node
+  if shell_was_replaced and self.complete_waiters then
+    local waiters = self.complete_waiters
+    self.complete_waiters = nil
+    for _, callback in ipairs(waiters) do
+      callback()
+    end
+  end
+end
+
+---Run a callback once this buffer has complete object data.
+---@param callback fun(): nil
+function OctoBuffer:when_complete(callback)
+  if self.node._loadState ~= "shell" then
+    callback()
+    return
+  end
+  self.complete_waiters = self.complete_waiters or {}
+  table.insert(self.complete_waiters, callback)
 end
 
 ---Apply the buffer mappings
@@ -188,13 +208,18 @@ function OctoBuffer:render_discussion()
   self.bodyMetadata.reactionGroups = obj.reactionGroups
   self.bodyMetadata.reactionLine = reaction_line
 
-  if obj.answer ~= vim.NIL then
+  if obj.answer and obj.answer ~= vim.NIL then
     local line = vim.api.nvim_buf_line_count(self.bufnr) + 1
     writers.write_discussion_answer(self.bufnr, obj, line)
     writers.write_block(self.bufnr, { "" })
   end
 
-  local comments = vim.deepcopy(obj.comments.nodes)
+  local comments = {} ---@type octo.DiscussionComment[]
+  for _, comment in ipairs(obj.comments.nodes or {}) do
+    if type(comment) == "table" and comment ~= vim.NIL then
+      comments[#comments + 1] = comment
+    end
+  end
   if config.values.timeline_order == "newest_first" then
     local left, right = 1, #comments
     while left < right do
@@ -206,9 +231,12 @@ function OctoBuffer:render_discussion()
 
   for _, comment in ipairs(comments) do
     writers.write_comment(self.bufnr, comment, "DiscussionComment")
-    if comment.replies.totalCount > 0 then
-      for _, reply in ipairs(comment.replies.nodes) do
-        writers.write_comment(self.bufnr, reply, "DiscussionComment")
+    local replies = comment.replies
+    if type(replies) == "table" and type(replies.nodes) == "table" then
+      for _, reply in ipairs(replies.nodes) do
+        if type(reply) == "table" and reply ~= vim.NIL then
+          writers.write_comment(self.bufnr, reply, "DiscussionComment")
+        end
       end
     end
   end
@@ -1231,6 +1259,13 @@ function OctoBuffer:get_pr(callback, on_early, on_error)
 
   if not callback then
     utils.error "get_pr requires a callback function"
+    return
+  end
+
+  if self.node._loadState == "shell" then
+    self:when_complete(function()
+      self:get_pr(callback, on_early, on_error)
+    end)
     return
   end
 
