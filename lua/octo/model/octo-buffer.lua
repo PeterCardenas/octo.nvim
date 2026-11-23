@@ -14,6 +14,7 @@ local utils = require "octo.utils"
 local vim = vim
 
 local M = {}
+local loading_timeline_ns = vim.api.nvim_create_namespace "octo_timeline_loading"
 
 ---@alias octo.NodeKind "issue" | "pull" | "pull_diff" | "discussion" | "repo" | "release"
 
@@ -91,6 +92,11 @@ end
 
 M.OctoBuffer = OctoBuffer
 
+---@param node octo.PullRequest|octo.Issue|octo.Discussion|octo.Release|octo.Repository
+function OctoBuffer:update_node(node)
+  self.node = node
+end
+
 ---Apply the buffer mappings
 function OctoBuffer:apply_mappings()
   ---@type string
@@ -135,6 +141,7 @@ function OctoBuffer:clear()
   -- then fully repopulates, so sweeping here is safe.
   vim.api.nvim_buf_clear_namespace(self.bufnr, constants.OCTO_TITLE_NS, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.bufnr, constants.OCTO_EVENT_VT_NS, 0, -1)
+  vim.api.nvim_buf_clear_namespace(self.bufnr, loading_timeline_ns, 0, -1)
 end
 
 ---Writes a repo to the buffer
@@ -187,13 +194,31 @@ function OctoBuffer:render_discussion()
     writers.write_block(self.bufnr, { "" })
   end
 
-  for _, comment in ipairs(obj.comments.nodes) do
+  local comments = vim.deepcopy(obj.comments.nodes)
+  if config.values.timeline_order == "newest_first" then
+    local left, right = 1, #comments
+    while left < right do
+      comments[left], comments[right] = comments[right], comments[left]
+      left = left + 1
+      right = right - 1
+    end
+  end
+
+  for _, comment in ipairs(comments) do
     writers.write_comment(self.bufnr, comment, "DiscussionComment")
     if comment.replies.totalCount > 0 then
       for _, reply in ipairs(comment.replies.nodes) do
         writers.write_comment(self.bufnr, reply, "DiscussionComment")
       end
     end
+  end
+
+  if obj._timelineIncomplete then
+    local row = math.max(0, vim.api.nvim_buf_line_count(self.bufnr) - 1)
+    vim.api.nvim_buf_set_extmark(self.bufnr, loading_timeline_ns, row, 0, {
+      virt_text = { { " Loading older activity…", "Comment" } },
+      virt_text_pos = "eol",
+    })
   end
 
   vim.bo[self.bufnr].filetype = "octo"
@@ -231,6 +256,13 @@ function OctoBuffer:render_issue()
 
   -- write timeline items
   writers.write_timeline_items(self.bufnr, obj)
+  if obj._timelineIncomplete then
+    local row = math.max(0, vim.api.nvim_buf_line_count(self.bufnr) - 1)
+    vim.api.nvim_buf_set_extmark(self.bufnr, loading_timeline_ns, row, 0, {
+      virt_text = { { " Loading older activity…", "Comment" } },
+      virt_text_pos = "eol",
+    })
+  end
 
   -- reset modified option
   vim.bo[self.bufnr].modified = false

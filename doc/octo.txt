@@ -526,6 +526,10 @@ CONFIGURATION                                   *octo-config*
 See the README (<https://github.com/pwntester/octo.nvim>) for an example
 configuration in Lua. Open with `:Octo repo view pwntester/octo.nvim`
 
+Timeline activity in issue and pull request buffers, and top-level discussion
+comments, is newest first by default. Set `timeline_order = "oldest_first"` to
+restore oldest-first ordering. Replies in discussions remain chronological.
+
 
 PR REVIEW                                       *octo-pr-review*
 

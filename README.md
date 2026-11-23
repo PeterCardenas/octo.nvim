@@ -195,6 +195,8 @@ if it closes. Without `winid`, it opens in the current window as before.
 
 ## 🔧 Configuration
 
+Timeline buffers show activity newest first by default. Set `timeline_order = "oldest_first"` to restore oldest-first activity; discussion replies remain chronological either way.
+
 Below is the full *default* configuration for `octo.nvim`.
 
 <!-- BEGIN_CONFIG -->
@@ -246,6 +248,7 @@ require"octo".setup {
   resolved_icon = " ",
   timeline_marker = " ",
   timeline_indent = 2,
+  timeline_order = "newest_first", -- timeline order in issue, PR, and discussion buffers
   use_timeline_icons = true,
   timeline_icons = {
     auto_squash = "  ",

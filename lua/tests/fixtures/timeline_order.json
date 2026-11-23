@@ -1,0 +1,14 @@
+{
+  "timelineItems": {
+    "nodes": [
+      { "__typename": "ClosedEvent", "id": "closed-old" },
+      { "__typename": "PullRequestCommit", "id": "commit-1" },
+      { "__typename": "PullRequestCommit", "id": "commit-2" },
+      { "__typename": "ClosedEvent", "id": "closed-middle" },
+      { "__typename": "LabeledEvent", "label": { "name": "alpha" } },
+      { "__typename": "UnlabeledEvent", "label": { "name": "beta" } },
+      { "__typename": "ReopenedEvent", "id": "reopened" },
+      { "__typename": "PullRequestCommit", "id": "commit-3" }
+    ]
+  }
+}
