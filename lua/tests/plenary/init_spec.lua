@@ -707,6 +707,29 @@ describe("Octo module:", function()
     assert.are.same(10, #loaded.timelineItems.nodes)
   end)
 
+  it("reports one terminal error when both parallel and fallback requests fail", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local errors = 0
+    local loaded
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_error = function()
+        errors = errors + 1
+      end,
+    })
+    find_issue_details_request(requests).opts.cb("", "details failure")
+    find_fallback_request(requests).opts.cb("", "fallback failure")
+    deliver_shell { timelineItems = { filteredCount = 1, nodes = {} } }
+
+    assert.are.same(1, errors)
+    assert.is_nil(loaded)
+  end)
+
   it("falls back to cursor pagination when a concurrent detail request fails", function()
     local requests, deliver_shell = setup_issue_load_requests()
     local loaded
@@ -1046,7 +1069,7 @@ describe("Octo module:", function()
     requests[1].callback { id = "complete" }
 
     assert.is_nil(get_buffer())
-    assert.are.same(1, errors)
+    assert.are.same(0, errors)
   end)
 
   it("preserves closed comment folds across the phase-two rerender", function()
@@ -1073,6 +1096,38 @@ describe("Octo module:", function()
     requests[1].callback { id = "complete" }
 
     assert.are.same(1, vim.fn.foldclosed(3))
+  end)
+
+  it("clears the loading skeleton and notifies its caller once on terminal failure", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local requests = install_async_load_stubs()
+    local errors = 0
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_error = function()
+        errors = errors + 1
+      end,
+    }
+    requests[1].opts.on_skeleton()
+
+    assert.is_function(requests[1].opts.on_error)
+    requests[1].opts.on_error()
+    requests[1].opts.on_error()
+
+    assert.are.same(1, errors)
+    assert.is_nil(vim.b[bufnr].octo_loading_skeleton)
+    assert.are.same({ "" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("ignores an in-flight callback after its load generation is invalidated", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local requests, get_buffer = install_async_load_stubs()
+    octo.load_buffer { bufnr = bufnr }
+
+    octo.invalidate_load(bufnr)
+    requests[1].opts.on_shell { id = "stale-after-unload" }
+
+    assert.is_nil(get_buffer())
   end)
 
   it("shows a non-editable loading skeleton for an empty issue buffer", function()

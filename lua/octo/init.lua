@@ -74,6 +74,12 @@ function M.set_cached_indicator(bufnr, cached)
   end
 end
 
+---Invalidate async loads tied to a buffer that is unloading or changing identity.
+---@param bufnr integer
+function M.invalidate_load(bufnr)
+  active_loads[bufnr] = nil
+end
+
 function M.setup(user_config)
   if not vim.fn.has "nvim-0.7" then
     utils.error "octo.nvim requires neovim 0.7+"
@@ -172,11 +178,45 @@ function M.load_buffer(opts)
   local load_generation = next_load_generation
   active_loads[bufnr] = load_generation
   local function is_latest_load()
-    return active_loads[bufnr] == load_generation
+    if active_loads[bufnr] ~= load_generation then
+      return false
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) or vim.api.nvim_buf_get_name(bufnr) ~= bufname then
+      M.invalidate_load(bufnr)
+      return false
+    end
+    return true
   end
   local function finish_load()
     if is_latest_load() then
       active_loads[bufnr] = nil
+    end
+  end
+
+  local load_error_handled = false
+  local function handle_load_error()
+    if load_error_handled or not is_latest_load() then
+      return
+    end
+    load_error_handled = true
+    finish_load()
+    clear_cached_mark(bufnr)
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      local was_skeleton = vim.b[bufnr].octo_loading_skeleton
+      vim.b[bufnr].octo_loading_skeleton = nil
+      local current_buffer = octo_buffers[bufnr]
+      if current_buffer and type(current_buffer.clear_timeline_loading_indicator) == "function" then
+        current_buffer:clear_timeline_loading_indicator()
+      end
+      if was_skeleton then
+        vim.bo[bufnr].modifiable = true
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "" })
+        vim.bo[bufnr].modified = false
+        vim.bo[bufnr].modifiable = false
+      end
+    end
+    if opts.on_error then
+      opts.on_error()
     end
   end
 
@@ -438,14 +478,7 @@ function M.load_buffer(opts)
       if opts.on_reload then
         opts.on_reload()
       end
-    end, function()
-      if is_latest_load() then
-        finish_load()
-        if opts.on_error then
-          opts.on_error()
-        end
-      end
-    end)
+    end, handle_load_error)
     return
   end
 
@@ -565,6 +598,7 @@ function M.load_buffer(opts)
         restore_cursor()
       end)
     end,
+    on_error = handle_load_error,
   })
 end
 
@@ -788,6 +822,7 @@ end
 ---@class octo.LoadOpts
 ---@field on_skeleton? fun(): nil
 ---@field on_shell? fun(obj: octo.Issue|octo.PullRequest|octo.Discussion, cached: boolean): nil
+---@field on_error? fun(): nil
 
 ---@param kind octo.NodeKind
 ---@param id? integer|string pull request, issue, or discussion number or release tag
@@ -804,6 +839,17 @@ function M.load(repo, kind, id, hostname, cb, opts)
     load_completed = true
     obj._loadState = "complete"
     cb(obj)
+  end
+  local function fail(message)
+    if load_completed then
+      return
+    end
+    load_completed = true
+    if opts and opts.on_error then
+      opts.on_error()
+    else
+      utils.print_err(message)
+    end
   end
 
   ---@type string, string, table<string, string|integer>
@@ -880,7 +926,15 @@ function M.load(repo, kind, id, hostname, cb, opts)
       jq = ".",
       opts = {
         hostname = hostname,
-        cb = gh.create_callback { failure = utils.print_err, success = load_buffer },
+        cb = gh.create_callback {
+          failure = fail,
+          success = function(output)
+            local ok, err = pcall(load_buffer, output)
+            if not ok then
+              fail(tostring(err))
+            end
+          end,
+        },
       },
     }
   end

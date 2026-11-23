@@ -32,10 +32,27 @@ function M.setup()
     })
   end
 
+  define({ "BufUnload" }, {
+    group = "octo_autocmds",
+    pattern = { "octo://*" },
+    callback = function(ev)
+      require("octo").invalidate_load(ev.buf)
+    end,
+  })
+
+  define({ "BufFilePost" }, {
+    group = "octo_autocmds",
+    pattern = { "*" },
+    callback = function(ev)
+      require("octo").invalidate_load(ev.buf)
+    end,
+  })
+
   define({ "BufDelete", "BufWipeout" }, {
     group = "octo_autocmds",
     pattern = { "octo://*" },
     callback = function(ev)
+      require("octo").invalidate_load(ev.buf)
       require("octo.polling").untrack_buffer(ev.buf)
       -- Explicitly remove the vim.on_key callback for details fold arrow updates
       local on_key_ns = vim.api.nvim_create_namespace("octo_details_on_key_" .. ev.buf)

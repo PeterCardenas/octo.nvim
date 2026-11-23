@@ -94,6 +94,11 @@ end
 M.OctoBuffer = OctoBuffer
 
 ---@param node octo.PullRequest|octo.Issue|octo.Discussion|octo.Release|octo.Repository
+function OctoBuffer:clear_timeline_loading_indicator()
+  self.node._timelineIncomplete = nil
+  vim.api.nvim_buf_clear_namespace(self.bufnr, loading_timeline_ns, 0, -1)
+end
+
 function OctoBuffer:update_node(node)
   local shell_was_replaced = self.node._loadState == "shell" and node._loadState ~= "shell"
   self.node = node
