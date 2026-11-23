@@ -534,10 +534,15 @@ restore oldest-first ordering. Replies in discussions remain chronological.
 
 Issue, pull request, discussion, picker preview, and pull-diff data is cached
 under `stdpath("cache")/octo/persistent` (up to 50 MiB) for stale-while-
-revalidate rendering. Cached buffers show a subtle `(cached)` marker until the
-live response arrives. Every cache hit is revalidated immediately; successful
-responses replace stale content unless the buffer has local edits. Set
-`persistent_cache = { enabled = false }` to disable disk caching.
+revalidate rendering. Cache files contain plaintext, including private-repository
+content, and are scoped by host and a hash of the authenticated account. Octo
+creates its cache directory with mode 0700 and files with mode 0600. Cached
+buffers show a subtle `(cached)` marker until the live response arrives. Every
+cache hit is revalidated immediately; successful responses replace stale
+content unless the buffer has local edits. Set
+`persistent_cache = { enabled = false }` to disable disk caching. Disabling the
+cache stops future reads and writes but does not delete existing entries; remove
+`stdpath("cache")/octo/persistent` yourself to erase them.
 
 
 PR REVIEW                                       *octo-pr-review*

@@ -6,7 +6,8 @@ local M = {}
 local SCHEMA_VERSION = 3
 local MAX_CACHE_BYTES = 50 * 1024 * 1024
 local MAX_ENTRY_BYTES = MAX_CACHE_BYTES
-local CACHE_DIRECTORY = vim.fs.joinpath(vim.fn.stdpath "cache", "octo", "persistent")
+local OCTO_DIRECTORY = vim.fs.joinpath(vim.fn.stdpath "cache", "octo")
+local CACHE_DIRECTORY = vim.fs.joinpath(OCTO_DIRECTORY, "persistent")
 local write_queue = {} ---@type { key: string, path: string, payload: table, callback: fun()? }[]
 local writing = false
 local next_temp_id = 0
@@ -45,9 +46,15 @@ end
 ---@param path string
 ---@param callback fun(ok: boolean): nil
 local function ensure_directory(path, callback)
-  uv.fs_stat(path, function(_, stat)
+  uv.fs_lstat(path, function(_, stat)
     if stat and stat.type == "directory" then
-      callback(true)
+      if path == OCTO_DIRECTORY or path == CACHE_DIRECTORY then
+        uv.fs_chmod(path, 448, function(err)
+          callback(not err)
+        end)
+      else
+        callback(true)
+      end
       return
     end
 
@@ -66,8 +73,12 @@ local function ensure_directory(path, callback)
           callback(true)
           return
         end
-        uv.fs_stat(path, function(_, existing)
-          callback(existing ~= nil and existing.type == "directory")
+        uv.fs_lstat(path, function(_, existing)
+          if existing and existing.type == "directory" then
+            ensure_directory(path, callback)
+          else
+            callback(false)
+          end
         end)
       end)
     end)
@@ -118,8 +129,10 @@ local function evict_old_entries(protected_path, callback)
           local entry = entries[index]
           index = index + 1
           if entry.path ~= protected_path then
-            total_size = total_size - entry.size
-            uv.fs_unlink(entry.path, function()
+            uv.fs_unlink(entry.path, function(unlink_err)
+              if not unlink_err then
+                total_size = total_size - entry.size
+              end
               remove_until_bounded()
             end)
             return
@@ -135,7 +148,7 @@ local function evict_old_entries(protected_path, callback)
       if not name then
         break
       end
-      if name:match "%.json$" then
+      if name:match "%.json$" or name:find(".tmp-", 1, true) then
         local entry_path = vim.fs.joinpath(CACHE_DIRECTORY, name)
         pending = pending + 1
         uv.fs_stat(entry_path, function(_, stat)
@@ -173,43 +186,69 @@ function M.read(key, callback)
   end
 
   local path = path_for_key(key)
-  uv.fs_open(path, "r", 384, function(open_err, fd)
-    if open_err or not fd then
+  uv.fs_lstat(path, function(stat_err, path_stat)
+    if stat_err or not path_stat or path_stat.type ~= "file" then
       schedule(function()
         callback(nil)
       end)
       return
     end
 
-    uv.fs_fstat(fd, function(stat_err, stat)
-      if stat_err or not stat or stat.size > MAX_ENTRY_BYTES then
-        uv.fs_close(fd)
-        uv.fs_unlink(path, function() end)
+    uv.fs_chmod(path, 384, function(chmod_err)
+      if chmod_err then
         schedule(function()
           callback(nil)
         end)
         return
       end
 
-      uv.fs_read(fd, stat.size, 0, function(read_err, contents)
-        uv.fs_close(fd)
-        local ok, record = pcall(vim.json.decode, contents or "")
-        local payload = not read_err
-            and ok
-            and type(record) == "table"
-            and record.version == SCHEMA_VERSION
-            and record.key == key
-            and type(record.payload) == "table"
-            and record.payload
-          or nil
-        if not payload then
-          uv.fs_unlink(path, function() end)
-        else
-          local now = os.time()
-          pcall(uv.fs_utime, path, now, now, function() end)
+      uv.fs_open(path, "r", 384, function(open_err, fd)
+        if open_err or not fd then
+          schedule(function()
+            callback(nil)
+          end)
+          return
         end
-        schedule(function()
-          callback(payload)
+
+        uv.fs_fstat(fd, function(read_stat_err, stat)
+          if read_stat_err or not stat or stat.size > MAX_ENTRY_BYTES then
+            uv.fs_close(fd)
+            schedule(function()
+              callback(nil)
+            end)
+            return
+          end
+
+          uv.fs_read(fd, stat.size, 0, function(read_err, contents)
+            uv.fs_close(fd)
+            local ok, record = pcall(vim.json.decode, contents or "")
+            local payload = not read_err
+                and ok
+                and type(record) == "table"
+                and record.version == SCHEMA_VERSION
+                and record.key == key
+                and type(record.payload) == "table"
+                and record.payload
+              or nil
+            if payload then
+              local object = type(payload.object) == "table" and payload.object or payload
+              local valid_number = type(object.number) == "number" and object.number == math.floor(object.number)
+              local valid_object = type(object.id) == "string"
+                and valid_number
+                and type(object.title) == "string"
+                and (type(object.diff) == "string" or type(object.body) == "string")
+              if not valid_object then
+                payload = nil
+              end
+            end
+            if payload then
+              local now = os.time()
+              pcall(uv.fs_utime, path, now, now, function() end)
+            end
+            schedule(function()
+              callback(payload)
+            end)
+          end)
         end)
       end)
     end)
