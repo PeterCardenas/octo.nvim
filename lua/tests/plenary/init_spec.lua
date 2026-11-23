@@ -135,6 +135,9 @@ describe("Octo module:", function()
   end
 
   local function seed_cached_issue(issue)
+    issue.body = issue.body or ""
+    issue.timelineItems = issue.timelineItems or { nodes = {} }
+    issue._loadState = "complete"
     config.values.persistent_cache.enabled = true
     local key = persistent_cache.key("github.com", "owner/repo", "issue", 17)
     local rendered_lines_key = persistent_cache.key("github.com", "owner/repo", "issue", 17, "rendered")
@@ -380,7 +383,7 @@ describe("Octo module:", function()
     end
 
     local completed = 0
-    local obj = { id = "issue-id", number = 9, title = "Preview" }
+    local obj = { id = "issue-id", number = 9, title = "Preview", body = "", _loadState = "shell" }
     octo.load_preview("owner/repo", "issue", 9, nil, function(result)
       assert.are.same(obj, result)
       completed = completed + 1
@@ -604,21 +607,22 @@ describe("Octo module:", function()
   it("renders the shell when it arrives before full issue details", function()
     local requests, deliver_shell = setup_issue_load_requests()
     local loaded
-    local shells = 0
+    local shell_state
 
     octo.load("owner/repo", "issue", 17, nil, function(obj)
       loaded = obj
     end, {
-      on_shell = function()
-        shells = shells + 1
+      on_shell = function(obj)
+        shell_state = obj._loadState
       end,
     })
     deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
 
-    assert.are.same(1, shells)
+    assert.are.same("shell", shell_state)
     find_issue_details_request(requests).opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
 
     assert.are.same("detail-node", loaded.timelineItems.nodes[1].id)
+    assert.are.same("complete", loaded._loadState)
   end)
 
   it("fans out timeline pages before a late shell arrives", function()
@@ -992,6 +996,27 @@ describe("Octo module:", function()
     end))
 
     assert.are_not.same({ "cached issue snapshot" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("rejects incomplete full-object cache payloads before rendering", function()
+    config.values.persistent_cache.enabled = true
+    local cache_key = persistent_cache.key("github.com", "owner/repo", "issue", 73)
+    local written = false
+    persistent_cache.write(cache_key, { object = { id = "incomplete" } }, function()
+      written = true
+    end)
+    assert.is_true(vim.wait(5000, function()
+      return written
+    end))
+
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/73"
+    local requests, get_buffer = install_async_load_stubs()
+    octo.load_buffer { bufnr = bufnr }
+    vim.wait(100, function()
+      return get_buffer() ~= nil
+    end)
+
+    assert.is_nil(get_buffer())
   end)
 
   it("does not overwrite edits made after stale cache is rendered", function()

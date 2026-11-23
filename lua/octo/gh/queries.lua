@@ -607,8 +607,7 @@ fragment PullRequestReviewFastFragment on PullRequestReview {
     "...PullRequestTimelineItemsFastConnectionFragment"
   ) .. pull_shell_fragment_definitions
 
-  M.pull_request_fast = remove_field(
-    [[
+  M.pull_request_fast = [[
 query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -661,12 +660,6 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
       viewerSubscription
       ...ReactionGroupsFragment
       %s
-      reviewThreads(last: 0) {
-        nodes {
-          ...ReviewThreadInformationFragment
-          comments(first: 0) { nodes { ...ReviewThreadCommentFragment } }
-        }
-      }
       timelineItems(last: $timelineCount) {
         totalCount
         filteredCount
@@ -693,9 +686,7 @@ query($owner: String!, $name: String!, $number: Int!, $timelineCount: Int!) {
     }
   }
 }
-]],
-    "reviewThreads(last: 0)"
-  ) .. pull_shell_fragment_definitions
+]] .. pull_shell_fragment_definitions
 
   M.pull_request_checks = [[
 query($owner: String!, $name: String!, $number: Int!) {
@@ -1222,6 +1213,32 @@ query($owner: String!, $name: String!) {
   ---  totalCount: integer,
   ---  nodes: octo.DiscussionComment[],
   ---}
+
+  ---@class octo.PreviewObject
+  ---@field id string
+  ---@field number integer
+  ---@field title string
+  ---@field body string
+  ---@field _loadState? "shell"|"complete"
+  ---@field _timelineIncomplete? boolean
+  ---@field timelineItems? { filteredCount: integer, nodes: table[] }
+  ---@field comments? { totalCount: integer, nodes: octo.DiscussionComment[] }
+  ---@field statusCheckRollup? { state: string, contexts?: { nodes: table[] } }|vim.NIL
+
+  ---@class octo.LoadShell : octo.PreviewObject
+  ---@field _loadState "shell"
+
+  ---@class octo.CompletePreviewObject : octo.PreviewObject
+  ---@field _loadState "complete"
+
+  ---@class octo.CachedPullDiff
+  ---@field number integer
+  ---@field title string
+  ---@field diff string
+  ---@field diffFingerprint? string
+
+  ---@class octo.PersistentObjectCacheEntry
+  ---@field object octo.PullRequest|octo.Issue|octo.Discussion|octo.CachedPullDiff
 
   M.discussion = [[
 query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {

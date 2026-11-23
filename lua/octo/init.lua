@@ -147,7 +147,6 @@ end
 ---@class ReloadOpts
 ---@field bufnr number
 ---@field verbose? boolean
----@field respect_local_changes? boolean
 ---@field on_local_changes? fun()
 ---@field on_cached? fun()
 ---@field on_reload? fun()
@@ -427,11 +426,60 @@ function M.load_buffer(opts)
     local host = resolve_hostname(hostname)
     cache_key = persistent_cache.key(host, repo, kind, id)
 
+    ---@param object table
+    ---@return boolean
+    local function is_complete_cached_object(object)
+      if
+        type(object.number) ~= "number"
+        or object.number ~= math.floor(object.number)
+        or type(object.title) ~= "string"
+      then
+        return false
+      end
+      if kind == "pull_diff" then
+        return type(object.diff) == "string"
+      end
+      if type(object.id) ~= "string" or type(object.body) ~= "string" or object._loadState == "shell" then
+        return false
+      end
+      if kind == "discussion" then
+        return type(object.comments) == "table" and type(object.comments.nodes) == "table"
+      end
+      return type(object.timelineItems) == "table" and type(object.timelineItems.nodes) == "table"
+    end
+
+    ---@param payload table?
+    ---@return octo.PersistentObjectCacheEntry|nil
+    local function validate_object_cache_payload(payload)
+      if type(payload) ~= "table" or type(payload.object) ~= "table" then
+        return
+      end
+      local object = payload.object
+      if not is_complete_cached_object(object) then
+        return
+      end
+      if kind == "pull_diff" then
+        ---@type octo.CachedPullDiff
+        local diff = object
+        return { object = diff }
+      end
+      if
+        type(object.id) ~= "string"
+        or type(object.body) ~= "string"
+        or object._loadState == "shell"
+        or (kind == "discussion" and type(object.comments) ~= "table")
+        or (kind ~= "discussion" and type(object.timelineItems) ~= "table")
+      then
+        return
+      end
+      ---@type octo.PullRequest|octo.Issue|octo.Discussion
+      local node = object
+      return { object = node }
+    end
+
     local function render_cached_object(cache_entry)
       if
-        not cache_entry
-        or type(cache_entry.object) ~= "table"
-        or not is_latest_load()
+        not is_latest_load()
         or not vim.api.nvim_buf_is_valid(bufnr)
         or fresh_shell_rendered
         or not is_pristine_buffer()
@@ -439,7 +487,11 @@ function M.load_buffer(opts)
       then
         return
       end
-      local cached_obj = cache_entry.object
+      local validated_entry = validate_object_cache_payload(cache_entry)
+      if not validated_entry then
+        return
+      end
+      local cached_obj = validated_entry.object
       vim.schedule(function()
         if
           not is_latest_load()
@@ -733,16 +785,33 @@ function M.load_pull_diff(repo, number, hostname, cb, on_error)
   }
 end
 
----@type table<string, { expires_at: number, obj: table }>
+---@param obj table
+---@return octo.LoadShell|nil
+local function validate_preview_object(obj)
+  if
+    type(obj.id) ~= "string"
+    or type(obj.number) ~= "number"
+    or obj.number < 1
+    or obj.number ~= math.floor(obj.number)
+    or type(obj.title) ~= "string"
+    or type(obj.body) ~= "string"
+  then
+    return
+  end
+  obj._loadState = "shell"
+  return obj
+end
+
+---@type table<string, { expires_at: number, obj: octo.LoadShell }>
 local fast_load_cache = {}
----@type table<string, { success: fun(obj: table, cached: boolean), failure: fun(stderr: string)?, cached_delivered: boolean, fresh_delivered: boolean }[]>
+---@type table<string, { success: fun(obj: octo.LoadShell, cached: boolean), failure: fun(stderr: string)?, cached_delivered: boolean, fresh_delivered: boolean }[]>
 local fast_load_inflight = {}
 
 ---@param repo string
 ---@param kind "pull"|"pull_request"|"issue"|"discussion"
 ---@param id integer|string
 ---@param hostname string?
----@param cb fun(obj: table, cached: boolean): nil
+---@param cb fun(obj: octo.LoadShell, cached: boolean): nil
 ---@param on_error? fun(stderr: string): nil
 function M.load_preview(repo, kind, id, hostname, cb, on_error)
   local normalized_kind = kind == "pull_request" and "pull" or kind
@@ -774,8 +843,12 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
     if callback.cached_delivered or callback.fresh_delivered then
       return
     end
+    local preview_obj = type(obj) == "table" and validate_preview_object(obj) or nil
+    if not preview_obj then
+      return
+    end
     callback.cached_delivered = true
-    callback.success(vim.deepcopy(obj), true)
+    callback.success(vim.deepcopy(preview_obj), true)
   end
 
   local now = vim.loop.hrtime() / 1000000000
@@ -797,7 +870,7 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
   end
 
   persistent_cache.read(preview_key, function(cached_obj)
-    if cached_obj and type(cached_obj) == "table" then
+    if type(cached_obj) == "table" then
       for _, callback in ipairs(callbacks) do
         deliver_cached(callback, cached_obj)
       end
@@ -836,23 +909,27 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
                 normalized_kind == "pull" and "pullRequest" or normalized_kind
               )
             or nil
-          if type(obj) ~= "table" then
+          local preview_obj = type(obj) == "table" and validate_preview_object(obj) or nil
+          if not preview_obj then
             local waiting = fast_load_inflight[cache_key]
             fast_load_inflight[cache_key] = nil
             for _, callback in ipairs(waiting or {}) do
               if callback.failure then
-                callback.failure "Fast query returned no object"
+                callback.failure "Fast query returned an invalid preview object"
               end
             end
             return
           end
-          fast_load_cache[cache_key] = { expires_at = vim.loop.hrtime() / 1000000000 + 30, obj = vim.deepcopy(obj) }
-          persistent_cache.write(preview_key, obj)
+          fast_load_cache[cache_key] = {
+            expires_at = vim.loop.hrtime() / 1000000000 + 30,
+            obj = vim.deepcopy(preview_obj),
+          }
+          persistent_cache.write(preview_key, preview_obj)
           local waiting = fast_load_inflight[cache_key]
           fast_load_inflight[cache_key] = nil
           for _, callback in ipairs(waiting or {}) do
             callback.fresh_delivered = true
-            callback.success(vim.deepcopy(obj), false)
+            callback.success(vim.deepcopy(preview_obj), false)
           end
         end,
       },
@@ -906,7 +983,7 @@ end
 ---@param repo string
 ---@class octo.LoadOpts
 ---@field on_skeleton? fun(): nil
----@field on_shell? fun(obj: octo.Issue|octo.PullRequest|octo.Discussion, cached: boolean): nil
+---@field on_shell? fun(obj: octo.LoadShell, cached: boolean): nil
 ---@field on_error? fun(): nil
 
 ---@param kind octo.NodeKind
@@ -1138,7 +1215,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
       if fallback_started or load_completed or details_received then
         return
       end
-      local shell_comments = shell.comments
+      local load_shell = shell
+      load_shell._loadState = "shell"
+      local shell_comments = load_shell.comments
       local count = shell_comments and shell_comments.totalCount
       local shell_nodes = shell_comments and shell_comments.nodes or {}
       if type(count) ~= "number" or count < #shell_nodes then
@@ -1147,10 +1226,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
       end
 
       expected_count = count
-      shell._loadState = "shell"
-      shell._timelineIncomplete = count > #shell_nodes
+      load_shell._timelineIncomplete = count > #shell_nodes
       if opts and opts.on_shell then
-        opts.on_shell(shell, is_cached)
+        opts.on_shell(load_shell, is_cached)
       end
     end, function()
       fallback()
@@ -1498,7 +1576,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
     if fallback_started or load_completed or details_received then
       return
     end
-    local shell_timeline = shell.timelineItems
+    local load_shell = shell
+    load_shell._loadState = "shell"
+    local shell_timeline = load_shell.timelineItems
     local count = shell_timeline and shell_timeline.filteredCount
     local shell_nodes = shell_timeline and shell_timeline.nodes or {}
     if type(count) ~= "number" or count < #shell_nodes then
@@ -1510,10 +1590,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
     if details_received or fallback_started or load_completed then
       return
     end
-    shell._loadState = "shell"
-    shell._timelineIncomplete = count > #shell_nodes
+    load_shell._timelineIncomplete = count > #shell_nodes
     if opts and opts.on_shell then
-      opts.on_shell(shell, is_cached)
+      opts.on_shell(load_shell, is_cached)
     end
   end, function()
     fallback()
@@ -1687,7 +1766,7 @@ function M.on_cursor_hold()
 end
 
 ---@param kind "repo"|"discussion"|"release"|"issue"|"pull_request"
----@param obj octo.Issue|octo.PullRequest|octo.Discussion|octo.Release|octo.Repository the object to render
+---@param obj octo.Issue|octo.PullRequest|octo.Discussion|octo.LoadShell|octo.Release|octo.Repository the object to render
 ---@param repo string repository full name like "owner/name"
 ---@param create boolean whether to create a new buffer
 function M.create_buffer(kind, obj, repo, create, hostname)

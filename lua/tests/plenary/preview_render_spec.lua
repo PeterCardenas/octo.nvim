@@ -115,7 +115,14 @@ describe("picker preview rendering", function()
   end)
 
   it("adds PR check details asynchronously without delaying the fast preview paint", function()
-    local shell = { id = "pull-id", number = 42, title = "Pull request", commits = { totalCount = 1 } }
+    local fragments = require "octo.gh.fragments"
+    local queries = require "octo.gh.queries"
+    fragments.setup()
+    queries.setup()
+    _G.octo_pv2_fragment = ""
+    assert.is_nil(queries.pull_request_fast:find("reviewThreads(last: 0)", 1, true))
+
+    local shell = { id = "pull-id", number = 42, title = "Pull request", body = "", commits = { totalCount = 1 } }
     octo.load_preview = function(_, _, _, _, callback)
       callback(vim.deepcopy(shell), false)
     end

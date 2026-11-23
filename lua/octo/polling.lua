@@ -281,7 +281,6 @@ local function start_timer(interval)
                 else
                   require("octo").load_buffer {
                     bufnr = bufnr,
-                    respect_local_changes = true,
                     on_local_changes = mark_remote_changed,
                     on_error = finish,
                     on_reload = function()
