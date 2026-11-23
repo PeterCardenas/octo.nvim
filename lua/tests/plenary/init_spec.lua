@@ -1172,6 +1172,29 @@ describe("Octo module:", function()
     assert.are.same({ "diff", "fingerprint" }, requests)
   end)
 
+  it("keeps a cached marker and surfaces an error when revalidation fails", function()
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
+    seed_cached_issue { id = "cached", number = 17, title = "Cached issue" }
+    local requests, get_buffer = install_async_load_stubs()
+    local errors = 0
+
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_error = function()
+        errors = errors + 1
+      end,
+    }
+    assert.is_true(vim.wait(1000, function()
+      return get_buffer() ~= nil and vim.b[bufnr].octo_cached
+    end))
+
+    requests[1].opts.on_error()
+
+    assert.are.same(1, errors)
+    assert.is_true(vim.b[bufnr].octo_cached)
+    assert.are.same("cached", get_buffer().node.id)
+  end)
+
   it("renders stale cached data before fresh data and marks it until revalidation", function()
     local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
     seed_cached_issue { id = "cached", number = 17, title = "Cached issue" }
