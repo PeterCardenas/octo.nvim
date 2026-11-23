@@ -48,8 +48,13 @@ local function clear_cached_mark(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
+  local was_cached = vim.b[bufnr].octo_cached == true
   vim.api.nvim_buf_clear_namespace(bufnr, cached_indicator_ns, 0, -1)
   vim.b[bufnr].octo_cached = nil
+  if was_cached and vim.api.nvim_buf_is_loaded(bufnr) then
+    -- Diff buffers can keep showing virtual text until their window is redrawn.
+    vim.api.nvim__redraw { buf = bufnr, valid = false, flush = true }
+  end
 end
 
 ---@param hostname string?

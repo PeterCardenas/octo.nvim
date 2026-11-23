@@ -12,7 +12,9 @@ describe("Octo module:", function()
   local original_cache_identity
   local original_load_preview
   local original_load
+  local original_load_pull_diff
   local original_create_buffer
+  local original_nvim_redraw
   local original_track_buffer
   local original_octo_buffers
   local created_buffers
@@ -34,7 +36,9 @@ describe("Octo module:", function()
     end
     original_load_preview = octo.load_preview
     original_load = octo.load
+    original_load_pull_diff = octo.load_pull_diff
     original_create_buffer = octo.create_buffer
+    original_nvim_redraw = vim.api.nvim__redraw
     original_track_buffer = polling.track_buffer
     original_octo_buffers = _G.octo_buffers
     created_buffers = {}
@@ -47,7 +51,9 @@ describe("Octo module:", function()
     gh.get_cache_identity = original_cache_identity
     octo.load_preview = original_load_preview
     octo.load = original_load
+    octo.load_pull_diff = original_load_pull_diff
     octo.create_buffer = original_create_buffer
+    vim.api.nvim__redraw = original_nvim_redraw
     polling.track_buffer = original_track_buffer
     _G.octo_buffers = original_octo_buffers
     for _, bufnr in ipairs(created_buffers) do
@@ -1040,6 +1046,44 @@ describe("Octo module:", function()
       {},
       vim.api.nvim_buf_get_extmarks(bufnr, vim.api.nvim_create_namespace "octo_persistent_cache", 0, -1, {})
     )
+  end)
+
+  it("redraws a revalidated warm pull diff after clearing its cached marker", function()
+    config.values.persistent_cache.enabled = true
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/pull/17/diff"
+    local cache_key = persistent_cache.key("github.com", "owner/repo", "pull_diff", 17, nil, "octo-test-user")
+    local cached_diff = {
+      id = "owner/repo#17:diff",
+      number = 17,
+      title = "Cached PR diff",
+      diff = "diff --git a/file.lua b/file.lua\n-old\n+new",
+    }
+    local write_complete = false
+    persistent_cache.write(cache_key, { object = cached_diff }, function()
+      write_complete = true
+    end)
+    assert.is_true(vim.wait(5000, function()
+      return write_complete
+    end))
+
+    local receive_fresh_diff
+    octo.load_pull_diff = function(_, _, _, callback)
+      receive_fresh_diff = callback
+    end
+    local redraws = 0
+    vim.api.nvim__redraw = function(opts)
+      redraws = redraws + 1
+      assert.are.same(bufnr, opts.buf)
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.is_true(vim.wait(1000, function()
+      return vim.b[bufnr].octo_cached == true
+    end))
+    receive_fresh_diff(vim.deepcopy(cached_diff))
+
+    assert.is_nil(vim.b[bufnr].octo_cached)
+    assert.are.same(1, redraws)
   end)
 
   it("does not paint text-only cache snapshots instead of the cached object", function()
