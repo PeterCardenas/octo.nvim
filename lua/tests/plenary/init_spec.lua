@@ -86,6 +86,80 @@ describe("Octo module:", function()
     end
   end
 
+  local function setup_issue_load_requests()
+    local fragments = require "octo.gh.fragments"
+    local queries = require "octo.gh.queries"
+    fragments.setup()
+    queries.setup()
+    _G.octo_pv2_fragment = ""
+
+    local requests = {}
+    local shell_callback
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+    octo.load_preview = function(_, _, _, _, callback)
+      shell_callback = callback
+    end
+    return requests, function(shell)
+      shell_callback(shell)
+    end, queries
+  end
+
+  local function setup_discussion_load_requests()
+    local fragments = require "octo.gh.fragments"
+    local queries = require "octo.gh.queries"
+    fragments.setup()
+    queries.setup()
+    _G.octo_pv2_fragment = ""
+
+    local requests = {}
+    local shell_callback
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+    octo.load_preview = function(_, _, _, _, callback)
+      shell_callback = callback
+    end
+    return requests, function(shell)
+      shell_callback(shell)
+    end, queries
+  end
+
+  local function issue_response(count, nodes)
+    return vim.json.encode {
+      data = {
+        repository = {
+          issue = {
+            id = "issue-id",
+            number = 17,
+            title = "Issue",
+            timelineItems = { filteredCount = count, nodes = nodes },
+          },
+        },
+      },
+    }
+  end
+
+  local function discussion_response(count, nodes)
+    return vim.json.encode {
+      data = {
+        repository = {
+          discussion = {
+            id = "discussion-id",
+            number = 17,
+            title = "Discussion",
+            comments = {
+              totalCount = count,
+              nodes = nodes,
+              pageInfo = { hasPreviousPage = false, startCursor = "start" },
+            },
+          },
+        },
+      },
+    }
+  end
+
   it("navigates to numeric URL anchors", function()
     local received
     local octo_buffer = {
@@ -293,6 +367,7 @@ describe("Octo module:", function()
 
     local fallback_used = false
     local loaded
+    local phase_two_callback
     gh.api.graphql = function(opts)
       if opts.paginate then
         fallback_used = true
@@ -315,21 +390,7 @@ describe("Octo module:", function()
           nil
         )
       else
-        opts.opts.cb(
-          vim.json.encode {
-            data = {
-              repository = {
-                issue = {
-                  timelineItems = {
-                    filteredCount = 3,
-                    nodes = { { id = "node-1" }, { id = "node-2" }, { id = "node-3" } },
-                  },
-                },
-              },
-            },
-          },
-          nil
-        )
+        phase_two_callback = opts.opts.cb
       end
     end
 
@@ -337,8 +398,179 @@ describe("Octo module:", function()
       loaded = obj
     end)
 
+    phase_two_callback(
+      vim.json.encode {
+        data = {
+          repository = {
+            issue = {
+              timelineItems = {
+                filteredCount = 3,
+                nodes = { { id = "node-1" }, { id = "node-2" }, { id = "node-3" } },
+              },
+            },
+          },
+        },
+      },
+      nil
+    )
+
     assert.is_true(fallback_used)
     assert.are.same(3, #loaded.timelineItems.nodes)
+  end)
+
+  it("starts full issue details concurrently and ignores a late shell after details win", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+
+    assert.are.same(1, #requests)
+    assert.is_nil(requests[1].paginate)
+    requests[1].opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
+    deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
+
+    assert.are.same(0, shells)
+    assert.are.same("detail-node", loaded.timelineItems.nodes[1].id)
+  end)
+
+  it("renders the shell when it arrives before full issue details", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+    deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "shell-node" } } } }
+
+    assert.are.same(1, shells)
+    requests[1].opts.cb(issue_response(1, { { id = "detail-node" } }), nil)
+
+    assert.are.same("detail-node", loaded.timelineItems.nodes[1].id)
+  end)
+
+  it("fans out timeline pages before a late shell arrives", function()
+    local requests, deliver_shell, queries = setup_issue_load_requests()
+    local nodes = {}
+    for index = 1, 100 do
+      nodes[index] = { id = "node-" .. index }
+    end
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+    requests[1].opts.cb(issue_response(101, nodes), nil)
+
+    assert.are.same(2, #requests)
+    assert.are.same(queries.issue_timeline_page, requests[2].query)
+    assert.are.same(100, requests[2].fields.skip)
+    requests[2].opts.cb(issue_response(101, { { id = "node-101" } }), nil)
+    deliver_shell { timelineItems = { filteredCount = 101, nodes = { { id = "shell-node" } } } }
+
+    assert.are.same(0, shells)
+    assert.are.same(101, #loaded.timelineItems.nodes)
+  end)
+
+  it("falls back to cursor pagination when a concurrent detail request fails", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+    requests[1].opts.cb("", "network failure")
+
+    assert.are.same(2, #requests)
+    assert.is_true(requests[2].paginate)
+    requests[2].opts.cb(issue_response(1, { { id = "fallback-node" } }), nil)
+    deliver_shell { timelineItems = { filteredCount = 1, nodes = { { id = "late-shell" } } } }
+
+    assert.are.same(0, shells)
+    assert.are.same("fallback-node", loaded.timelineItems.nodes[1].id)
+  end)
+
+  it("falls back to cursor pagination when a skip page fails", function()
+    local requests, deliver_shell = setup_issue_load_requests()
+    local nodes = {}
+    for index = 1, 100 do
+      nodes[index] = { id = "node-" .. index }
+    end
+    local loaded
+
+    octo.load("owner/repo", "issue", 17, nil, function(obj)
+      loaded = obj
+    end)
+    deliver_shell { timelineItems = { filteredCount = 101, nodes = { { id = "shell-node" } } } }
+    requests[2].opts.cb("", "network failure")
+
+    assert.are.same(3, #requests)
+    assert.is_true(requests[3].paginate)
+    requests[3].opts.cb(issue_response(101, nodes), nil)
+    assert.are.same(100, #loaded.timelineItems.nodes)
+  end)
+
+  it("starts full discussion details concurrently and ignores a late shell after details win", function()
+    local requests, deliver_shell, queries = setup_discussion_load_requests()
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "discussion", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+
+    assert.are.same(1, #requests)
+    assert.are.same(queries.discussion_full_recent, requests[1].query)
+    requests[1].opts.cb(discussion_response(1, { { id = "detail-comment" } }), nil)
+    deliver_shell { comments = { totalCount = 1, nodes = { { id = "shell-comment" } } } }
+
+    assert.are.same(0, shells)
+    assert.are.same("detail-comment", loaded.comments.nodes[1].id)
+  end)
+
+  it("renders a discussion shell when it arrives before full details", function()
+    local requests, deliver_shell = setup_discussion_load_requests()
+    local loaded
+    local shells = 0
+
+    octo.load("owner/repo", "discussion", 17, nil, function(obj)
+      loaded = obj
+    end, {
+      on_shell = function()
+        shells = shells + 1
+      end,
+    })
+    deliver_shell { comments = { totalCount = 1, nodes = { { id = "shell-comment" } } } }
+
+    assert.are.same(1, shells)
+    requests[1].opts.cb(discussion_response(1, { { id = "detail-comment" } }), nil)
+
+    assert.are.same("detail-comment", loaded.comments.nodes[1].id)
   end)
 
   it("accepts a successful REST diff when gh writes informational stderr", function()

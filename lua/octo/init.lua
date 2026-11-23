@@ -529,6 +529,14 @@ end
 ---@param opts? { on_shell?: fun(obj: octo.Issue|octo.PullRequest|octo.Discussion): nil }
 function M.load(repo, kind, id, hostname, cb, opts)
   local owner, name = utils.split_repo(repo)
+  local load_completed = false
+  local function complete(obj)
+    if load_completed then
+      return
+    end
+    load_completed = true
+    cb(obj)
+  end
 
   ---@type string, string, table<string, string|integer>
   local query, key, fields
@@ -575,22 +583,22 @@ function M.load(repo, kind, id, hostname, cb, opts)
           obj._defaultBranchName = repo_data.defaultBranchRef.name
         end
       end
-      cb(obj)
+      complete(obj)
     elseif kind == "repo" then
       local resp = vim.json.decode(output)
       ---@type octo.Repository
       local obj = resp.data.repository
-      cb(obj)
+      complete(obj)
     elseif kind == "discussion" then
       local resp = utils.aggregate_pages(output, "data.repository.discussion.comments.nodes")
       ---@type octo.Discussion
       local obj = resp.data.repository.discussion
-      cb(obj)
+      complete(obj)
     elseif kind == "release" then
       local resp = vim.json.decode(output)
       ---@type octo.Release
       local obj = resp.data.repository.release
-      cb(obj)
+      complete(obj)
     else
       utils.error("Unknown kind: " .. kind)
     end
@@ -611,7 +619,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
 
   local fallback_started = false
   local function fallback()
-    if fallback_started then
+    if fallback_started or load_completed then
       return
     end
     fallback_started = true
@@ -623,7 +631,103 @@ function M.load(repo, kind, id, hostname, cb, opts)
       fallback()
       return
     end
+
+    local details_received = false
+    local expected_count ---@type integer?
+    local segments = {} ---@type table[][]
+    local full_response ---@type table?
+    local function request_page(before_cursor)
+      if fallback_started then
+        return
+      end
+      local page_fields = { owner = owner, name = name, number = id }
+      if before_cursor then
+        page_fields.beforeCursor = before_cursor
+      end
+      gh.api.graphql {
+        query = queries.discussion_full_recent,
+        fields = page_fields,
+        jq = ".",
+        opts = {
+          hostname = hostname,
+          cb = gh.create_callback {
+            failure = function()
+              fallback()
+            end,
+            success = function(output)
+              if fallback_started or load_completed then
+                return
+              end
+              local ok, response = pcall(vim.json.decode, output)
+              local discussion = ok and vim.tbl_get(response, "data", "repository", "discussion") or nil
+              local connection = type(discussion) == "table" and discussion.comments or nil
+              local page_info = type(connection) == "table" and connection.pageInfo or nil
+              if
+                type(connection) ~= "table"
+                or type(connection.totalCount) ~= "number"
+                or type(connection.nodes) ~= "table"
+                or type(page_info) ~= "table"
+              then
+                fallback()
+                return
+              end
+
+              details_received = true
+              if expected_count and expected_count ~= connection.totalCount then
+                fallback()
+                return
+              end
+              expected_count = connection.totalCount
+              table.insert(segments, 1, connection.nodes)
+              if not full_response then
+                full_response = response
+              end
+              if page_info.hasPreviousPage then
+                if type(page_info.startCursor) ~= "string" then
+                  fallback()
+                  return
+                end
+                request_page(page_info.startCursor)
+                return
+              end
+
+              local nodes = {} ---@type table[]
+              local seen = {} ---@type table<string, boolean>
+              for _, segment in ipairs(segments) do
+                for _, comment in ipairs(segment) do
+                  local comment_id = comment ~= vim.NIL and type(comment) == "table" and comment.id or nil
+                  if comment_id == nil or not seen[comment_id] then
+                    nodes[#nodes + 1] = comment
+                    if comment_id then
+                      seen[comment_id] = true
+                    end
+                  end
+                end
+              end
+              if #nodes ~= expected_count or not full_response then
+                fallback()
+                return
+              end
+              local full_discussion = vim.tbl_get(full_response, "data", "repository", "discussion")
+              if type(full_discussion) ~= "table" then
+                fallback()
+                return
+              end
+              full_discussion.comments.nodes = nodes
+              full_discussion._timelineIncomplete = nil
+              load_buffer(vim.json.encode(full_response))
+            end,
+          },
+        },
+      }
+    end
+
+    -- Start the full query before the shell request so neither waits on the other.
+    request_page(nil)
     M.load_preview(repo, kind, id, hostname, function(shell)
+      if fallback_started or load_completed or details_received then
+        return
+      end
       local shell_comments = shell.comments
       local count = shell_comments and shell_comments.totalCount
       local shell_nodes = shell_comments and shell_comments.nodes or {}
@@ -632,93 +736,11 @@ function M.load(repo, kind, id, hostname, cb, opts)
         return
       end
 
+      expected_count = count
       shell._timelineIncomplete = count > #shell_nodes
       if opts and opts.on_shell then
         opts.on_shell(shell)
       end
-
-      local segments = {} ---@type table[][]
-      local full_response ---@type table?
-      local function request_page(before_cursor)
-        if fallback_started then
-          return
-        end
-        local page_fields = { owner = owner, name = name, number = id }
-        if before_cursor then
-          page_fields.beforeCursor = before_cursor
-        end
-        gh.api.graphql {
-          query = queries.discussion_full_recent,
-          fields = page_fields,
-          jq = ".",
-          opts = {
-            hostname = hostname,
-            cb = gh.create_callback {
-              failure = function()
-                fallback()
-              end,
-              success = function(output)
-                if fallback_started then
-                  return
-                end
-                local ok, response = pcall(vim.json.decode, output)
-                local discussion = ok and vim.tbl_get(response, "data", "repository", "discussion") or nil
-                local connection = type(discussion) == "table" and discussion.comments or nil
-                local page_info = type(connection) == "table" and connection.pageInfo or nil
-                if
-                  type(connection) ~= "table"
-                  or connection.totalCount ~= count
-                  or type(connection.nodes) ~= "table"
-                  or type(page_info) ~= "table"
-                then
-                  fallback()
-                  return
-                end
-
-                table.insert(segments, 1, connection.nodes)
-                if not full_response then
-                  full_response = response
-                end
-                if page_info.hasPreviousPage then
-                  if type(page_info.startCursor) ~= "string" then
-                    fallback()
-                    return
-                  end
-                  request_page(page_info.startCursor)
-                  return
-                end
-
-                local nodes = {} ---@type table[]
-                local seen = {} ---@type table<string, boolean>
-                for _, segment in ipairs(segments) do
-                  for _, comment in ipairs(segment) do
-                    local comment_id = comment ~= vim.NIL and type(comment) == "table" and comment.id or nil
-                    if comment_id == nil or not seen[comment_id] then
-                      nodes[#nodes + 1] = comment
-                      if comment_id then
-                        seen[comment_id] = true
-                      end
-                    end
-                  end
-                end
-                if #nodes ~= count or not full_response then
-                  fallback()
-                  return
-                end
-                local full_discussion = vim.tbl_get(full_response, "data", "repository", "discussion")
-                if type(full_discussion) ~= "table" then
-                  fallback()
-                  return
-                end
-                full_discussion.comments.nodes = nodes
-                full_discussion._timelineIncomplete = nil
-                load_buffer(vim.json.encode(full_response))
-              end,
-            },
-          },
-        }
-      end
-      request_page(nil)
     end, function()
       fallback()
     end)
@@ -734,116 +756,62 @@ function M.load(repo, kind, id, hostname, cb, opts)
     return
   end
 
-  M.load_preview(repo, kind, id, hostname, function(shell)
-    local shell_timeline = shell.timelineItems
-    local count = shell_timeline and shell_timeline.filteredCount
-    local shell_nodes = shell_timeline and shell_timeline.nodes or {}
-    if type(count) ~= "number" or count < #shell_nodes then
-      fallback()
+  local page_query = kind == "pull" and queries.pull_request_timeline_page or queries.issue_timeline_page
+  local phase_two_query = kind == "pull" and fast_pull_query or query
+  local details_received = false
+  local expected_count ---@type integer?
+  local page_count = 0
+  local pending_pages = 0
+  local pages = {} ---@type table<integer, { filteredCount: integer, nodes: table[] }>
+  local full_response ---@type table?
+
+  local function finish_if_ready()
+    if fallback_started or load_completed or not details_received or pending_pages > 0 then
       return
     end
-
-    shell._timelineIncomplete = count > #shell_nodes
-    if opts and opts.on_shell then
-      opts.on_shell(shell)
-    end
-
-    local page_query = kind == "pull" and queries.pull_request_timeline_page or queries.issue_timeline_page
-    local phase_two_query = kind == "pull" and fast_pull_query or query
-    local page_count = math.ceil(count / 100)
-    local pending = math.max(1, page_count)
-    local pages = {} ---@type table<integer, { filteredCount: integer, nodes: table[] }>
-    local full_response ---@type table?
-
-    local function finish_if_ready()
-      if fallback_started or pending > 0 then
+    local combined_nodes = {} ---@type table[]
+    local seen = {} ---@type table<string, boolean>
+    for page_index = 0, page_count - 1 do
+      local page = pages[page_index]
+      if not page or page.filteredCount ~= expected_count then
+        fallback()
         return
       end
-      local combined_nodes = {} ---@type table[]
-      local seen = {} ---@type table<string, boolean>
-      for page_index = 0, page_count - 1 do
-        local page = pages[page_index]
-        if not page or page.filteredCount ~= count then
-          fallback()
-          return
-        end
-        for _, item in ipairs(page.nodes) do
-          local node_id = item ~= vim.NIL and type(item) == "table" and item.id or nil
-          if node_id == nil or not seen[node_id] then
-            table.insert(combined_nodes, item)
-            if node_id then
-              seen[node_id] = true
-            end
+      for _, item in ipairs(page.nodes) do
+        local node_id = item ~= vim.NIL and type(item) == "table" and item.id or nil
+        if node_id == nil or not seen[node_id] then
+          table.insert(combined_nodes, item)
+          if node_id then
+            seen[node_id] = true
           end
         end
       end
-
-      if #combined_nodes ~= count or not full_response then
-        fallback()
-        return
-      end
-      local full_obj = vim.tbl_get(full_response, "data", "repository", key)
-      if type(full_obj) ~= "table" or type(full_obj.timelineItems) ~= "table" then
-        fallback()
-        return
-      end
-      full_obj.timelineItems.nodes = combined_nodes
-      full_obj._timelineIncomplete = nil
-      load_buffer(vim.json.encode(full_response))
     end
 
-    local function receive_page(index, output)
-      if fallback_started then
-        return
-      end
-      local ok, response = pcall(vim.json.decode, output)
-      local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
-      if
-        type(connection) ~= "table"
-        or type(connection.filteredCount) ~= "number"
-        or type(connection.nodes) ~= "table"
-      then
-        fallback()
-        return
-      end
-      pages[index] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
-      pending = pending - 1
-      finish_if_ready()
+    if #combined_nodes ~= expected_count or not full_response then
+      fallback()
+      return
     end
+    local full_obj = vim.tbl_get(full_response, "data", "repository", key)
+    if type(full_obj) ~= "table" or type(full_obj.timelineItems) ~= "table" then
+      fallback()
+      return
+    end
+    full_obj.timelineItems.nodes = combined_nodes
+    full_obj._timelineIncomplete = nil
+    load_buffer(vim.json.encode(full_response))
+  end
 
-    gh.api.graphql {
-      query = phase_two_query,
-      fields = fields,
-      jq = ".",
-      opts = {
-        hostname = hostname,
-        cb = gh.create_callback {
-          failure = function()
-            fallback()
-          end,
-          success = function(output)
-            if fallback_started then
-              return
-            end
-            local ok, response = pcall(vim.json.decode, output)
-            local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
-            if
-              type(connection) ~= "table"
-              or type(connection.filteredCount) ~= "number"
-              or type(connection.nodes) ~= "table"
-            then
-              fallback()
-              return
-            end
-            full_response = response
-            pages[0] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
-            pending = pending - 1
-            finish_if_ready()
-          end,
-        },
-      },
-    }
-
+  local function start_page_fanout(count)
+    if expected_count then
+      if expected_count ~= count then
+        fallback()
+      end
+      return
+    end
+    expected_count = count
+    page_count = math.ceil(count / 100)
+    pending_pages = math.max(0, page_count - 1)
     for page_index = 1, page_count - 1 do
       gh.api.graphql {
         query = page_query,
@@ -856,11 +824,94 @@ function M.load(repo, kind, id, hostname, cb, opts)
               fallback()
             end,
             success = function(output)
-              receive_page(page_index, output)
+              if fallback_started or load_completed then
+                return
+              end
+              local ok, response = pcall(vim.json.decode, output)
+              local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
+              if
+                type(connection) ~= "table"
+                or type(connection.filteredCount) ~= "number"
+                or type(connection.nodes) ~= "table"
+              then
+                fallback()
+                return
+              end
+              if connection.filteredCount ~= expected_count then
+                fallback()
+                return
+              end
+              pages[page_index] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
+              pending_pages = pending_pages - 1
+              finish_if_ready()
             end,
           },
         },
       }
+    end
+    finish_if_ready()
+  end
+
+  -- Phase two carries the complete details and page zero. It is independent of
+  -- the shell response; either response can reveal the count needed to fan out.
+  gh.api.graphql {
+    query = phase_two_query,
+    fields = fields,
+    jq = ".",
+    opts = {
+      hostname = hostname,
+      cb = gh.create_callback {
+        failure = function()
+          fallback()
+        end,
+        success = function(output)
+          if fallback_started or load_completed then
+            return
+          end
+          local ok, response = pcall(vim.json.decode, output)
+          local connection = ok and vim.tbl_get(response, "data", "repository", key, "timelineItems") or nil
+          if
+            type(connection) ~= "table"
+            or type(connection.filteredCount) ~= "number"
+            or type(connection.nodes) ~= "table"
+          then
+            fallback()
+            return
+          end
+
+          details_received = true
+          if expected_count and expected_count ~= connection.filteredCount then
+            fallback()
+            return
+          end
+          full_response = response
+          pages[0] = { filteredCount = connection.filteredCount, nodes = connection.nodes }
+          start_page_fanout(connection.filteredCount)
+          finish_if_ready()
+        end,
+      },
+    },
+  }
+
+  M.load_preview(repo, kind, id, hostname, function(shell)
+    if fallback_started or load_completed or details_received then
+      return
+    end
+    local shell_timeline = shell.timelineItems
+    local count = shell_timeline and shell_timeline.filteredCount
+    local shell_nodes = shell_timeline and shell_timeline.nodes or {}
+    if type(count) ~= "number" or count < #shell_nodes then
+      fallback()
+      return
+    end
+
+    start_page_fanout(count)
+    if details_received or fallback_started or load_completed then
+      return
+    end
+    shell._timelineIncomplete = count > #shell_nodes
+    if opts and opts.on_shell then
+      opts.on_shell(shell)
     end
   end, function()
     fallback()
