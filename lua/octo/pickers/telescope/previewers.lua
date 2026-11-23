@@ -2,10 +2,7 @@
 local OctoBuffer = require("octo.model.octo-buffer").OctoBuffer
 local gh = require "octo.gh"
 local headers = require "octo.gh.headers"
-local graphql = require "octo.gh.graphql"
-local queries = require "octo.gh.queries"
 local writers = require "octo.ui.writers"
-local utils = require "octo.utils"
 local previewers = require "telescope.previewers"
 local pv_utils = require "telescope.previewers.utils"
 local ts_utils = require "telescope.utils"
@@ -33,26 +30,12 @@ local discussion = defaulter(function(opts)
       end
 
       local number = entry.value
-      local owner, name = utils.split_repo(entry.repo)
-
-      gh.api.graphql {
-        query = queries.discussion,
-        fields = { owner = owner, name = name, number = number },
-        jq = ".data.repository.discussion",
-        opts = {
-          cb = gh.create_callback {
-            failure = utils.print_err,
-            success = function(output)
-              if not vim.api.nvim_buf_is_valid(bufnr) then
-                return
-              end
-
-              local obj = vim.json.decode(output)
-              writers.discussion_preview(obj, bufnr)
-            end,
-          },
-        },
-      }
+      require("octo").load_preview(entry.repo, "discussion", number, nil, function(obj)
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+        writers.discussion_preview(obj, bufnr)
+      end)
     end,
   }
 end)
@@ -68,36 +51,12 @@ local issue = defaulter(function(opts)
 
       if self.state.bufname ~= entry.value or vim.api.nvim_buf_line_count(bufnr) == 1 then
         local number = entry.value
-        local owner, name = utils.split_repo(entry.repo)
-
-        local query, jq
-        if entry.kind == "issue" then
-          query = graphql("issue_query", _G.octo_pv2_fragment)
-          jq = ".data.repository.issue"
-        elseif entry.kind == "pull_request" then
-          query = graphql("pull_request_query", _G.octo_pv2_fragment)
-          jq = ".data.repository.pullRequest"
-        end
-
-        gh.api.graphql {
-          query = query,
-          fields = { owner = owner, name = name, number = number },
-          jq = jq,
-          opts = {
-            cb = gh.create_callback {
-              failure = utils.print_err,
-              success = function(output)
-                local obj = vim.json.decode(output)
-
-                if not vim.api.nvim_buf_is_loaded(bufnr) then
-                  return
-                end
-
-                writers.issue_preview(obj, bufnr)
-              end,
-            },
-          },
-        }
+        require("octo").load_preview(entry.repo, entry.kind, number, nil, function(obj)
+          if not vim.api.nvim_buf_is_loaded(bufnr) then
+            return
+          end
+          writers.issue_preview(obj, bufnr)
+        end)
       end
     end,
   }

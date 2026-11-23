@@ -1,6 +1,5 @@
 local gh = require "octo.gh"
 local headers = require "octo.gh.headers"
-local graphql = require "octo.gh.graphql"
 local utils = require "octo.utils"
 local writers = require "octo.ui.writers"
 local queries = require "octo.gh.queries"
@@ -67,7 +66,7 @@ end
 ---@param name string
 ---@param number string
 ---@param kind string
----@param on_success fun(obj: any): nil
+---@param on_success fun(obj: table): nil
 function M.fetch_preview(owner, name, number, kind, on_success)
   ---@param query string
   ---@param fields table<string, string>
@@ -92,32 +91,21 @@ function M.fetch_preview(owner, name, number, kind, on_success)
       },
     }
   end
-  ---@type string, table<string, string>, string
-  local query, fields, jq
 
-  if kind == "issue" then
-    query = graphql("issue_query", _G.octo_pv2_fragment)
-    fields = { owner = owner, name = name, number = number }
-    jq = ".data.repository.issue"
-  elseif kind == "pull_request" then
-    query = graphql("pull_request_query", _G.octo_pv2_fragment)
-    fields = { owner = owner, name = name, number = number }
-    jq = ".data.repository.pullRequest"
-  elseif kind == "discussion" then
-    query = queries.discussion
-    fields = { owner = owner, name = name, number = number }
-    jq = ".data.repository.discussion"
-  elseif kind == "release" then
+  if kind == "release" then
     -- GraphQL only accepts tags and release notifications give back IDs
     release.get_tag_from_release_id({ owner = owner, repo = name, release_id = number }, function(tag_name)
-      query = queries.release
-      fields = { owner = owner, name = name, tag = tag_name }
-      jq = ".data.repository.release"
-      inner_fetch(query, fields, jq)
+      inner_fetch(queries.release, { owner = owner, name = name, tag = tag_name }, ".data.repository.release")
     end)
     return
   end
-  inner_fetch(query, fields, jq)
+
+  if kind == "issue" or kind == "pull_request" or kind == "discussion" then
+    local node_kind = kind == "pull_request" and "pull" or kind
+    require("octo").load_preview(owner .. "/" .. name, node_kind, number, nil, on_success, function(stderr)
+      utils.print_err(stderr)
+    end)
+  end
 end
 
 ---@param kind string

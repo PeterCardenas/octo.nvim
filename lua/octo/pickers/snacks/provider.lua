@@ -10,8 +10,29 @@ local Async = require "snacks.picker.util.async"
 local Snacks = require "snacks"
 local notify = require "snacks.notify"
 local bubbles = require "octo.ui.bubbles"
+local writers = require "octo.ui.writers"
 
 local M = {}
+
+---@param ctx snacks.picker.preview.ctx
+---@param kind "issue"|"pull_request"|"discussion"
+---@param repo string
+---@param number integer|string
+local function render_fast_preview(ctx, kind, repo, number)
+  ctx.preview:reset()
+  ctx.preview:set_lines { "Loading preview…" }
+  require("octo").load_preview(repo, kind, number, nil, function(obj)
+    if not vim.api.nvim_buf_is_valid(ctx.buf) or ctx.preview.item ~= ctx.item then
+      return
+    end
+    if kind == "discussion" then
+      writers.discussion_preview(obj, ctx.buf)
+    else
+      writers.issue_preview(obj, ctx.buf)
+    end
+    ctx.preview:highlight { ft = "octo" }
+  end)
+end
 
 function M.not_implemented()
   utils.error "Not implemented yet"
@@ -115,6 +136,12 @@ function M.issues(opts)
           Snacks.picker.pick {
             title = preview_title,
             items = issues,
+            preview = function(ctx)
+              local item = ctx.item
+              if item then
+                render_fast_preview(ctx, "issue", item.repository.nameWithOwner, item.number)
+              end
+            end,
             format = function(item, _)
               local a = Snacks.picker.util.align
               ---@type snacks.picker.Highlight[]
@@ -292,6 +319,12 @@ function M.pull_requests(opts)
           Snacks.picker.pick {
             title = preview_title,
             items = pull_requests,
+            preview = function(ctx)
+              local item = ctx.item
+              if item then
+                render_fast_preview(ctx, "pull_request", item.repository.nameWithOwner, item.number)
+              end
+            end,
             format = function(item, _)
               ---@type snacks.picker.Highlight[]
               local ret = {}
@@ -477,6 +510,12 @@ function M.notifications(opts)
           Snacks.picker.pick {
             title = opts.preview_title or "Notifications",
             items = safe_notifications,
+            preview = function(ctx)
+              local item = ctx.item
+              if item and (item.kind == "issue" or item.kind == "pull_request") then
+                render_fast_preview(ctx, item.kind, item.repository.full_name, item.subject.number)
+              end
+            end,
             format = function(item, _)
               ---@type snacks.picker.Highlight[]
               local ret = {}
@@ -1052,6 +1091,16 @@ function M.search(opts)
     Snacks.picker.pick {
       title = opts.preview_title or "GitHub Search Results",
       items = search_results,
+      preview = function(ctx)
+        local item = ctx.item
+        if
+          item
+          and (item.kind == "issue" or item.kind == "pull_request" or item.kind == "discussion")
+          and item.repository
+        then
+          render_fast_preview(ctx, item.kind, item.repository.nameWithOwner, item.number)
+        end
+      end,
       format = function(item, _)
         local a = Snacks.picker.util.align
         local ret = {} ---@type snacks.picker.Highlight[]
