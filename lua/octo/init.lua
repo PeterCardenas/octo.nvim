@@ -474,6 +474,10 @@ function M.load_buffer(opts)
 
     ---@param object table
     ---@return boolean
+    local function has_nodes(connection)
+      return type(connection) == "table" and type(connection.nodes) == "table"
+    end
+
     local function is_complete_cached_object(object)
       if
         type(object.number) ~= "number"
@@ -485,13 +489,21 @@ function M.load_buffer(opts)
       if kind == "pull_diff" then
         return type(object.diff) == "string"
       end
-      if type(object.id) ~= "string" or type(object.body) ~= "string" or object._loadState == "shell" then
+      if
+        type(object.id) ~= "string"
+        or type(object.body) ~= "string"
+        or object._loadState == "shell"
+        or not has_nodes(object.labels)
+      then
         return false
       end
       if kind == "discussion" then
-        return type(object.comments) == "table" and type(object.comments.nodes) == "table"
+        return has_nodes(object.comments) and type(object.comments.totalCount) == "number"
       end
-      return type(object.timelineItems) == "table" and type(object.timelineItems.nodes) == "table"
+      if not has_nodes(object.timelineItems) then
+        return false
+      end
+      return kind ~= "pull" or has_nodes(object.reviewThreads)
     end
 
     ---@param payload table?
@@ -548,7 +560,7 @@ function M.load_buffer(opts)
         then
           return
         end
-        vim.api.nvim_buf_call(bufnr, function()
+        local rendered = pcall(vim.api.nvim_buf_call, bufnr, function()
           vim.bo[bufnr].modifiable = true
           vim.bo[bufnr].readonly = false
           if kind == "pull_diff" then
@@ -563,6 +575,18 @@ function M.load_buffer(opts)
           notify_cached()
           restore_cursor()
         end)
+        if not rendered then
+          octo_buffers[bufnr] = nil
+          clear_cached_mark(bufnr)
+          if vim.b[bufnr].octo_loading_skeleton then
+            vim.bo[bufnr].modifiable = true
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+              string.format("Loading %s #%s from %s…", kind, id, repo),
+            })
+            vim.bo[bufnr].modified = false
+            vim.bo[bufnr].modifiable = false
+          end
+        end
       end)
     end
 
@@ -841,7 +865,7 @@ end
 
 ---@param obj table
 ---@return octo.LoadShell|nil
-local function validate_preview_object(obj)
+local function validate_preview_object(obj, kind)
   if
     type(obj.id) ~= "string"
     or type(obj.number) ~= "number"
@@ -849,6 +873,23 @@ local function validate_preview_object(obj)
     or obj.number ~= math.floor(obj.number)
     or type(obj.title) ~= "string"
     or type(obj.body) ~= "string"
+    or type(obj.labels) ~= "table"
+    or type(obj.labels.nodes) ~= "table"
+  then
+    return
+  end
+  if kind == "discussion" then
+    if
+      type(obj.comments) ~= "table"
+      or type(obj.comments.nodes) ~= "table"
+      or type(obj.comments.totalCount) ~= "number"
+    then
+      return
+    end
+  elseif
+    type(obj.timelineItems) ~= "table"
+    or type(obj.timelineItems.nodes) ~= "table"
+    or type(obj.timelineItems.filteredCount) ~= "number"
   then
     return
   end
@@ -909,7 +950,7 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error, auth_context)
     if callback.cached_delivered or callback.fresh_delivered then
       return
     end
-    local preview_obj = type(obj) == "table" and validate_preview_object(obj) or nil
+    local preview_obj = type(obj) == "table" and validate_preview_object(obj, normalized_kind) or nil
     if not preview_obj then
       return
     end
@@ -978,7 +1019,7 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error, auth_context)
                 normalized_kind == "pull" and "pullRequest" or normalized_kind
               )
             or nil
-          local preview_obj = type(obj) == "table" and validate_preview_object(obj) or nil
+          local preview_obj = type(obj) == "table" and validate_preview_object(obj, normalized_kind) or nil
           if not preview_obj then
             local waiting = fast_load_inflight[cache_key]
             fast_load_inflight[cache_key] = nil

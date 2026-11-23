@@ -491,7 +491,15 @@ describe("Octo module:", function()
     end
 
     local completed = 0
-    local obj = { id = "issue-id", number = 9, title = "Preview", body = "", _loadState = "shell" }
+    local obj = {
+      id = "issue-id",
+      number = 9,
+      title = "Preview",
+      body = "",
+      labels = { nodes = {} },
+      timelineItems = { filteredCount = 0, nodes = {} },
+      _loadState = "shell",
+    }
     octo.load_preview("owner/repo", "issue", 9, nil, function(result)
       assert.are.same(obj, result)
       completed = completed + 1
@@ -1197,6 +1205,85 @@ describe("Octo module:", function()
     end))
 
     assert.are_not.same({ "cached issue snapshot" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("rejects cache payloads missing fields required by issue rendering", function()
+    config.values.persistent_cache.enabled = true
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
+    local incomplete = {
+      id = "cached-incomplete",
+      number = 17,
+      title = "Cached issue",
+      body = "",
+      timelineItems = { nodes = {} },
+      _loadState = "complete",
+    }
+    persistent_cache.read = function(_, callback)
+      callback { object = incomplete }
+    end
+    local requests, get_buffer = install_async_load_stubs()
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.is_true(vim.wait(100, function()
+      return requests[1] ~= nil
+    end))
+    vim.wait(100, function()
+      return false
+    end, 10)
+
+    assert.is_nil(get_buffer())
+    assert.is_nil(vim.b[bufnr].octo_cached)
+  end)
+
+  it("contains cached render failures and keeps live completion available", function()
+    config.values.persistent_cache.enabled = true
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
+    local cached = {
+      id = "cached",
+      number = 17,
+      title = "Cached issue",
+      body = "",
+      labels = { nodes = {} },
+      timelineItems = { nodes = {} },
+      _loadState = "complete",
+    }
+    persistent_cache.read = function(_, callback)
+      callback { object = cached }
+    end
+    local requests = install_async_load_stubs()
+    local render_attempts = 0
+    octo.create_buffer = function()
+      render_attempts = render_attempts + 1
+      error "corrupt cached object reached renderer"
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.is_true(vim.wait(100, function()
+      return render_attempts == 1
+    end))
+    assert.is_nil(vim.b[bufnr].octo_cached)
+
+    octo.create_buffer = function(_, obj)
+      _G.octo_buffers[bufnr] = {
+        node = obj,
+        commentsMetadata = {},
+        threadsMetadata = {},
+        has_local_changes = function()
+          return false
+        end,
+      }
+    end
+    requests[1].callback {
+      id = "fresh",
+      number = 17,
+      title = "Fresh issue",
+      body = "",
+      labels = { nodes = {} },
+      timelineItems = { nodes = {} },
+    }
+
+    assert.are.same("fresh", _G.octo_buffers[bufnr].node.id)
+    assert.is_nil(vim.b[bufnr].octo_cached)
   end)
 
   it("rejects incomplete full-object cache payloads before rendering", function()
