@@ -3,6 +3,7 @@ describe("GitHub HTTP transport", function()
   local config
   local original_system
   local original_gh_cmd
+  local original_gh_env
   local completions
   local calls
   local temporary_command
@@ -37,6 +38,7 @@ describe("GitHub HTTP transport", function()
     config = require "octo.config"
     original_system = vim.system
     original_gh_cmd = config.values.gh_cmd
+    original_gh_env = config.values.gh_env
     temporary_command = nil
     install_system_stub()
   end)
@@ -44,6 +46,7 @@ describe("GitHub HTTP transport", function()
   after_each(function()
     vim.system = original_system
     config.values.gh_cmd = original_gh_cmd
+    config.values.gh_env = original_gh_env
     if temporary_command and vim.fn.filereadable(temporary_command) == 1 then
       vim.fn.delete(temporary_command)
     end
@@ -58,8 +61,8 @@ describe("GitHub HTTP transport", function()
     local hostname = "octo-http-test.example"
     local received = {}
     gh.api.graphql {
-      query = "query($number: Int!) { issue(number: $number) { number } }",
-      fields = { number = 7 },
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
       jq = ".",
       opts = {
         hostname = hostname,
@@ -79,12 +82,15 @@ describe("GitHub HTTP transport", function()
     assert.are.same("curl", curl_call.argv[1])
     assert.is_true(curl_call.opts.stdin:find("http2", 1, true) ~= nil)
     assert.is_true(curl_call.opts.stdin:find("compressed", 1, true) ~= nil)
+    assert.are.same("-q", curl_call.argv[2])
     assert.is_true(curl_call.opts.stdin:find("secret-test-token", 1, true) ~= nil)
+    assert.is_true(curl_call.opts.stdin:find("data-binary", 1, true) ~= nil)
     assert.is_nil(table.concat(curl_call.argv, " "):find("secret-test-token", 1, true))
+    assert.is_nil(table.concat(curl_call.argv, " "):find("octo", 1, true))
     assert.is_true(curl_call.opts.stdin:find("https://octo-http-test.example/api/graphql", 1, true) ~= nil)
-    local body = vim.json.decode(curl_call.argv[5])
-    assert.are.same("query($number: Int!) { issue(number: $number) { number } }", body.query)
-    assert.are.same({ number = 7 }, body.variables)
+    assert.is_true(curl_call.opts.stdin:find("data%-binary = ", 1) ~= nil)
+    assert.is_true(curl_call.opts.stdin:find("octo", 1, true) ~= nil)
+    assert.is_true(curl_call.opts.stdin:find("number", 1, true) ~= nil)
 
     complete_system(2, {
       code = 0,
@@ -98,7 +104,8 @@ describe("GitHub HTTP transport", function()
     assert.are.same({ data = { issue = { number = 7 } } }, vim.json.decode(received[1].output))
 
     gh.api.graphql {
-      query = "query { viewer { login } }",
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
       jq = ".",
       opts = {
         hostname = hostname,
@@ -163,11 +170,74 @@ describe("GitHub HTTP transport", function()
     end))
   end)
 
+  it("keeps mutations and unlisted GraphQL reads out of the curl transport", function()
+    make_fallback_command()
+    local completed = 0
+    for _, query in ipairs {
+      "mutation { addComment(input: {}) { clientMutationId } }",
+      "query { viewer { login } }",
+    } do
+      gh.api.graphql {
+        query = query,
+        fields = {},
+        jq = ".",
+        opts = {
+          hostname = "octo-unlisted-query.example",
+          cb = function()
+            completed = completed + 1
+          end,
+        },
+      }
+    end
+
+    assert.is_true(vim.wait(2000, function()
+      return completed == 2
+    end))
+    assert.are.same(0, #calls)
+  end)
+
+  it("refreshes a rejected token once before falling back to gh", function()
+    make_fallback_command()
+    local loaded
+    gh.api.graphql {
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
+      jq = ".",
+      opts = {
+        hostname = "octo-expired-token.example",
+        cb = function(output)
+          loaded = output
+        end,
+      },
+    }
+    complete_system(1, { code = 0, stdout = "expired-token" })
+    assert.is_true(vim.wait(100, function()
+      return #calls == 2
+    end))
+    complete_system(2, { code = 22, stdout = '{"message":"Bad credentials"}', stderr = "HTTP 401" })
+    assert.is_true(vim.wait(100, function()
+      return #calls == 3
+    end))
+    complete_system(3, { code = 0, stdout = "refreshed-token" })
+    assert.is_true(vim.wait(100, function()
+      return #calls == 4
+    end))
+    assert.is_true(calls[4].opts.stdin:find("refreshed-token", 1, true) ~= nil)
+    complete_system(4, { code = 22, stdout = '{"message":"Bad credentials"}', stderr = "HTTP 401" })
+
+    assert.is_true(vim.wait(2000, function()
+      return loaded ~= nil
+    end))
+    assert.are.same('{"data":{"fallback":true}}', vim.trim(loaded))
+    assert.are.same(4, #calls)
+  end)
+
   it("falls back to gh when token retrieval fails", function()
     make_fallback_command()
     local loaded
     gh.api.graphql {
-      query = "query { viewer { login } }",
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
       jq = ".",
       opts = {
         hostname = "octo-auth-failure.example",
@@ -188,7 +258,8 @@ describe("GitHub HTTP transport", function()
     make_fallback_command()
     local loaded
     gh.api.graphql {
-      query = "query { viewer { login } }",
+      query = require("octo.gh.queries").discussion_fast,
+      fields = { owner = "octo", name = "repo", number = 7 },
       jq = ".",
       opts = {
         hostname = "octo-transport-failure.example",

@@ -544,7 +544,38 @@ end
 ---@param expects_json boolean
 ---@param callback fun(output: string): nil
 ---@param fallback fun(): nil
-local function request_with_curl(hostname, url, method, body, request_headers, expects_json, callback, fallback)
+local function is_bad_credentials(output)
+  local ok, response = pcall(vim.json.decode, output or "")
+  if not ok or type(response) ~= "table" then
+    return false
+  end
+  local function has_bad_credentials(message)
+    return type(message) == "string" and message:lower():find("bad credentials", 1, true) ~= nil
+  end
+  if has_bad_credentials(response.message) then
+    return true
+  end
+  if type(response.errors) == "table" then
+    for _, error in ipairs(response.errors) do
+      if type(error) == "table" and has_bad_credentials(error.message) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function request_with_curl(
+  hostname,
+  url,
+  method,
+  body,
+  request_headers,
+  expects_json,
+  callback,
+  fallback,
+  retry_auth
+)
   if vim.fn.executable "curl" ~= 1 then
     fallback()
     return
@@ -576,22 +607,31 @@ local function request_with_curl(hostname, url, method, body, request_headers, e
     for _, header in ipairs(request_headers or {}) do
       table.insert(config_lines, "header = " .. quote_curl_config(header))
     end
-
-    local args = { "curl", "--config", "-" }
     if body then
-      table.insert(args, "--data-binary")
-      table.insert(args, body)
+      table.insert(config_lines, "data-binary = " .. quote_curl_config(body))
     end
+
+    local args = { "curl", "-q", "--config", "-" }
     local launched = pcall(
       vim.system,
       args,
-      { stdin = table.concat(config_lines, "\n"), text = true },
+      { stdin = table.concat(config_lines, "\n"), env = get_env(), text = true },
       vim.schedule_wrap(function(result)
+        local output = result.stdout or ""
+        local auth_failure = (result.stderr or ""):find("401", 1, true) ~= nil or is_bad_credentials(output)
+        if auth_failure then
+          if not retry_auth then
+            auth_tokens[hostname] = nil
+            request_with_curl(hostname, url, method, body, request_headers, expects_json, callback, fallback, true)
+          else
+            fallback()
+          end
+          return
+        end
         if result.code ~= 0 then
           fallback()
           return
         end
-        local output = result.stdout or ""
         if expects_json then
           local decoded_ok, decoded = pcall(vim.json.decode, output)
           if
@@ -610,6 +650,37 @@ local function request_with_curl(hostname, url, method, body, request_headers, e
       fallback()
     end
   end)
+end
+
+local direct_graphql_query_names = {
+  "discussion_fast",
+  "discussion_full_recent",
+  "issue_fast",
+  "issue_timeline_page",
+  "pull_diff_fingerprint",
+  "pull_request_checks",
+  "pull_request_fast",
+  "pull_request_review_threads",
+  "pull_request_rulesets",
+  "pull_request_timeline_page",
+}
+
+---@param query string
+---@return boolean
+local function is_allowlisted_direct_query(query)
+  for _, name in ipairs(direct_graphql_query_names) do
+    local allowed_query = queries[name]
+    if allowed_query == query then
+      return true
+    end
+    if type(allowed_query) == "string" and allowed_query:find "%%s" then
+      local ok, expanded_query = pcall(string.format, allowed_query, _G.octo_pv2_fragment or "")
+      if ok and expanded_query == query then
+        return true
+      end
+    end
+  end
+  return false
 end
 
 ---@param graphql_opts table
@@ -639,7 +710,7 @@ local function try_graphql_direct(graphql_opts, run_opts, args)
     return false
   end
   local query = raw_fields.query
-  if type(query) ~= "string" then
+  if type(query) ~= "string" or not is_allowlisted_direct_query(query) then
     return false
   end
   local hostname = resolve_api_hostname(run_opts.hostname)
