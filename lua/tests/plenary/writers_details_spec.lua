@@ -121,6 +121,39 @@ describe("PR details merge diagnostics", function()
     vim.api.nvim_buf_delete(bufnr, { force = true })
   end)
 
+  it("renders a draft PR with no checks", function()
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    local pull_request = make_pull_request()
+    pull_request.isDraft = true
+    pull_request.statusCheckRollup = vim.NIL
+
+    writers.write_details(bufnr, pull_request, false, true)
+
+    local details = table.concat(get_detail_lines(bufnr), "\n")
+    assert.matches("Draft", details)
+    assert.is_nil(details:match "Checks:")
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+  end)
+
+  it("renders a merged PR without checks", function()
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    local pull_request = make_pull_request()
+    pull_request.state = "MERGED"
+    pull_request.merged = true
+    pull_request.mergedBy = { login = "merger", isViewer = false }
+    pull_request.statusCheckRollup = vim.NIL
+    pull_request.reviewDecision = vim.NIL
+    pull_request.mergeable = vim.NIL
+
+    writers.write_details(bufnr, pull_request, false, true)
+
+    local details = table.concat(get_detail_lines(bufnr), "\n")
+    assert.matches("Merged", details)
+    assert.matches("Merged by.*merger", details)
+    assert.is_nil(details:match "Checks:")
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+  end)
+
   it("does not highlight diagnostic indentation before the merge check icon", function()
     local bufnr = vim.api.nvim_create_buf(false, true)
 

@@ -7,6 +7,8 @@ describe("Octo module:", function()
   local original_get
   local original_graphql
   local original_load_preview
+  local original_load
+  local original_create_buffer
   local original_track_buffer
   local original_octo_buffers
   local created_buffers
@@ -19,6 +21,8 @@ describe("Octo module:", function()
     original_get = gh.api.get
     original_graphql = gh.api.graphql
     original_load_preview = octo.load_preview
+    original_load = octo.load
+    original_create_buffer = octo.create_buffer
     original_track_buffer = polling.track_buffer
     original_octo_buffers = _G.octo_buffers
     created_buffers = {}
@@ -28,6 +32,8 @@ describe("Octo module:", function()
     gh.api.get = original_get
     gh.api.graphql = original_graphql
     octo.load_preview = original_load_preview
+    octo.load = original_load
+    octo.create_buffer = original_create_buffer
     polling.track_buffer = original_track_buffer
     _G.octo_buffers = original_octo_buffers
     for _, bufnr in ipairs(created_buffers) do
@@ -43,6 +49,41 @@ describe("Octo module:", function()
     vim.api.nvim_buf_set_name(bufnr, name)
     vim.api.nvim_set_current_buf(bufnr)
     return bufnr
+  end
+
+  local function install_async_load_stubs(render_issue)
+    local requests = {}
+    local rendered
+    octo.load = function(_, _, _, _, callback, opts)
+      requests[#requests + 1] = { callback = callback, opts = opts }
+    end
+    octo.create_buffer = function(_, obj)
+      local bufnr = vim.api.nvim_get_current_buf()
+      rendered = {
+        bufnr = bufnr,
+        node = obj,
+        dirty = false,
+        has_local_changes = function(self)
+          return self.dirty
+        end,
+        update_node = function(self, node)
+          self.node = node
+        end,
+        render_issue = function(self)
+          if render_issue then
+            render_issue(self)
+          end
+        end,
+        render_discussion = function(self)
+          self.discussion_rendered = (self.discussion_rendered or 0) + 1
+        end,
+        render_signs = function() end,
+      }
+      _G.octo_buffers[bufnr] = rendered
+    end
+    return requests, function()
+      return rendered
+    end
   end
 
   it("navigates to numeric URL anchors", function()
@@ -347,6 +388,102 @@ describe("Octo module:", function()
     octo.load_pull_diff("owner/repo", 7, nil, function() end)
 
     assert.are.same({ "diff", "fingerprint" }, requests)
+  end)
+
+  it("does not overwrite edits made while the second phase is loading", function()
+    local bufnr = create_named_buffer "octo://owner/repo/pull/17"
+    local requests, get_buffer = install_async_load_stubs()
+    local local_changes = 0
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_local_changes = function()
+        local_changes = local_changes + 1
+      end,
+    }
+
+    requests[1].opts.on_shell { id = "shell" }
+    local buffer = get_buffer()
+    buffer.dirty = true
+    requests[1].callback { id = "complete" }
+
+    assert.are.same("shell", buffer.node.id)
+    assert.are.same(1, local_changes)
+  end)
+
+  it("ignores callbacks from an older reload while the latest load wins", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local requests, get_buffer = install_async_load_stubs()
+    octo.load_buffer { bufnr = bufnr }
+    octo.load_buffer { bufnr = bufnr }
+
+    requests[1].opts.on_shell { id = "stale-shell" }
+    assert.is_nil(get_buffer())
+    requests[2].opts.on_shell { id = "current-shell" }
+    requests[1].callback { id = "stale-complete" }
+    requests[2].callback { id = "current-complete" }
+
+    assert.are.same("current-complete", get_buffer().node.id)
+  end)
+
+  it("does not render after the target buffer closes mid-load", function()
+    local bufnr = create_named_buffer "octo://owner/repo/discussion/17"
+    local requests, get_buffer = install_async_load_stubs()
+    local errors = 0
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_error = function()
+        errors = errors + 1
+      end,
+    }
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+
+    requests[1].opts.on_shell { id = "shell" }
+    requests[1].callback { id = "complete" }
+
+    assert.is_nil(get_buffer())
+    assert.are.same(1, errors)
+  end)
+
+  it("preserves closed comment folds across the phase-two rerender", function()
+    local constants = require "octo.constants"
+    local bufnr = create_named_buffer "octo://owner/repo/pull/17"
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "header", "body one", "body two", "body three", "tail" })
+    local old_mark = vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, 1, 0, { end_row = 4 })
+    vim.cmd [[setlocal foldmethod=manual]]
+    vim.cmd [[1,5fold]]
+    vim.cmd [[1foldopen]]
+
+    local requests, get_buffer = install_async_load_stubs(function(buffer)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "header", "body one", "body two", "body three", "tail" })
+      local new_mark = vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, 1, 0, { end_row = 4 })
+      buffer.commentsMetadata = { { id = "comment-1", extmark = new_mark } }
+      vim.cmd [[1,5fold]]
+      vim.cmd [[1foldopen]]
+    end)
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell" }
+    get_buffer().commentsMetadata = { { id = "comment-1", extmark = old_mark } }
+    vim.cmd [[1foldclose]]
+
+    requests[1].callback { id = "complete" }
+
+    assert.are.same(1, vim.fn.foldclosed(3))
+  end)
+
+  it("preserves the cursor moved during phase two and rerenders discussion buffers as discussions", function()
+    local bufnr = create_named_buffer "octo://owner/repo/discussion/17"
+    local requests, get_buffer = install_async_load_stubs(function(buffer)
+      vim.api.nvim_buf_set_lines(buffer.bufnr, 0, -1, false, { "one", "two", "three", "four", "five" })
+    end)
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell" }
+
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "one", "two", "three", "four", "five" })
+    vim.api.nvim_win_set_cursor(0, { 4, 2 })
+    requests[1].callback { id = "complete" }
+
+    assert.are.same({ 4, 2 }, vim.api.nvim_win_get_cursor(0))
+    assert.are.same(1, get_buffer().discussion_rendered)
   end)
 
   it("passes hostname when loading pull request diff buffers", function()

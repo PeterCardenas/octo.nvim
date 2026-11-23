@@ -74,6 +74,25 @@ describe("timeline order", function()
     }, render_timeline(nodes, "newest_first"))
   end)
 
+  it("reverses recorded GitHub event groups without reordering their contents", function()
+    local fixture =
+      vim.json.decode(table.concat(vim.fn.readfile "lua/tests/fixtures/timeline_order_recorded.json", "\n"))
+    local nodes = fixture.timelineItems.nodes
+    local oldest_groups = writers.order_timeline_groups(nodes, "oldest_first")
+    local newest_groups = writers.order_timeline_groups(nodes, "newest_first")
+
+    assert.are.same({ "IssueComment", "LabeledEvent" }, {
+      oldest_groups[1].items[1].__typename,
+      oldest_groups[2].items[1].__typename,
+    })
+    assert.are.same({ "LabeledEvent", "IssueComment" }, {
+      newest_groups[1].items[1].__typename,
+      newest_groups[2].items[1].__typename,
+    })
+    assert.are.same(nodes[1].id, oldest_groups[1].items[1].id)
+    assert.are.same(nodes[1].id, newest_groups[2].items[1].id)
+  end)
+
   it("renders an empty timeline without emitting items", function()
     assert.same({}, render_timeline({}, "newest_first"))
   end)

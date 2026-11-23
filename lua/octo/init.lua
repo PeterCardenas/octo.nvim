@@ -156,6 +156,51 @@ function M.load_buffer(opts)
     end
   end
 
+  ---@param buffer OctoBuffer
+  ---@return table<string, boolean>
+  local function capture_closed_comment_folds(buffer)
+    local closed = {} ---@type table<string, boolean>
+    if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
+      return closed
+    end
+    for _, comment in ipairs(buffer.commentsMetadata or {}) do
+      if comment.id and comment.extmark then
+        local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, {})
+        if mark[1] then
+          local is_closed = vim.api.nvim_win_call(win, function()
+            return vim.fn.foldclosed(mark[1] + 1) ~= -1
+          end)
+          if is_closed then
+            closed[tostring(comment.id)] = true
+          end
+        end
+      end
+    end
+    return closed
+  end
+
+  ---@param buffer OctoBuffer
+  ---@param closed table<string, boolean>
+  local function restore_closed_comment_folds(buffer, closed)
+    if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
+      return
+    end
+    for _, comment in ipairs(buffer.commentsMetadata or {}) do
+      if comment.id and closed[tostring(comment.id)] and comment.extmark then
+        local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, {})
+        if mark[1] then
+          vim.api.nvim_win_call(win, function()
+            local line = mark[1] + 1
+            vim.api.nvim_win_set_cursor(win, { line, 0 })
+            if vim.fn.foldclosed(line) == -1 then
+              vim.cmd "normal! zc"
+            end
+          end)
+        end
+      end
+    end
+  end
+
   if kind == "pull_diff" then
     vim.api.nvim_buf_call(bufnr, function()
       vim.cmd [[setlocal filetype=diff]]
@@ -233,6 +278,10 @@ function M.load_buffer(opts)
       return
     end
 
+    local closed_comment_folds = {} ---@type table<string, boolean>
+    if shell_rendered and octo_buf then
+      closed_comment_folds = capture_closed_comment_folds(octo_buf)
+    end
     if shell_rendered and win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
       cursor_pos = vim.api.nvim_win_get_cursor(win)
       window_view = vim.api.nvim_win_call(win, vim.fn.winsaveview)
@@ -241,8 +290,13 @@ function M.load_buffer(opts)
     vim.api.nvim_buf_call(bufnr, function()
       if shell_rendered and octo_buf then
         octo_buf:update_node(obj)
-        octo_buf:render_issue()
+        if kind == "discussion" then
+          octo_buf:render_discussion()
+        else
+          octo_buf:render_issue()
+        end
         octo_buf:render_signs()
+        restore_closed_comment_folds(octo_buf, closed_comment_folds)
       else
         M.create_buffer(kind, obj, repo, false, hostname)
       end
