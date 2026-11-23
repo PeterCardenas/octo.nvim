@@ -345,6 +345,8 @@ local function native_slurp(output)
   return vim.json.encode(pages)
 end
 
+local resolve_request_hostname
+
 ---Run a gh command
 ---@param opts RunOpts
 ---@return string? output
@@ -353,8 +355,6 @@ local function run(opts)
   if not Job then
     return
   end
-  local remote_hostname = require("octo.utils").get_remote_host()
-
   opts = opts or {}
   local conf = config.values
   local mode = opts.mode or "async"
@@ -378,17 +378,16 @@ local function run(opts)
       table.insert(opts.args, "-H")
       table.insert(opts.args, "X-Github-Next-Global-ID: 1")
     end
-    if not require("octo.utils").is_blank(opts.hostname) then
-      hostname = opts.hostname
-    elseif not require("octo.utils").is_blank(conf.github_hostname) then
-      hostname = conf.github_hostname
-    elseif not require("octo.utils").is_blank(remote_hostname) then
-      hostname = remote_hostname
+    local resolved_hostname, hostname_error = resolve_request_hostname(opts.hostname, opts.auth_context)
+    if not resolved_hostname then
+      if opts.cb then
+        opts.cb("", hostname_error or "Could not resolve request hostname", 1)
+      end
+      return
     end
-    if not require("octo.utils").is_blank(hostname) and hostname ~= "github.com" then
-      table.insert(opts.args, "--hostname")
-      table.insert(opts.args, hostname)
-    end
+    hostname = resolved_hostname
+    table.insert(opts.args, "--hostname")
+    table.insert(opts.args, hostname)
   end
   if opts.headers then
     for _, header in ipairs(opts.headers) do
@@ -401,8 +400,13 @@ local function run(opts)
   if opts.auth_context then
     env = vim.tbl_deep_extend("force", env, opts.auth_context.env)
     if opts.auth_context.token then
-      env.GH_TOKEN = opts.auth_context.token
-      env.GH_ENTERPRISE_TOKEN = opts.auth_context.token
+      if opts.auth_context.hostname:lower() == "github.com" then
+        env.GH_TOKEN = opts.auth_context.token
+        env.GH_ENTERPRISE_TOKEN = nil
+      else
+        env.GH_TOKEN = nil
+        env.GH_ENTERPRISE_TOKEN = opts.auth_context.token
+      end
     end
   end
   if opts.debug then
@@ -572,6 +576,23 @@ local function resolve_api_hostname(hostname)
     return config.values.github_hostname
   end
   return require("octo.utils").get_remote_host() or "github.com"
+end
+
+---@param hostname string?
+---@param auth_context octo.AuthContext?
+---@return string? resolved_hostname
+---@return string? error_message
+resolve_request_hostname = function(hostname, auth_context)
+  if auth_context then
+    if type(auth_context.hostname) ~= "string" or auth_context.hostname == "" then
+      return nil, "Authentication context has no GitHub hostname"
+    end
+    if not require("octo.utils").is_blank(hostname) and hostname ~= auth_context.hostname then
+      return nil, "Request hostname conflicts with its authentication context"
+    end
+    return auth_context.hostname
+  end
+  return resolve_api_hostname(hostname)
 end
 
 ---@param hostname string
@@ -839,7 +860,10 @@ local function try_graphql_direct(graphql_opts, run_opts, args)
   if type(query) ~= "string" or not is_allowlisted_direct_query(query) then
     return false
   end
-  local hostname = resolve_api_hostname(run_opts.hostname)
+  local hostname = resolve_request_hostname(run_opts.hostname, run_opts.auth_context)
+  if not hostname then
+    return false
+  end
   local url = direct_api_url(hostname, "/graphql", true)
   if not url then
     return false
@@ -890,7 +914,10 @@ local function try_rest_direct(method, opts, run_opts, args)
   if type(path) ~= "string" then
     return false
   end
-  local hostname = resolve_api_hostname(run_opts.hostname)
+  local hostname = resolve_request_hostname(run_opts.hostname, run_opts.auth_context)
+  if not hostname then
+    return false
+  end
   local url = direct_api_url(hostname, path, false)
   if not url then
     return false

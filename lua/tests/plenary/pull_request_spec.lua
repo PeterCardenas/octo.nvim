@@ -65,7 +65,11 @@ describe("PullRequest:get_changed_files", function()
     utils.commit_exists = original_commit_exists
   end)
 
-  it("loads more than 300 changed files from paginated PR files after validating the pinned head", function()
+  local function revision_json(base, head)
+    return vim.json.encode { base = base, head = head }
+  end
+
+  it("loads more than 300 changed files from paginated PR files after validating the pinned revision", function()
     local requests = {}
     gh.api.get = function(opts)
       requests[#requests + 1] = opts
@@ -88,7 +92,7 @@ describe("PullRequest:get_changed_files", function()
         end
         opts.opts.cb(vim.json.encode(pages), "")
       else
-        opts.opts.cb("head-oid", "")
+        opts.opts.cb(revision_json("base-oid", "head-oid"), "")
       end
     end
 
@@ -132,7 +136,7 @@ describe("PullRequest:get_changed_files", function()
       if opts[1]:find("/files", 1, true) then
         opts.opts.cb("[]", "")
       else
-        opts.opts.cb("head-oid", "")
+        opts.opts.cb(revision_json("base-oid", "head-oid"), "")
       end
     end
 
@@ -175,7 +179,7 @@ describe("PullRequest:get_changed_files", function()
           ""
         )
       else
-        opts.opts.cb("snapshot-head-oid", "")
+        opts.opts.cb(revision_json("snapshot-base-oid", "snapshot-head-oid"), "")
       end
     end
 
@@ -202,8 +206,8 @@ describe("PullRequest:get_changed_files", function()
     eq("/repos/{repo}/pulls/{number}/files", requests[2][1])
     eq(true, requests[2].paginate)
     eq(true, requests[2].slurp)
-    eq(".head.sha", requests[1].jq)
-    eq(".head.sha", requests[3].jq)
+    eq("{base: .base.sha, head: .head.sha}", requests[1].jq)
+    eq("{base: .base.sha, head: .head.sha}", requests[3].jq)
     eq("file.lua", received[1].path)
     eq(received, progress)
   end)
@@ -213,7 +217,7 @@ describe("PullRequest:get_changed_files", function()
       if opts[1]:find("/files", 1, true) then
         opts.opts.cb("[[]]", "hint: use gh event listen", 0)
       else
-        opts.opts.cb("head-oid", "", 0)
+        opts.opts.cb(revision_json("base-oid", "head-oid"), "", 0)
       end
     end
 
@@ -262,7 +266,10 @@ describe("PullRequest:get_changed_files", function()
         )
       else
         head_lookups = head_lookups + 1
-        opts.opts.cb(head_lookups == 1 and "head-oid" or "moved-head", "")
+        opts.opts.cb(
+          head_lookups == 1 and revision_json("base-oid", "head-oid") or revision_json("base-oid", "moved-head"),
+          ""
+        )
       end
     end
 
@@ -291,13 +298,72 @@ describe("PullRequest:get_changed_files", function()
     eq("Pull request head changed while loading review; reopen the review", error_message)
   end)
 
+  it("rejects a same-count file list when only the base revision moved", function()
+    local revision_callbacks = {}
+    local files_callback
+    local requests = {}
+    gh.api.get = function(opts)
+      requests[#requests + 1] = opts
+      if opts[1]:find("/files", 1, true) then
+        files_callback = opts.opts.cb
+      else
+        revision_callbacks[#revision_callbacks + 1] = opts.opts.cb
+      end
+    end
+
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 1,
+    }, { __index = PullRequest })
+    local completed = false
+    local error_message
+    pr:get_changed_files(
+      function()
+        completed = true
+      end,
+      nil,
+      function(message)
+        error_message = message
+      end
+    )
+
+    eq(2, #requests)
+    revision_callbacks[1](revision_json("base-oid", "head-oid"), "", 0)
+    files_callback(
+      vim.json.encode {
+        {
+          {
+            filename = "same-count.lua",
+            status = "modified",
+            additions = 1,
+            deletions = 0,
+            changes = 1,
+          },
+        },
+      },
+      "",
+      0
+    )
+    eq(3, #requests)
+    revision_callbacks[2](revision_json("moved-base", "head-oid"), "", 0)
+
+    eq(false, completed)
+    eq("Pull request base changed while loading review; reopen the review", error_message)
+  end)
+
   it("reports a paginated files failure instead of completing a partial list", function()
     local file_request
     gh.api.get = function(opts)
       if opts[1]:find("/files", 1, true) then
         file_request = opts.opts.cb
       else
-        opts.opts.cb("head-oid", "")
+        opts.opts.cb(revision_json("base-oid", "head-oid"), "")
       end
     end
 
@@ -346,7 +412,7 @@ describe("PullRequest:get_changed_files", function()
           ""
         )
       else
-        opts.opts.cb("head-oid", "")
+        opts.opts.cb(revision_json("base-oid", "head-oid"), "")
       end
     end
 

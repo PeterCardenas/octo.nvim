@@ -10,6 +10,7 @@ describe("Octo module:", function()
   local original_get
   local original_graphql
   local original_auth_context
+  local original_get_remote_host
   local original_cache_key
   local original_cache_read
   local original_cache_write
@@ -41,6 +42,7 @@ describe("Octo module:", function()
     original_get = gh.api.get
     original_graphql = gh.api.graphql
     original_auth_context = gh.get_auth_context
+    original_get_remote_host = require("octo.utils").get_remote_host
     gh.get_auth_context = function(hostname, callback)
       callback {
         hostname = hostname,
@@ -69,6 +71,7 @@ describe("Octo module:", function()
     gh.api.get = original_get
     gh.api.graphql = original_graphql
     gh.get_auth_context = original_auth_context
+    require("octo.utils").get_remote_host = original_get_remote_host
     octo.load_preview = original_load_preview
     octo.load = original_load
     octo.load_pull_diff = original_load_pull_diff
@@ -369,6 +372,40 @@ describe("Octo module:", function()
     octo.load_buffer { bufnr = bufnr }
 
     assert.is_false(load_started)
+  end)
+
+  it("keeps a hostless buffer bound to the host resolved before token lookup", function()
+    local bufnr = create_named_buffer "octo://owner/repo/issue/29"
+    local utils = require "octo.utils"
+    local active_host = "first-host.example"
+    local auth_callback
+    local requested_host
+    utils.get_remote_host = function()
+      return active_host
+    end
+    gh.get_auth_context = function(hostname, callback)
+      requested_host = hostname
+      auth_callback = callback
+    end
+    octo.load = function(repo, kind, id, hostname, _, opts)
+      assert.are.same("owner/repo", repo)
+      assert.are.same("issue", kind)
+      assert.are.same(29, id)
+      requested_host = hostname
+      assert.are.same("first-host.example", opts.auth_context.hostname)
+    end
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.are.same("first-host.example", requested_host)
+    active_host = "second-host.example"
+    auth_callback {
+      hostname = "first-host.example",
+      token = "token",
+      fingerprint = "fingerprint",
+      env = {},
+    }
+
+    assert.are.same("first-host.example", requested_host)
   end)
 
   it("uses a fresh asynchronous token identity for each load without synchronous shell calls", function()

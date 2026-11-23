@@ -17,6 +17,7 @@ describe("Reviews module:", function()
   local original_get
   local original_commit_exists
   local original_file_panel_icons
+  local make_review_flow
 
   before_each(function()
     vim.cmd "tabonly!"
@@ -77,8 +78,8 @@ describe("Reviews module:", function()
           },
           ""
         )
-      elseif opts.jq == ".head.sha" then
-        opts.opts.cb("captured-head", "")
+      elseif opts.jq == "{base: .base.sha, head: .head.sha}" then
+        opts.opts.cb(vim.json.encode { base = "captured-base", head = "captured-head" }, "")
       end
     end
 
@@ -170,6 +171,41 @@ describe("Reviews module:", function()
     eq("Pull request revision changed while loading review; reopen the review", error_message)
   end)
 
+  it("pins the start-review mutation to the captured head commit", function()
+    local request
+    gh.api.graphql = function(opts)
+      request = opts
+    end
+    local review = setmetatable({
+      pull_request = {
+        id = "pr-node",
+        hostname = "github.enterprise.internal",
+        owner = "owner",
+        name = "repo",
+        number = 17,
+        base_oid = "captured-base",
+        head_oid = "captured-head",
+      },
+      populate_threads = function(_, callback)
+        callback {
+          data = {
+            repository = {
+              pullRequest = {
+                baseRefOid = "captured-base",
+                headRefOid = "captured-head",
+                reviewThreads = { nodes = {} },
+              },
+            },
+          },
+        }
+      end,
+    }, { __index = reviews.Review })
+
+    review:create(function() end)
+
+    assert.is_true(request.f.query:find 'commitOID: "captured%-head"' ~= nil)
+  end)
+
   it("carries the pull request host through review-thread queries", function()
     local request
     gh.api.graphql = function(opts)
@@ -228,7 +264,7 @@ describe("Reviews module:", function()
     eq(true, closed)
   end)
 
-  local function make_review_flow()
+  make_review_flow = function()
     local file_callbacks = {}
     local thread_callback
     local thread_error
@@ -318,6 +354,58 @@ describe("Reviews module:", function()
       end,
     }
   end
+
+  it("does not start a pending review after its loading tab is closed", function()
+    local flow = make_review_flow()
+    local mutation_requests = 0
+    gh.api.graphql = function()
+      mutation_requests = mutation_requests + 1
+    end
+
+    flow.review:start()
+    local layout = flow.get_layout()
+    layout:close()
+    flow.get_thread_callback() {
+      data = {
+        repository = {
+          pullRequest = {
+            baseRefOid = "base",
+            headRefOid = "head",
+            reviewThreads = { nodes = {} },
+          },
+        },
+      },
+    }
+
+    eq(false, layout.live)
+    eq(0, mutation_requests)
+  end)
+
+  it("does not start a review when file loading fails before thread verification returns", function()
+    local flow = make_review_flow()
+    local mutation_requests = 0
+    gh.api.graphql = function()
+      mutation_requests = mutation_requests + 1
+    end
+
+    flow.review:start()
+    local layout = flow.get_layout()
+    flow.get_file_callbacks().error "file enumeration failed"
+    flow.get_thread_callback() {
+      data = {
+        repository = {
+          pullRequest = {
+            baseRefOid = "base",
+            headRefOid = "head",
+            reviewThreads = { nodes = {} },
+          },
+        },
+      },
+    }
+
+    eq(true, layout.closed)
+    eq(0, mutation_requests)
+  end)
 
   local function make_thread()
     return {

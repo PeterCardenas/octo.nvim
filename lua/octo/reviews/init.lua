@@ -48,7 +48,7 @@ end
 ---Creates a new review
 ---@param callback fun(obj: octo.mutations.StartReview): nil
 ---@param on_error? fun(message: string): nil
-function Review:create(callback, on_error)
+function Review:create(callback, on_error, originating_layout, commit_oid)
   local function report_error(message)
     if on_error then
       on_error(message)
@@ -57,14 +57,26 @@ function Review:create(callback, on_error)
     end
   end
 
+  commit_oid = commit_oid or self.pull_request.head_oid
+  if type(commit_oid) ~= "string" or commit_oid == "" then
+    report_error "Cannot start review without a captured head commit"
+    return
+  end
+
   self:populate_threads(function(response)
+    if originating_layout and not self:is_loading_layout(originating_layout) then
+      return
+    end
     local pull_request = vim.tbl_get(response, "data", "repository", "pullRequest")
     if type(pull_request) ~= "table" or not matches_pull_request_snapshot(self.pull_request, pull_request) then
       report_error "Pull request revision changed while loading review; reopen the review"
       return
     end
 
-    local query = graphql("start_review_mutation", self.pull_request.id)
+    if originating_layout and not self:is_loading_layout(originating_layout) then
+      return
+    end
+    local query = graphql("start_review_mutation", self.pull_request.id, commit_oid)
     gh.api.graphql {
       f = { query = query },
       opts = {
@@ -72,6 +84,9 @@ function Review:create(callback, on_error)
         cb = gh.create_callback {
           failure = report_error,
           success = function(output)
+            if originating_layout and not self:is_loading_layout(originating_layout) then
+              return
+            end
             local resp = vim.json.decode(output)
             callback(resp)
           end,
@@ -133,6 +148,7 @@ function Review:start()
   if not layout then
     return
   end
+  local commit_oid = self.pull_request.head_oid
   self:create(function(resp)
     self.id = resp.data.addPullRequestReview.pullRequestReview.id
     require("octo.reviews").close_browse_reviews_for_pull_request(self.pull_request)
@@ -140,7 +156,7 @@ function Review:start()
     self:update_threads(threads)
   end, function(message)
     self:fail_loading(layout, "Failed to start review: " .. message)
-  end)
+  end, layout, commit_oid)
 end
 
 ---Retrieves existing review

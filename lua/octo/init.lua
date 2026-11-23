@@ -194,7 +194,8 @@ function M.load_buffer(opts)
     utils.print_err("Cannot parse buffer name: " .. bufname)
     return
   end
-  local repo, kind, id, hostname = buffer_info.repo, buffer_info.kind, buffer_info.id, buffer_info.hostname
+  local repo, kind, id, uri_hostname = buffer_info.repo, buffer_info.kind, buffer_info.id, buffer_info.hostname
+  local hostname = opts.hostname or uri_hostname
   if kind == "pull" or kind == "issue" or kind == "discussion" or kind == "pull_diff" then
     local number = tonumber(id)
     if not number or number < 1 or number > 2147483647 or number ~= math.floor(number) then
@@ -221,7 +222,8 @@ function M.load_buffer(opts)
         vim.b[bufnr].octo_loading_skeleton = true
       end
     end
-    gh.get_auth_context(resolve_hostname(hostname), function(auth_context)
+    local resolved_hostname = resolve_hostname(hostname)
+    gh.get_auth_context(resolved_hostname, function(auth_context)
       if
         active_auth_loads[bufnr] ~= auth_generation
         or not vim.api.nvim_buf_is_valid(bufnr)
@@ -231,6 +233,7 @@ function M.load_buffer(opts)
       end
       active_auth_loads[bufnr] = nil
       opts.auth_context = auth_context
+      opts.hostname = auth_context.hostname
       opts.auth_context_resolved = true
       M.load_buffer(opts)
     end)
@@ -565,7 +568,7 @@ function M.load_buffer(opts)
   local cacheable_kind = kind == "pull" or kind == "issue" or kind == "discussion" or kind == "pull_diff"
   local cache_key ---@type string?
   if config.values.persistent_cache.enabled and cacheable_kind then
-    local host = resolve_hostname(hostname)
+    local host = auth_context and auth_context.hostname or resolve_hostname(hostname)
     if auth_context and auth_context.fingerprint then
       cache_key = persistent_cache.key(host, repo, kind, id, nil, auth_context.fingerprint)
     end
@@ -1059,10 +1062,16 @@ local fast_load_inflight = {}
 function M.load_preview(repo, kind, id, hostname, cb, on_error, auth_context)
   local normalized_kind = kind == "pull_request" and "pull" or kind
   local owner, name = utils.split_repo(repo)
-  local host = resolve_hostname(hostname)
+  local host = auth_context and auth_context.hostname or resolve_hostname(hostname)
+  if auth_context and hostname and hostname ~= auth_context.hostname then
+    if on_error then
+      on_error "Preview hostname conflicts with its authentication context"
+    end
+    return
+  end
   if not auth_context then
     gh.get_auth_context(host, function(context)
-      M.load_preview(repo, kind, id, hostname, cb, on_error, context)
+      M.load_preview(repo, kind, id, host, cb, on_error, context)
     end)
     return
   end
@@ -1204,10 +1213,16 @@ end
 ---@param on_error? fun(stderr: string): nil
 ---@param auth_context? octo.AuthContext
 function M.load_pull_preview(repo, number, hostname, cb, on_error, auth_context)
-  local host = resolve_hostname(hostname)
+  local host = auth_context and auth_context.hostname or resolve_hostname(hostname)
+  if auth_context and hostname and hostname ~= auth_context.hostname then
+    if on_error then
+      on_error "Preview hostname conflicts with its authentication context"
+    end
+    return
+  end
   if not auth_context then
     gh.get_auth_context(host, function(context)
-      M.load_pull_preview(repo, number, hostname, cb, on_error, context)
+      M.load_pull_preview(repo, number, host, cb, on_error, context)
     end)
     return
   end

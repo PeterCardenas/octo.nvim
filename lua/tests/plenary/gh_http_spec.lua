@@ -309,6 +309,62 @@ describe("GitHub HTTP transport", function()
     end))
   end)
 
+  it("pins the host and host-specific token in real gh argv", function()
+    temporary_command = vim.fn.tempname()
+    local output_file = vim.fn.tempname()
+    temporary_token_output = output_file
+    vim.fn.writefile({
+      "#!/bin/sh",
+      string.format("printf '%%s\\n' \"$*\" > %q", output_file),
+      string.format('printf \'%%s|%%s\' "$GH_TOKEN" "$GH_ENTERPRISE_TOKEN" >> %q', output_file),
+      "printf '%s\\n' '{\\\"data\\\":{}}'",
+    }, temporary_command)
+    vim.fn.setfperm(temporary_command, "rwx------")
+    config.values.gh_cmd = temporary_command
+
+    gh.api.graphql {
+      query = "query { viewer { login } }",
+      fields = {},
+      jq = ".",
+      opts = {
+        hostname = "github.com",
+        auth_context = {
+          hostname = "github.com",
+          token = "fixed-token",
+          fingerprint = "fixed-fingerprint",
+          env = {},
+        },
+        cb = function() end,
+      },
+    }
+
+    assert.is_true(vim.wait(1000, function()
+      return vim.fn.filereadable(output_file) == 1
+    end))
+    local output = table.concat(vim.fn.readfile(output_file), "\\n")
+    assert.is_true(output:find("--hostname github.com", 1, true) ~= nil)
+    assert.is_true(output:find("fixed-token|", 1, true) ~= nil)
+    assert.is_true(output:sub(-1) == "|")
+  end)
+
+  it("rejects a request host that conflicts with its auth context", function()
+    local completed = false
+    gh.api.graphql {
+      query = "query { viewer { login } }",
+      fields = {},
+      jq = ".",
+      opts = {
+        hostname = "other.example",
+        auth_context = { hostname = "github.com", token = "fixed-token", env = {} },
+        cb = function(_, _, status)
+          completed = status ~= 0
+        end,
+      },
+    }
+    assert.is_true(completed)
+    assert.are.same(0, #calls)
+  end)
+
   it("falls back to gh when token retrieval fails", function()
     make_fallback_command()
     local loaded
@@ -361,7 +417,7 @@ describe("GitHub HTTP transport", function()
     temporary_token_output = vim.fn.tempname()
     vim.fn.writefile({
       "#!/bin/sh",
-      string.format("printf '%%s' \"$GH_TOKEN\" > %q", temporary_token_output),
+      string.format('printf \'%%s|%%s\' "$GH_TOKEN" "$GH_ENTERPRISE_TOKEN" > %q', temporary_token_output),
       "printf '%s\\n' '{\"data\":{\"fallback\":true}}'",
     }, temporary_command)
     vim.fn.setfperm(temporary_command, "rwx------")
@@ -399,7 +455,7 @@ describe("GitHub HTTP transport", function()
       return loaded ~= nil
     end))
     assert.are.same(1, killed)
-    assert.are.same("fixed-load-token", vim.fn.readfile(temporary_token_output)[1])
+    assert.are.same("|fixed-load-token", vim.fn.readfile(temporary_token_output)[1])
     assert.are.same({ data = { fallback = true } }, vim.json.decode(loaded))
   end)
 

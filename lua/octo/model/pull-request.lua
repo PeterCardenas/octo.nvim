@@ -148,9 +148,10 @@ end
 ---@param on_page? fun(files: FileEntry[]): nil
 ---@param on_error? fun(message: string): nil
 function PullRequest:get_changed_files(callback, on_page, on_error)
+  local base_oid = self.base_oid or self.left.commit
   local head_oid = self.head_oid or self.right.commit
-  if not head_oid or head_oid == "" then
-    local message = "Cannot load review files without an immutable head commit"
+  if not base_oid or base_oid == "" or not head_oid or head_oid == "" then
+    local message = "Cannot load review files without immutable base and head commits"
     if on_error then
       on_error(message)
     else
@@ -167,36 +168,56 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
     end
   end
 
-  local function check_pinned_head(then_load_files)
+  local function check_pinned_revision(on_valid)
     gh.api.get {
       "/repos/{repo}/pulls/{number}",
       format = { repo = self.repo, number = self.number },
-      jq = ".head.sha",
+      jq = "{base: .base.sha, head: .head.sha}",
       opts = {
         hostname = self.hostname,
         cb = function(output, stderr, status)
           if status ~= nil and status ~= 0 then
-            report_error(stderr or "Failed to verify pull request head revision")
+            report_error(stderr or "Failed to verify pull request revision")
             return
           end
           if not output then
-            report_error(stderr or "Failed to verify pull request head revision")
+            report_error(stderr or "Failed to verify pull request revision")
             return
           end
 
-          local head = vim.trim(output)
-          local ok, decoded = pcall(vim.json.decode, head)
-          if ok and type(decoded) == "string" then
-            head = decoded
+          local ok, revision = pcall(vim.json.decode, output)
+          if not ok or type(revision) ~= "table" then
+            report_error "Pull request revision response is invalid"
+            return
           end
-          if head ~= head_oid then
+          if revision.base ~= base_oid then
+            report_error "Pull request base changed while loading review; reopen the review"
+            return
+          end
+          if revision.head ~= head_oid then
             report_error "Pull request head changed while loading review; reopen the review"
             return
           end
-          then_load_files()
+          on_valid()
         end,
       },
     }
+  end
+
+  local files_ready ---@type FileEntry[]?
+  local revision_checked = false
+  local completed = false
+  local function finish_when_ready()
+    if completed or not revision_checked or not files_ready then
+      return
+    end
+    completed = true
+    check_pinned_revision(function()
+      if on_page then
+        on_page(files_ready)
+      end
+      callback(files_ready)
+    end)
   end
 
   local function load_files()
@@ -249,9 +270,9 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
             return
           end
 
-          local files = {} ---@type FileEntry[]
+          files_ready = {} ---@type FileEntry[]
           for _, result in ipairs(results) do
-            files[#files + 1] = FileEntry:new {
+            files_ready[#files_ready + 1] = FileEntry:new {
               path = result.filename,
               previous_path = result.previous_filename,
               patch = result.patch,
@@ -264,18 +285,18 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
               },
             }
           end
-          check_pinned_head(function()
-            if on_page then
-              on_page(files)
-            end
-            callback(files)
-          end)
+          finish_when_ready()
         end,
       },
     }
   end
 
-  check_pinned_head(load_files)
+  -- Fetching page one while the preflight runs avoids serializing two API round trips.
+  check_pinned_revision(function()
+    revision_checked = true
+    finish_when_ready()
+  end)
+  load_files()
 end
 
 ---Fetch the changed files at a given commit

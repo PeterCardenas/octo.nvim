@@ -130,7 +130,7 @@ mutation {
   -- https://docs.github.com/en/graphql/reference/mutations#addpullrequestreview
   M.start_review = [[
 mutation {
-  addPullRequestReview(input: {pullRequestId: "%s"}) {
+  addPullRequestReview(input: {pullRequestId: "%s", commitOID: "%s"}) {
     pullRequestReview {
       id
       state
