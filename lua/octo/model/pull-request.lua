@@ -207,64 +207,70 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
       slurp = true,
       opts = {
         hostname = self.hostname,
-        cb = gh.create_callback {
-          failure = report_error,
-          success = function(output)
-            local ok, pages = pcall(vim.json.decode, output)
-            if not ok or type(pages) ~= "table" then
-              report_error "Pull request files response is invalid"
+        cb = function(output, stderr, status)
+          if status ~= nil and status ~= 0 then
+            report_error(stderr or "Failed to load pull request files")
+            return
+          end
+          if not output then
+            report_error(stderr or "Pull request files response is empty")
+            return
+          end
+
+          local ok, pages = pcall(vim.json.decode, output)
+          if not ok or type(pages) ~= "table" then
+            report_error "Pull request files response is invalid"
+            return
+          end
+
+          local results = {}
+          for _, page in ipairs(pages) do
+            if type(page) ~= "table" then
+              report_error "Pull request files response contains an invalid page"
               return
             end
-
-            local results = {}
-            for _, page in ipairs(pages) do
-              if type(page) ~= "table" then
-                report_error "Pull request files response contains an invalid page"
-                return
-              end
-              if page.filename then
-                results[#results + 1] = page
-              else
-                for _, result in ipairs(page) do
-                  results[#results + 1] = result
-                end
+            if page.filename then
+              results[#results + 1] = page
+            else
+              for _, result in ipairs(page) do
+                results[#results + 1] = result
               end
             end
+          end
 
-            if self.changed_files_count and #results ~= self.changed_files_count then
-              report_error(
-                string.format(
-                  "Changed file count changed while loading (expected %d, received %d)",
-                  self.changed_files_count,
-                  #results
-                )
+          if self.changed_files_count and #results ~= self.changed_files_count then
+            report_error(
+              string.format(
+                "Changed file count changed while loading (expected %d, received %d)",
+                self.changed_files_count,
+                #results
               )
-              return
-            end
+            )
+            return
+          end
 
-            local files = {} ---@type FileEntry[]
-            for _, result in ipairs(results) do
-              files[#files + 1] = FileEntry:new {
-                path = result.filename,
-                previous_path = result.previous_filename,
-                patch = result.patch,
-                pull_request = self,
-                status = utils.file_status_map[result.status],
-                stats = {
-                  additions = result.additions,
-                  deletions = result.deletions,
-                  changes = result.changes,
-                },
-              }
+          local files = {} ---@type FileEntry[]
+          for _, result in ipairs(results) do
+            files[#files + 1] = FileEntry:new {
+              path = result.filename,
+              previous_path = result.previous_filename,
+              patch = result.patch,
+              pull_request = self,
+              status = utils.file_status_map[result.status],
+              stats = {
+                additions = result.additions,
+                deletions = result.deletions,
+                changes = result.changes,
+              },
+            }
+          end
+          check_pinned_head(function()
+            if on_page then
+              on_page(files)
             end
-            check_pinned_head(function()
-              if on_page then
-                on_page(files)
-              end
-              callback(files)
-            end)
-          end,
-        },
+            callback(files)
+          end)
+        end,
       },
     }
   end

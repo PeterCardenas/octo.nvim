@@ -208,12 +208,12 @@ describe("PullRequest:get_changed_files", function()
     eq(received, progress)
   end)
 
-  it("accepts successful head validation with informational gh stderr", function()
+  it("accepts successful paginated files with informational gh stderr", function()
     gh.api.get = function(opts)
       if opts[1]:find("/files", 1, true) then
-        opts.opts.cb("[[]]", "", 0)
+        opts.opts.cb("[[]]", "hint: use gh event listen", 0)
       else
-        opts.opts.cb("head-oid", "hint: use gh event listen", 0)
+        opts.opts.cb("head-oid", "", 0)
       end
     end
 
