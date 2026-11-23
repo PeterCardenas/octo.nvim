@@ -900,6 +900,19 @@ describe("Octo module:", function()
     )
   end)
 
+  it("does not paint text-only cache snapshots instead of the cached object", function()
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
+    seed_cached_issue { id = "cached", number = 17, title = "Cached issue" }
+    local _, get_buffer = install_async_load_stubs()
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.is_true(vim.wait(1000, function()
+      return get_buffer() ~= nil and vim.b[bufnr].octo_cached
+    end))
+
+    assert.are_not.same({ "cached issue snapshot" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
   it("does not overwrite edits made after stale cache is rendered", function()
     local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
     seed_cached_issue { id = "cached", number = 17, title = "Cached issue" }

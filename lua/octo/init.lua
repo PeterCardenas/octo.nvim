@@ -74,22 +74,6 @@ function M.set_cached_indicator(bufnr, cached)
   end
 end
 
----@param text string
----@return string[]
-local function split_cached_lines(text)
-  local lines = {} ---@type string[]
-  local start = 1
-  while true do
-    local newline = text:find("\n", start, true)
-    if not newline then
-      lines[#lines + 1] = text:sub(start)
-      return lines
-    end
-    lines[#lines + 1] = text:sub(start, newline - 1)
-    start = newline + 1
-  end
-end
-
 function M.setup(user_config)
   if not vim.fn.has "nvim-0.7" then
     utils.error "octo.nvim requires neovim 0.7+"
@@ -235,6 +219,17 @@ function M.load_buffer(opts)
     return current_buffer ~= nil and current_buffer:has_local_changes()
   end
 
+  local function is_pristine_buffer()
+    if not vim.api.nvim_buf_is_valid(bufnr) or octo_buffers[bufnr] or vim.bo[bufnr].modified then
+      return false
+    end
+    if vim.b[bufnr].octo_loading_skeleton then
+      return true
+    end
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    return #lines == 1 and lines[1] == ""
+  end
+
   ---@param buffer OctoBuffer
   ---@return table<string, boolean>
   local function capture_closed_comment_folds(buffer)
@@ -296,11 +291,9 @@ function M.load_buffer(opts)
   end
   local cacheable_kind = kind == "pull" or kind == "issue" or kind == "discussion" or kind == "pull_diff"
   local cache_key ---@type string?
-  local rendered_lines_key ---@type string?
   if config.values.persistent_cache.enabled and cacheable_kind then
     local host = resolve_hostname(hostname)
     cache_key = persistent_cache.key(host, repo, kind, id)
-    rendered_lines_key = persistent_cache.key(host, repo, kind, id, "rendered")
 
     local function render_cached_object(cache_entry)
       if
@@ -309,6 +302,7 @@ function M.load_buffer(opts)
         or not is_latest_load()
         or not vim.api.nvim_buf_is_valid(bufnr)
         or fresh_shell_rendered
+        or not is_pristine_buffer()
         or has_local_changes()
       then
         return
@@ -319,6 +313,7 @@ function M.load_buffer(opts)
           not is_latest_load()
           or fresh_response_received
           or not vim.api.nvim_buf_is_valid(bufnr)
+          or not is_pristine_buffer()
           or has_local_changes()
         then
           return
@@ -341,34 +336,7 @@ function M.load_buffer(opts)
       end)
     end
 
-    persistent_cache.read(rendered_lines_key, function(snapshot)
-      if
-        not is_latest_load()
-        or not vim.api.nvim_buf_is_valid(bufnr)
-        or fresh_shell_rendered
-        or has_local_changes()
-      then
-        return
-      end
-      local cached_text = snapshot and snapshot.rendered_text or nil
-      if type(cached_text) == "string" then
-        local cached_lines = split_cached_lines(cached_text)
-        vim.api.nvim_buf_call(bufnr, function()
-          vim.bo[bufnr].modifiable = true
-          vim.bo[bufnr].readonly = false
-          vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, cached_lines)
-          vim.bo[bufnr].filetype = kind == "pull_diff" and "diff" or "octo"
-          vim.bo[bufnr].modifiable = false
-          vim.bo[bufnr].modified = false
-          mark_cached(bufnr)
-          notify_cached()
-        end)
-        shell_rendered = true
-        cached_rendered = true
-        cached_full_rendered = true
-      end
-      persistent_cache.read(cache_key, render_cached_object)
-    end)
+    persistent_cache.read(cache_key, render_cached_object)
   end
 
   if kind == "pull_diff" then
@@ -413,11 +381,8 @@ function M.load_buffer(opts)
         end
       end)
 
-      if cache_key and rendered_lines_key then
+      if cache_key then
         persistent_cache.write(cache_key, { object = obj })
-        persistent_cache.write(rendered_lines_key, {
-          rendered_text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"),
-        })
       end
       finish_load()
       if opts.on_reload then
@@ -493,11 +458,8 @@ function M.load_buffer(opts)
       end
     end)
 
-    if cache_key and rendered_lines_key then
+    if cache_key then
       persistent_cache.write(cache_key, { object = obj })
-      persistent_cache.write(rendered_lines_key, {
-        rendered_text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"),
-      })
     end
     finish_load()
     if opts.on_reload then
