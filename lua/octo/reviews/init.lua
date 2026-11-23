@@ -24,6 +24,13 @@ Review.__index = Review
 
 local default_id = -1
 
+---@param pull_request PullRequest
+---@param node { baseRefOid: string, headRefOid: string }
+---@return boolean
+local function matches_pull_request_snapshot(pull_request, node)
+  return pull_request.base_oid == node.baseRefOid and pull_request.head_oid == node.headRefOid
+end
+
 ---Review constructor.
 ---@param pull_request PullRequest
 ---@return Review
@@ -99,8 +106,12 @@ function Review:browse()
     if not self:is_loading_layout(layout) then
       return
     end
-    local threads = resp.data.repository.pullRequest.reviewThreads.nodes
-    self:update_threads(threads)
+    local pull_request = resp.data.repository.pullRequest
+    if not matches_pull_request_snapshot(self.pull_request, pull_request) then
+      self:fail_loading(layout, "Pull request revision changed while loading review; reopen the review")
+      return
+    end
+    self:update_threads(pull_request.reviewThreads.nodes)
   end, function(message)
     self:fail_loading(layout, "Failed to load review threads: " .. message)
   end)
@@ -163,6 +174,15 @@ end
 function Review:retrieve_pending_state(callback, on_error)
   self:retrieve(function(resp)
     local pull_request = resp.data.repository.pullRequest
+    if not matches_pull_request_snapshot(self.pull_request, pull_request) then
+      local message = "Pull request revision changed while loading review; reopen the review"
+      if on_error then
+        on_error(message)
+      else
+        utils.error(message)
+      end
+      return
+    end
     callback(get_viewer_pending_review_id(pull_request.reviews.nodes), pull_request.reviewThreads.nodes)
   end, on_error)
 end
@@ -321,26 +341,24 @@ function Review:merge_base_ready()
   if not layout or not self:is_loading_layout(layout) then
     return
   end
-  layout:run_in_tabpage(function()
-    layout.left = self.pull_request.left
-    layout.file_panel:render()
-    layout.file_panel:redraw()
-    local selected_file = layout:get_current_file()
-    if selected_file then
-      selected_file:fetch(false)
+  layout.left = self.pull_request.left
+  layout.file_panel:render()
+  layout.file_panel:redraw()
+  local selected_file = layout:get_current_file()
+  if selected_file then
+    selected_file:fetch(false, nil, nil, self)
+  end
+  for _, file in ipairs(layout.files) do
+    if
+      file ~= selected_file
+      and not file.left_fetched
+      and not file.left_fetching
+      and (file.right_fetched or file.right_fetching)
+    then
+      file:fetch(false, nil, nil, self)
     end
-    for _, file in ipairs(layout.files) do
-      if
-        file ~= selected_file
-        and not file.left_fetched
-        and not file.left_fetching
-        and (file.right_fetched or file.right_fetching)
-      then
-        file:fetch(false)
-      end
-    end
-    layout:prefetch_nearby_files()
-  end)
+  end
+  layout:prefetch_nearby_files()
 end
 
 ---Updates layout to focus on a single commit
@@ -505,14 +523,12 @@ function Review:update_threads(threads)
   end
   local layout = self.layout
   if layout and self:is_loading_layout(layout) then
-    layout:run_in_tabpage(function()
-      layout.file_panel:render()
-      layout.file_panel:redraw()
-      local file = layout:get_current_file()
-      if file and file:is_ready_to_render() then
-        file:place_signs()
-      end
-    end)
+    layout.file_panel:render()
+    layout.file_panel:redraw()
+    local file = layout:get_current_file()
+    if file and file:is_ready_to_render() then
+      file:place_signs(self)
+    end
   end
 end
 

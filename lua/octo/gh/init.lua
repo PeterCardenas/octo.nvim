@@ -699,6 +699,7 @@ local direct_graphql_query_names = {
   "pull_diff_fingerprint",
   "pull_request_checks",
   "pull_request_fast",
+  "pull_request_review_metadata",
   "pull_request_review_threads",
   "pull_request_rulesets",
   "pull_request_timeline_page",

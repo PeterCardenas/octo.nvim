@@ -229,8 +229,9 @@ end
 ---@param sync boolean
 ---@param on_complete? fun()
 ---@param on_error? fun(message: string): nil
+---@param review? Review
 ---@return boolean ready
-function FileEntry:fetch(sync, on_complete, on_error)
+function FileEntry:fetch(sync, on_complete, on_error, review)
   if self:is_ready_to_render() then
     if on_complete then
       on_complete()
@@ -263,7 +264,7 @@ function FileEntry:fetch(sync, on_complete, on_error)
     end
   end
 
-  local current_review = require("octo.reviews").get_current_review()
+  local current_review = review or require("octo.reviews").get_current_review()
   if not current_review then
     return false
   end
@@ -348,7 +349,8 @@ end
 ---Load the buffers.
 ---@param left_winid integer
 ---@param right_winid integer
-function FileEntry:load_buffers(left_winid, right_winid)
+---@param review? Review
+function FileEntry:load_buffers(left_winid, right_winid, review)
   self.left_winid, self.right_winid = left_winid, right_winid
   local empty_files = #self.left_lines == 0 and #self.right_lines == 0
   local splits = {
@@ -378,7 +380,7 @@ function FileEntry:load_buffers(left_winid, right_winid)
         and utils.in_pr_branch(self.pull_request)
 
       -- create buffer
-      split.bufid = M._create_buffer {
+      split.bufid = M._create_buffer({
         status = self.status,
         show_diff = self.image or self.patch ~= nil,
         path = self.path,
@@ -387,7 +389,7 @@ function FileEntry:load_buffers(left_winid, right_winid)
         lines = split.lines,
         repo = self.pull_request.repo,
         use_local = use_local,
-      }
+      }, review)
 
       -- register new buffer
       table.insert(self.associated_bufs, split.bufid)
@@ -403,7 +405,7 @@ function FileEntry:load_buffers(left_winid, right_winid)
   vim.api.nvim_set_option_value("buftype", "nofile", { buf = self.left_bufid })
 
   -- show thread signs and virtual text
-  self:place_signs()
+  self:place_signs(review)
 
   -- configure windows
   M._configure_windows(left_winid, right_winid)
@@ -485,8 +487,9 @@ function FileEntry:compare(other)
 end
 
 ---Update thread signs in diff buffers.
-function FileEntry:place_signs()
-  local current_review = require("octo.reviews").get_current_review()
+---@param review? Review
+function FileEntry:place_signs(review)
+  local current_review = review or require("octo.reviews").get_current_review()
   if not current_review then
     return
   end
@@ -591,8 +594,9 @@ end
 ---  repo: string,
 ---  split: string,
 ---}
-function M._create_buffer(opts)
-  local current_review = require("octo.reviews").get_current_review()
+---@param review? Review
+function M._create_buffer(opts, review)
+  local current_review = review or require("octo.reviews").get_current_review()
   if not current_review then
     return
   end

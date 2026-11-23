@@ -50,15 +50,18 @@ end)
 
 describe("PullRequest:get_changed_files", function()
   local original_get
+  local original_graphql
   local original_commit_exists
 
   before_each(function()
     original_get = gh.api.get
+    original_graphql = gh.api.graphql
     original_commit_exists = utils.commit_exists
   end)
 
   after_each(function()
     gh.api.get = original_get
+    gh.api.graphql = original_graphql
     utils.commit_exists = original_commit_exists
   end)
 
@@ -74,6 +77,10 @@ describe("PullRequest:get_changed_files", function()
       number = 1,
       files = {},
       hostname = "github.enterprise.internal",
+      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
       changed_files_count = 0,
     }, { __index = PullRequest })
     pr:get_changed_files(function() end)
@@ -81,52 +88,50 @@ describe("PullRequest:get_changed_files", function()
     eq("github.enterprise.internal", request.opts.hostname)
   end)
 
-  it("requests metadata-sized pages concurrently and emits them in file order", function()
-    local requests = {}
+  it("uses the immutable base and head OIDs for changed-file comparison after PR retargeting", function()
+    local request
     gh.api.get = function(opts)
-      requests[opts.format.page] = opts.opts.cb
+      request = opts
+      opts.opts.cb(
+        vim.json.encode {
+          files = {
+            {
+              filename = "file.lua",
+              status = "modified",
+              additions = 1,
+              deletions = 0,
+              changes = 1,
+            },
+          },
+        },
+        ""
+      )
     end
 
     local pr = setmetatable({
       repo = "owner/repo",
       number = 1,
       files = {},
-      changed_files_count = 201,
+      base_oid = "snapshot-base-oid",
+      head_oid = "snapshot-head-oid",
+      left = { commit = "merge-base-oid" },
+      right = { commit = "snapshot-head-oid" },
+      changed_files_count = 1,
     }, { __index = PullRequest })
     local received
-    local progress = {}
+    local progress
     pr:get_changed_files(function(files)
       received = files
     end, function(files)
-      progress[#progress + 1] = #files
+      progress = files
     end)
 
-    eq(3, #requests)
-
-    local function response(first, last)
-      local files = {}
-      for idx = first, last do
-        files[#files + 1] = {
-          filename = string.format("file-%03d.txt", idx),
-          status = "modified",
-          additions = 1,
-          deletions = 0,
-          changes = 1,
-        }
-      end
-      return vim.json.encode(files)
-    end
-
-    requests[2](response(101, 200), "")
-    eq({}, progress)
-    requests[1](response(1, 100), "")
-    eq({ 100, 200 }, progress)
-    requests[3](response(201, 201), "")
-
-    eq(201, #received)
-    eq("file-001.txt", received[1].path)
-    eq("file-201.txt", received[201].path)
-    eq({ 100, 200, 201 }, progress)
+    eq("/repos/{repo}/compare/{base}...{head}", request[1])
+    eq("owner/repo", request.format.repo)
+    eq("snapshot-base-oid", request.format.base)
+    eq("snapshot-head-oid", request.format.head)
+    eq("file.lua", received[1].path)
+    eq(received, progress)
   end)
 
   it("reports a page failure instead of completing with a partial file list", function()
@@ -135,7 +140,16 @@ describe("PullRequest:get_changed_files", function()
       request = opts.opts.cb
     end
 
-    local pr = setmetatable({ repo = "owner/repo", number = 1, files = {}, changed_files_count = 1 }, {
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 1,
+    }, {
       __index = PullRequest,
     })
     local complete = false
@@ -162,7 +176,16 @@ describe("PullRequest:get_changed_files", function()
       request = opts.opts.cb
     end
 
-    local pr = setmetatable({ repo = "owner/repo", number = 1, files = {}, changed_files_count = 2 }, {
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 2,
+    }, {
       __index = PullRequest,
     })
     local complete = false
@@ -179,12 +202,14 @@ describe("PullRequest:get_changed_files", function()
 
     request(
       vim.json.encode {
-        {
-          filename = "only-file.txt",
-          status = "modified",
-          additions = 1,
-          deletions = 0,
-          changes = 1,
+        files = {
+          {
+            filename = "only-file.txt",
+            status = "modified",
+            additions = 1,
+            deletions = 0,
+            changes = 1,
+          },
         },
       },
       ""
@@ -194,10 +219,11 @@ describe("PullRequest:get_changed_files", function()
     eq("Changed file count changed while loading (expected 2, received 1)", error_message)
   end)
 
-  it("passes the exact merge base to the completed pull request", function()
+  it("compares cross-fork PR revisions by immutable OIDs", function()
     local original_commit_exists = utils.commit_exists
     local original_get = gh.api.get
     local merge_commit_checks = {}
+    local compare_request
     local early_left_ready
     local early_left_commit
     local early_pr
@@ -210,6 +236,7 @@ describe("PullRequest:get_changed_files", function()
     end
     gh.api.get = function(opts)
       if opts[1] and opts[1]:find("compare", 1, true) then
+        compare_request = opts
         opts.opts.cb("merge-base-sha", "")
       end
     end
@@ -224,8 +251,9 @@ describe("PullRequest:get_changed_files", function()
     }
     local opts = {
       repo = "owner/repo",
-      head_repo = "owner/repo",
+      head_repo = "fork-owner/repo",
       head_ref_name = "topic",
+      hostname = "github.enterprise.internal",
       number = 1,
       id = "pr-node",
     }
@@ -247,5 +275,171 @@ describe("PullRequest:get_changed_files", function()
     eq(true, early_pr.left_ready)
     eq(early_pr, ready_pr)
     eq({ "merge-base-sha" }, merge_commit_checks)
+    eq("repos/owner/repo/compare/base-sha...head-sha", compare_request[1])
+    eq("github.enterprise.internal", compare_request.opts.hostname)
+  end)
+
+  it("hydrates missing review-file metadata before constructing a pull request", function()
+    require("octo.gh.queries").setup()
+    local metadata_request
+    gh.api.graphql = function(opts)
+      metadata_request = opts
+      opts.opts.cb(
+        vim.json.encode {
+          data = {
+            repository = {
+              pullRequest = {
+                baseRefOid = "base-oid",
+                headRefOid = "head-oid",
+                changedFiles = 1,
+                files = { nodes = { { path = "hydrated.lua", viewerViewedState = "UNVIEWED" } } },
+              },
+            },
+          },
+        },
+        "",
+        0
+      )
+    end
+    utils.commit_exists = function(_, callback)
+      callback(false)
+    end
+    gh.api.get = function(opts)
+      if opts[1] and opts[1]:find("compare", 1, true) then
+        opts.opts.cb("merge-base-oid", "")
+      end
+    end
+
+    local ready_pr
+    local failed
+    assert.has_no.errors(function()
+      pull_request_model.create_with_merge_base(
+        {
+          repo = "owner/repo",
+          head_repo = "owner/repo",
+          head_ref_name = "topic",
+          number = 27,
+          id = "incomplete-full-pull",
+        },
+        {
+          baseRefName = "main",
+          headRefName = "topic",
+          baseRefOid = "base-oid",
+          headRefOid = "head-oid",
+          changedFiles = 1,
+        },
+        function(pr)
+          ready_pr = pr
+        end,
+        nil,
+        function(message)
+          failed = message
+        end
+      )
+    end)
+
+    assert.is_not_nil(metadata_request)
+    eq("owner", metadata_request.F.owner)
+    eq("UNVIEWED", ready_pr.files["hydrated.lua"])
+    eq(nil, failed)
+  end)
+
+  it("uses the captured OIDs for merged pull requests", function()
+    local original_commit_exists = utils.commit_exists
+    local original_get = gh.api.get
+    local compare_request
+    utils.commit_exists = function(_, callback)
+      callback(false)
+    end
+    gh.api.get = function(opts)
+      if opts[1] and opts[1]:find("compare", 1, true) then
+        compare_request = opts
+        opts.opts.cb("merged-base-oid", "")
+      end
+    end
+
+    local merged = {
+      baseRefOid = "merged-base-oid",
+      headRefOid = "merged-head-oid",
+      baseRefName = "main",
+      headRefName = "topic",
+      merged = true,
+      changedFiles = 0,
+      files = { nodes = {} },
+    }
+    local ready_pr
+    pull_request_model.create_with_merge_base(
+      {
+        repo = "owner/repo",
+        head_repo = "owner/repo",
+        head_ref_name = "topic",
+        number = 9,
+        id = "merged-pr",
+      },
+      merged,
+      function(pr)
+        ready_pr = pr
+      end
+    )
+
+    utils.commit_exists = original_commit_exists
+    gh.api.get = original_get
+
+    eq("repos/owner/repo/compare/merged-base-oid...merged-head-oid", compare_request[1])
+    eq("merged-head-oid", ready_pr.right.commit)
+    eq("merged-base-oid", ready_pr.left.commit)
+  end)
+
+  it("falls back to the captured base OID when a deleted fork head cannot be compared", function()
+    local original_error = utils.error
+    local reported_errors = {}
+    utils.error = function(message)
+      reported_errors[#reported_errors + 1] = message
+    end
+    utils.commit_exists = function(_, callback)
+      callback(false)
+    end
+    local compare_request
+    gh.api.get = function(opts)
+      if opts[1] and opts[1]:find("compare", 1, true) then
+        compare_request = opts
+        opts.opts.cb(nil, "head commit is no longer reachable", 404)
+      end
+    end
+
+    local ready_pr
+    local error_callback_called = false
+    pull_request_model.create_with_merge_base(
+      {
+        repo = "owner/repo",
+        head_repo = "fork-owner/repo",
+        head_ref_name = "deleted-branch",
+        number = 42,
+        id = "deleted-head-pr",
+      },
+      {
+        baseRefName = "main",
+        headRefName = "deleted-branch",
+        baseRefOid = "captured-base-oid",
+        headRefOid = "captured-head-oid",
+        changedFiles = 0,
+        files = { nodes = {} },
+      },
+      function(pr)
+        ready_pr = pr
+      end,
+      nil,
+      function()
+        error_callback_called = true
+      end
+    )
+
+    utils.error = original_error
+
+    eq("repos/owner/repo/compare/captured-base-oid...captured-head-oid", compare_request[1])
+    eq("captured-base-oid", ready_pr.left.commit)
+    eq(true, ready_pr.left_ready)
+    eq(false, error_callback_called)
+    assert.is_true(reported_errors[1]:find("Failed to fetch merge base", 1, true) ~= nil)
   end)
 end)

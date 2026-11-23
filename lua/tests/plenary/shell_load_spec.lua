@@ -50,6 +50,15 @@ describe("two-phase load shells", function()
     end
   end)
 
+  it("includes review file metadata in complete pull queries, not the fast shell", function()
+    local queries = require "octo.gh.queries"
+    queries.setup()
+
+    assert.is_true(queries.pull_request_fast_full:find("files(first:100)", 1, true) ~= nil)
+    assert.is_nil(queries.pull_request_fast:find("files(first:100)", 1, true))
+    assert.is_true(queries.pull_request_review_metadata:find("viewerViewedState", 1, true) ~= nil)
+  end)
+
   it("renders a shell PR review without requiring reviewThreads", function()
     local buffer = { bufnr = bufnr, commentsMetadata = {}, threadsMetadata = {} }
     _G.octo_buffers[bufnr] = buffer

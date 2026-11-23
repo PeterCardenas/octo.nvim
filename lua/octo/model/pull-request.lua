@@ -13,6 +13,8 @@ local M = {}
 ---@field head_repo string
 ---@field head_ref_name string
 ---@field hostname string?
+---@field base_oid string
+---@field head_oid string
 ---@field owner string
 ---@field name string
 ---@field number integer
@@ -36,6 +38,8 @@ PullRequest.__index = PullRequest
 ---@field head_repo string
 ---@field head_ref_name string
 ---@field hostname? string
+---@field base_oid string
+---@field head_oid string
 ---@field number integer
 ---@field id string
 ---@field left Rev
@@ -76,6 +80,8 @@ function PullRequest:new(opts)
     head_repo = opts.head_repo,
     head_ref_name = opts.head_ref_name,
     hostname = opts.hostname,
+    base_oid = opts.base_oid,
+    head_oid = opts.head_oid,
     number = opts.number,
     owner = "",
     name = "",
@@ -137,171 +143,79 @@ function PullRequest:get_diff(pr)
   }
 end
 
----Fetch the changed files for a given PR
+---Fetch changed files for the immutable PR base/head revision pair.
 ---@param callback fun(files: FileEntry[]): nil
----@param on_page? fun(files: FileEntry[]): nil Called with each contiguous, cumulative page result
+---@param on_page? fun(files: FileEntry[]): nil
 ---@param on_error? fun(message: string): nil
 function PullRequest:get_changed_files(callback, on_page, on_error)
-  local files = {} ---@type FileEntry[]
-  local pages = {} ---@type table<integer, FileEntry[]>
-  local next_page_to_emit = 1
-  local requests_remaining = 0
-  local last_page = self.changed_files_count and math.max(1, math.ceil(self.changed_files_count / 100)) or 1
-  local failed = false
-  local emitted_paths = {} ---@type table<string, boolean>
-  local emit_ready_pages ---@type fun()
-
-  local function finish_if_ready()
-    if failed or requests_remaining > 0 then
-      return
+  local base_oid = self.base_oid or self.left.commit
+  local head_oid = self.head_oid or self.right.commit
+  if not base_oid or base_oid == "" or not head_oid or head_oid == "" then
+    local message = "Cannot load review files without immutable base and head commits"
+    if on_error then
+      on_error(message)
+    else
+      utils.error(message)
     end
-
-    local last_files = pages[last_page] or {}
-    if #last_files == 100 then
-      last_page = last_page + 1
-      requests_remaining = 1
-      local page = last_page
-      gh.api.get {
-        "/repos/{repo}/pulls/{number}/files?per_page={per_page}&page={page}",
-        format = { repo = self.repo, number = self.number, per_page = 100, page = page },
-        opts = {
-          hostname = self.hostname,
-          cb = gh.create_callback {
-            failure = function(message)
-              failed = true
-              if on_error then
-                on_error(message)
-              else
-                utils.error(message)
-              end
-            end,
-            success = function(output)
-              local ok, results = pcall(vim.json.decode, output)
-              if not ok or type(results) ~= "table" then
-                failed = true
-                local message = "Failed to decode changed files response"
-                if on_error then
-                  on_error(message)
-                else
-                  utils.error(message)
-                end
-                return
-              end
-              local page_files = {}
-              for _, result in ipairs(results) do
-                page_files[#page_files + 1] = FileEntry:new {
-                  path = result.filename,
-                  previous_path = result.previous_filename,
-                  patch = result.patch,
-                  pull_request = self,
-                  status = utils.file_status_map[result.status],
-                  stats = {
-                    additions = result.additions,
-                    deletions = result.deletions,
-                    changes = result.changes,
-                  },
-                }
-              end
-              pages[page] = page_files
-              requests_remaining = requests_remaining - 1
-              emit_ready_pages()
-              finish_if_ready()
-            end,
-          },
-        },
-      }
-      return
-    end
-
-    if self.changed_files_count and #files ~= self.changed_files_count then
-      failed = true
-      local message = string.format(
-        "Changed file count changed while loading (expected %d, received %d)",
-        self.changed_files_count,
-        #files
-      )
-      if on_error then
-        on_error(message)
-      else
-        utils.error(message)
-      end
-      return
-    end
-    callback(files)
+    return
   end
 
-  emit_ready_pages = function()
-    while pages[next_page_to_emit] do
-      local page_files = pages[next_page_to_emit]
-      for _, entry in ipairs(page_files) do
-        if not emitted_paths[entry.path] then
-          emitted_paths[entry.path] = true
-          files[#files + 1] = entry
-        end
-      end
-      next_page_to_emit = next_page_to_emit + 1
-      if on_page then
-        on_page(files)
-      end
+  local function report_error(message)
+    if on_error then
+      on_error(message)
+    else
+      utils.error(message)
     end
   end
 
-  local function fetch_page(page)
-    gh.api.get {
-      "/repos/{repo}/pulls/{number}/files?per_page={per_page}&page={page}",
-      format = { repo = self.repo, number = self.number, per_page = 100, page = page },
-      opts = {
-        hostname = self.hostname,
-        cb = gh.create_callback {
-          failure = function(message)
-            failed = true
-            if on_error then
-              on_error(message)
-            else
-              utils.error(message)
-            end
-          end,
-          success = function(output)
-            local ok, results = pcall(vim.json.decode, output)
-            if not ok or type(results) ~= "table" then
-              failed = true
-              local message = "Failed to decode changed files response"
-              if on_error then
-                on_error(message)
-              else
-                utils.error(message)
-              end
-              return
-            end
-            local page_files = {}
-            for _, result in ipairs(results) do
-              page_files[#page_files + 1] = FileEntry:new {
-                path = result.filename,
-                previous_path = result.previous_filename,
-                patch = result.patch,
-                pull_request = self,
-                status = utils.file_status_map[result.status],
-                stats = {
-                  additions = result.additions,
-                  deletions = result.deletions,
-                  changes = result.changes,
-                },
-              }
-            end
-            pages[page] = page_files
-            requests_remaining = requests_remaining - 1
-            emit_ready_pages()
-            finish_if_ready()
-          end,
-        },
+  gh.api.get {
+    "/repos/{repo}/compare/{base}...{head}",
+    format = { repo = self.repo, base = base_oid, head = head_oid },
+    opts = {
+      hostname = self.hostname,
+      cb = gh.create_callback {
+        failure = report_error,
+        success = function(output)
+          local ok, response = pcall(vim.json.decode, output)
+          local results = ok and type(response) == "table" and response.files or nil
+          if type(results) ~= "table" then
+            report_error "Comparison response has no changed-file list"
+            return
+          end
+          if self.changed_files_count and #results ~= self.changed_files_count then
+            report_error(
+              string.format(
+                "Changed file count changed while loading (expected %d, received %d)",
+                self.changed_files_count,
+                #results
+              )
+            )
+            return
+          end
+
+          local files = {} ---@type FileEntry[]
+          for _, result in ipairs(results) do
+            files[#files + 1] = FileEntry:new {
+              path = result.filename,
+              previous_path = result.previous_filename,
+              patch = result.patch,
+              pull_request = self,
+              status = utils.file_status_map[result.status],
+              stats = {
+                additions = result.additions,
+                deletions = result.deletions,
+                changes = result.changes,
+              },
+            }
+          end
+          if on_page then
+            on_page(files)
+          end
+          callback(files)
+        end,
       },
-    }
-  end
-
-  requests_remaining = last_page
-  for page = 1, last_page do
-    fetch_page(page)
-  end
+    },
+  }
 end
 
 ---Fetch the changed files at a given commit
@@ -379,6 +293,83 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
     return
   end
 
+  if type(obj.files) ~= "table" or type(obj.files.nodes) ~= "table" then
+    local owner, name = utils.split_repo(opts.repo)
+    gh.api.graphql {
+      query = require("octo.gh.queries").pull_request_review_metadata,
+      F = { owner = owner, name = name, number = opts.number },
+      opts = {
+        hostname = opts.hostname,
+        cb = gh.create_callback {
+          failure = function(message)
+            if on_error then
+              on_error("Failed to fetch complete pull request review data: " .. message)
+            else
+              utils.error("Failed to fetch complete pull request review data: " .. message)
+            end
+          end,
+          success = function(output)
+            local ok, response = pcall(vim.json.decode, output)
+            local metadata = ok
+                and type(response) == "table"
+                and vim.tbl_get(response, "data", "repository", "pullRequest")
+              or nil
+            if
+              type(metadata) ~= "table"
+              or type(metadata.files) ~= "table"
+              or type(metadata.files.nodes) ~= "table"
+              or type(metadata.baseRefOid) ~= "string"
+              or type(metadata.headRefOid) ~= "string"
+            then
+              local message = "Pull request review metadata is incomplete"
+              if on_error then
+                on_error(message)
+              else
+                utils.error(message)
+              end
+              return
+            end
+            if
+              (type(obj.baseRefOid) == "string" and obj.baseRefOid ~= metadata.baseRefOid)
+              or (type(obj.headRefOid) == "string" and obj.headRefOid ~= metadata.headRefOid)
+            then
+              local message = "Pull request revision changed while loading review; reopen the review"
+              if on_error then
+                on_error(message)
+              else
+                utils.error(message)
+              end
+              return
+            end
+            local hydrated = vim.tbl_extend("force", obj, {
+              baseRefOid = metadata.baseRefOid,
+              headRefOid = metadata.headRefOid,
+              changedFiles = metadata.changedFiles,
+              files = metadata.files,
+            })
+            M.create_with_merge_base(opts, hydrated, cb, on_early, on_error)
+          end,
+        },
+      },
+    }
+    return
+  end
+
+  if
+    type(obj.baseRefOid) ~= "string"
+    or obj.baseRefOid == ""
+    or type(obj.headRefOid) ~= "string"
+    or obj.headRefOid == ""
+  then
+    local message = "Cannot start review without immutable base and head commits"
+    if on_error then
+      on_error(message)
+    else
+      utils.error(message)
+    end
+    return
+  end
+
   local Rev = require("octo.reviews.rev").Rev
   local owner, name = utils.split_repo(opts.repo)
   local pr ---@type PullRequest?
@@ -395,6 +386,8 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
       changed_files_count = obj.changedFiles,
       left_commit_known = left_commit_known,
       hostname = opts.hostname,
+      base_oid = obj.baseRefOid,
+      head_oid = obj.headRefOid,
     })
     return PullRequest:new(pr_opts)
   end
@@ -414,21 +407,27 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
     on_early(pr)
   end
 
-  -- For cross-repository (fork) PRs, refs must be qualified as "owner:branch".
-  local base_ref = owner .. ":" .. obj.baseRefName
-  local head_owner = opts.head_repo and utils.split_repo(opts.head_repo) or owner
-  local head_ref = head_owner .. ":" .. obj.headRefName
-  local endpoint = string.format("repos/%s/%s/compare/%s...%s", owner, name, base_ref, head_ref)
+  local endpoint = string.format("repos/%s/%s/compare/%s...%s", owner, name, obj.baseRefOid, obj.headRefOid)
+
+  local function use_base_oid_fallback(message)
+    utils.error(message)
+    if not pr then
+      finish_when_file_metadata_ready(create_pull_request(obj.baseRefOid, true))
+      return
+    end
+    pr.left = Rev:new(obj.baseRefOid)
+    utils.commit_exists(obj.baseRefOid, function(exists)
+      pr.local_left = exists
+      pr.left_ready = true
+      finish_when_file_metadata_ready(pr)
+      notify_file_metadata_ready(pr)
+    end)
+  end
+
   local callback = gh.create_callback {
     success = function(merge_base_sha)
-      if type(merge_base_sha) ~= "string" or merge_base_sha == "" then
-        local message = "Failed to resolve merge base: compare response did not include a merge-base SHA"
-        if on_error then
-          on_error(message)
-        else
-          utils.error(message)
-          finish_when_file_metadata_ready(create_pull_request(obj.baseRefOid, true))
-        end
+      if type(merge_base_sha) ~= "string" or merge_base_sha == "" or merge_base_sha == "null" then
+        use_base_oid_fallback "Failed to resolve merge base: compare response did not include a merge-base SHA"
         return
       end
 
@@ -446,13 +445,7 @@ function M.create_with_merge_base(opts, obj, cb, on_early, on_error)
       end)
     end,
     failure = function(stderr)
-      local message = "Failed to fetch merge base: " .. stderr
-      if on_error then
-        on_error(message)
-      else
-        utils.error(message)
-        finish_when_file_metadata_ready(create_pull_request(obj.baseRefOid, true))
-      end
+      use_base_oid_fallback("Failed to fetch merge base: " .. stderr)
     end,
   }
 

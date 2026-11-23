@@ -3,6 +3,7 @@ local reviews = require "octo.reviews"
 local Layout = require("octo.reviews.layout").Layout
 local Rev = require("octo.reviews.rev").Rev
 local gh = require "octo.gh"
+local pull_request_model = require "octo.model.pull-request"
 local utils = require "octo.utils"
 local eq = assert.are.same
 
@@ -12,6 +13,8 @@ describe("Reviews module:", function()
   local original_in_pr_branch
   local original_utils_error
   local original_graphql
+  local original_get
+  local original_commit_exists
 
   before_each(function()
     vim.cmd "tabonly!"
@@ -20,6 +23,8 @@ describe("Reviews module:", function()
     original_in_pr_branch = utils.in_pr_branch
     original_utils_error = utils.error
     original_graphql = gh.api.graphql
+    original_get = gh.api.get
+    original_commit_exists = utils.commit_exists
     reviews.reviews = {}
   end)
 
@@ -30,6 +35,72 @@ describe("Reviews module:", function()
     utils.in_pr_branch = original_in_pr_branch
     utils.error = original_utils_error
     gh.api.graphql = original_graphql
+    gh.api.get = original_get
+    utils.commit_exists = original_commit_exists
+  end)
+
+  it("keeps the registered review tab open when merge-base resolution falls back to the base OID", function()
+    local reported_errors = {}
+    utils.error = function(message)
+      reported_errors[#reported_errors + 1] = message
+    end
+    utils.in_pr_branch = function()
+      return true
+    end
+    utils.commit_exists = function(_, callback)
+      callback(false)
+    end
+    gh.api.get = function(opts)
+      if opts[1] and opts[1]:find("compare", 1, true) then
+        opts.opts.cb(nil, "deleted fork head", 404)
+      end
+    end
+
+    local early_review
+    local ready_pull_request
+    pull_request_model.create_with_merge_base({
+      repo = "owner/repo",
+      head_repo = "fork-owner/repo",
+      head_ref_name = "deleted-branch",
+      number = 19,
+      id = "deleted-pr",
+    }, {
+      baseRefOid = "captured-base",
+      headRefOid = "captured-head",
+      baseRefName = "main",
+      headRefName = "deleted-branch",
+      changedFiles = 0,
+      files = { nodes = {} },
+    }, function(pr)
+      ready_pull_request = pr
+    end, function(pr)
+      pr.get_changed_files = function(_, callback)
+        callback {}
+      end
+      early_review = reviews.Review:new(pr)
+      early_review.populate_threads = function(_, callback)
+        callback {
+          data = {
+            repository = {
+              pullRequest = {
+                baseRefOid = "captured-base",
+                headRefOid = "captured-head",
+                reviewThreads = { nodes = {} },
+              },
+            },
+          },
+        }
+      end
+      early_review:browse()
+    end)
+
+    local layout = early_review.layout
+    assert.are.same(early_review.pull_request, ready_pull_request)
+    assert.are.same("captured-base", ready_pull_request.left.commit)
+    assert.is_true(vim.api.nvim_tabpage_is_valid(layout.tabpage))
+    assert.is_true(layout:is_live())
+    assert.is_true(reported_errors[1]:find("Failed to fetch merge base", 1, true) ~= nil)
+    early_review:close_layout(layout)
   end)
 
   it("carries the pull request host through review-thread queries", function()
@@ -101,6 +172,8 @@ describe("Reviews module:", function()
       owner = "owner",
       name = "repo",
       number = 1,
+      base_oid = "base",
+      head_oid = "head",
       left = { commit = "base" },
       right = { commit = "head" },
       get_changed_files = function(_, callback, on_page, on_error)
@@ -224,7 +297,15 @@ describe("Reviews module:", function()
     eq(true, type(callbacks.page) == "function")
 
     flow.get_thread_callback() {
-      data = { repository = { pullRequest = { reviewThreads = { nodes = { make_thread() } } } } },
+      data = {
+        repository = {
+          pullRequest = {
+            baseRefOid = "base",
+            headRefOid = "head",
+            reviewThreads = { nodes = { make_thread() } },
+          },
+        },
+      },
     }
     eq("pending body", flow.review.threads.thread_1.comments.nodes[1].body)
     eq(0, #layout.files)
@@ -251,7 +332,15 @@ describe("Reviews module:", function()
     eq(nil, flow.review.threads.thread_1)
 
     flow.get_thread_callback() {
-      data = { repository = { pullRequest = { reviewThreads = { nodes = { make_thread() } } } } },
+      data = {
+        repository = {
+          pullRequest = {
+            baseRefOid = "base",
+            headRefOid = "head",
+            reviewThreads = { nodes = { make_thread() } },
+          },
+        },
+      },
     }
     eq("pending body", flow.review.threads.thread_1.comments.nodes[1].body)
   end)
@@ -269,6 +358,32 @@ describe("Reviews module:", function()
 
     eq(true, layout.closed)
     eq({ "Failed to load review threads: network unavailable" }, errors)
+  end)
+
+  it("does not apply review threads after the PR revision is retargeted", function()
+    local flow = make_review_flow()
+    local errors = {}
+    utils.error = function(message)
+      errors[#errors + 1] = message
+    end
+    flow.review:browse()
+    local layout = flow.get_layout()
+
+    flow.get_thread_callback() {
+      data = {
+        repository = {
+          pullRequest = {
+            baseRefOid = "base",
+            headRefOid = "new-head",
+            reviewThreads = { nodes = { make_thread() } },
+          },
+        },
+      },
+    }
+
+    eq(true, layout.closed)
+    eq({}, flow.review.threads)
+    eq({ "Pull request revision changed while loading review; reopen the review" }, errors)
   end)
 
   it("ignores file and thread results after the review tab closes", function()
@@ -399,6 +514,72 @@ describe("Reviews module:", function()
 
     eq("pending_review", flow.review.id)
     eq(true, browse_layout.closed)
+  end)
+
+  it("keeps stale file callbacks window-scoped and ignores errors after selection moves", function()
+    local target_tab = vim.api.nvim_get_current_tabpage()
+    local target_win = vim.api.nvim_get_current_win()
+    vim.cmd "tabnew"
+    local tab_enters = 0
+    local group = vim.api.nvim_create_augroup("octo_review_async_test", { clear = true })
+    vim.api.nvim_create_autocmd("TabEnter", {
+      group = group,
+      callback = function()
+        tab_enters = tab_enters + 1
+      end,
+    })
+
+    local stale_error
+    local selected_file = {
+      path = "stale.lua",
+      is_ready_to_render = function()
+        return false
+      end,
+      fetch = function(_, _, _, on_error)
+        stale_error = on_error
+      end,
+      detach_buffers = function() end,
+    }
+    local next_file = {
+      is_ready_to_render = function()
+        return true
+      end,
+      load_buffers = function() end,
+      detach_buffers = function() end,
+    }
+    local layout = setmetatable({
+      tabpage = target_tab,
+      left_winid = target_win,
+      right_winid = target_win,
+      files = { selected_file, next_file },
+      selected_file_idx = 1,
+      file_panel = {
+        mark_selected = function() end,
+        set_cursor_to_file = function() end,
+      },
+      async_file_loads = {},
+      prefetch_nearby_files = function() end,
+    }, { __index = Layout })
+    local failure_count = 0
+    local review = {
+      layout = layout,
+      fail_loading = function()
+        failure_count = failure_count + 1
+        layout.closed = true
+      end,
+    }
+    layout.review = review
+    reviews.reviews[tostring(target_tab)] = review
+
+    layout:set_current_file_async(selected_file)
+    layout:set_current_file_async(next_file)
+    stale_error "late error from old selection"
+
+    assert.are.same(next_file, layout:get_current_file())
+    assert.are.same(0, failure_count)
+    assert.is_falsy(layout.closed)
+    assert.are.same(0, tab_enters)
+    vim.api.nvim_del_augroup_by_id(group)
   end)
 
   it("fills a wide nearby prefetch window with bounded, selection-prioritized requests", function()

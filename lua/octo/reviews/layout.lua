@@ -45,7 +45,6 @@ function Layout:new(opt)
     selected_file_idx = 1,
     ready = false,
     closed = false,
-    async_file_loads = {},
     user_selected_file = false,
   }
   this.file_panel = FilePanel:new(this.files)
@@ -56,6 +55,8 @@ end
 ---@param review Review
 function Layout:open(review)
   self.closed = false
+  self.review = review
+  self.file_panel.review = review
   vim.cmd "tab split"
   self.tabpage = vim.api.nvim_get_current_tabpage()
   require("octo.reviews").reviews[tostring(self.tabpage)] = review
@@ -104,35 +105,6 @@ function Layout:is_live()
   return not self.closed and self.tabpage ~= nil and vim.api.nvim_tabpage_is_valid(self.tabpage)
 end
 
----Run UI work in this layout's tab without changing the user's active tab.
----@param callback fun(): nil
-function Layout:run_in_tabpage(callback)
-  if not self:is_live() then
-    return
-  end
-
-  local previous_tab = vim.api.nvim_get_current_tabpage()
-  if previous_tab == self.tabpage then
-    callback()
-    return
-  end
-
-  local previous_win = vim.api.nvim_get_current_win()
-  local ok, err = pcall(function()
-    vim.api.nvim_set_current_tabpage(self.tabpage)
-    callback()
-  end)
-  if vim.api.nvim_tabpage_is_valid(previous_tab) then
-    pcall(vim.api.nvim_set_current_tabpage, previous_tab)
-    if vim.api.nvim_win_is_valid(previous_win) then
-      pcall(vim.api.nvim_set_current_win, previous_win)
-    end
-  end
-  if not ok then
-    error(err)
-  end
-end
-
 --- Get the currently selected file
 --- Returns nil if no files are currently in the review
 --- @return FileEntry | nil
@@ -149,6 +121,7 @@ end
 --- @param focus OctoSplit | nil
 function Layout:set_current_file(file, focus)
   self.user_selected_file = true
+  self.selection_generation = (self.selection_generation or 0) + 1
   self:ensure_layout()
   if self:file_safeguard() or not file then
     return
@@ -165,7 +138,7 @@ function Layout:set_current_file(file, focus)
   end
   if found then
     if not file:is_ready_to_render() then
-      local result = file:fetch(true)
+      local result = file:fetch(true, nil, nil, self.review)
       if not result then
         utils.print_err("Timeout fetching " .. file.path)
         return
@@ -176,7 +149,7 @@ function Layout:set_current_file(file, focus)
     end
     vim.cmd [[diffoff!]]
     self.files[self.selected_file_idx] = file
-    file:load_buffers(self.left_winid, self.right_winid)
+    file:load_buffers(self.left_winid, self.right_winid, self.review)
 
     self:prefetch_nearby_files()
 
@@ -200,6 +173,8 @@ function Layout:set_current_file_async(file)
   if not self:is_live() then
     return
   end
+  self.selection_generation = (self.selection_generation or 0) + 1
+  local selection_generation = self.selection_generation
   local previous_file = self:get_current_file()
 
   for idx, candidate in ipairs(self.files) do
@@ -214,35 +189,36 @@ function Layout:set_current_file_async(file)
     file_entry.load_null_buffers(self.left_winid, self.right_winid)
   end
 
+  local function is_current_selection()
+    return self:is_live() and self.selection_generation == selection_generation and self:get_current_file() == file
+  end
+
   local function show_file()
-    if not self:is_live() or self:get_current_file() ~= file then
+    if not is_current_selection() then
       return
     end
     self:ensure_layout()
-    file:load_buffers(self.left_winid, self.right_winid)
+    file:load_buffers(self.left_winid, self.right_winid, self.review)
     self:prefetch_nearby_files()
     self.file_panel:mark_selected(file)
     self.file_panel:set_cursor_to_file(file)
   end
 
   if file:is_ready_to_render() then
-    self:run_in_tabpage(show_file)
+    show_file()
     return
   end
-  if self.async_file_loads[file] then
-    return
-  end
-  self.async_file_loads[file] = true
   file:fetch(false, function()
-    self.async_file_loads[file] = nil
-    self:run_in_tabpage(show_file)
+    show_file()
   end, function(message)
-    self.async_file_loads[file] = nil
-    local review = require("octo.reviews").get_tab_review(self.tabpage)
+    if not is_current_selection() then
+      return
+    end
+    local review = self.review or require("octo.reviews").get_tab_review(self.tabpage)
     if review then
       review:fail_loading(self, "Failed to load diff for " .. file.path .. ": " .. message)
     end
-  end)
+  end, self.review)
 end
 
 ---Warm a wide navigation window without launching all its requests at once.
@@ -250,13 +226,7 @@ function Layout:prefetch_nearby_files()
   if not self:is_live() or self.prefetch_closed then
     return
   end
-  if vim.api.nvim_get_current_tabpage() ~= self.tabpage then
-    self:run_in_tabpage(function()
-      self:prefetch_nearby_files()
-    end)
-    return
-  end
-  if not self.tabpage or vim.api.nvim_get_current_tabpage() ~= self.tabpage then
+  if not self.tabpage or not self:is_live() then
     return
   end
   self.prefetching = self.prefetching or 0
@@ -282,26 +252,27 @@ function Layout:prefetch_nearby_files()
     next_file:fetch(false, function()
       self.prefetching = self.prefetching - 1
       self:prefetch_nearby_files()
-    end)
+    end, nil, self.review)
   end
 end
 
 ---Update the file list, including stats and status for all files.
 function Layout:update_files(async)
-  self:run_in_tabpage(function()
-    self.file_panel.files = self.files
-    self.file_panel:render()
-    self.file_panel:redraw()
-    local file = self:get_current_file()
-    if file then
-      if async then
-        self:set_current_file_async(file)
-      else
-        self:set_current_file(file)
-      end
+  if not self:is_live() then
+    return
+  end
+  self.file_panel.files = self.files
+  self.file_panel:render()
+  self.file_panel:redraw()
+  local file = self:get_current_file()
+  if file then
+    if async then
+      self:set_current_file_async(file)
+    else
+      self:set_current_file(file)
     end
-    self.update_needed = false
-  end)
+  end
+  self.update_needed = false
 end
 
 --- Select the prev file entry

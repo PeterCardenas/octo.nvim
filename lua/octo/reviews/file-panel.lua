@@ -239,7 +239,7 @@ function FilePanel:highlight_next_file()
 end
 
 function FilePanel:render()
-  local current_review = require("octo.reviews").get_current_review()
+  local current_review = self.review or require("octo.reviews").get_current_review()
   if not current_review then
     return
   end
@@ -345,7 +345,7 @@ function FilePanel:render()
     s = s .. icon .. file.path
 
     -- thread counts
-    local active, resolved, outdated, pending = M.thread_counts(file.path)
+    local active, resolved, outdated, pending = M.thread_counts(file.path, current_review)
     if active > 0 or resolved > 0 or pending > 0 or outdated > 0 then
       -- white space to align count columns
       offset = #s + 1
@@ -440,9 +440,10 @@ end
 M.FilePanel = FilePanel
 
 ---@param path string
+---@param review? Review
 ---@return octo.ReviewThread[]
-function M.threads_for_path(path)
-  local current_review = require("octo.reviews").get_current_review()
+function M.threads_for_path(path, review)
+  local current_review = review or require("octo.reviews").get_current_review()
   if not current_review then
     return {}
   end
@@ -455,8 +456,8 @@ function M.threads_for_path(path)
   return threads
 end
 
-function M.thread_counts(path)
-  local threads = M.threads_for_path(path)
+function M.thread_counts(path, review)
+  local threads = M.threads_for_path(path, review)
   local resolved = 0
   local outdated = 0
   local pending = 0

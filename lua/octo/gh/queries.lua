@@ -35,6 +35,8 @@ M.setup = function()
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest (number: $number){
+      baseRefOid
+      headRefOid
       reviews(first: 100, states: PENDING) {
         nodes {
           id
@@ -78,6 +80,8 @@ query($owner: String!, $name: String!, $number: Int!) {
 query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      baseRefOid
+      headRefOid
       reviewThreads(last:80) {
         nodes {
           ...ReviewThreadInformationFragment
@@ -710,6 +714,24 @@ query($owner: String!, $name: String!, $number: Int!) {
               isRequired(pullRequestNumber: $number)
             }
           }
+        }
+      }
+    }
+  }
+}
+]]
+
+  M.pull_request_review_metadata = [[
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      baseRefOid
+      headRefOid
+      changedFiles
+      files(first: 100) {
+        nodes {
+          path
+          viewerViewedState
         }
       }
     }
