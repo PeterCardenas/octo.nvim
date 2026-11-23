@@ -14,6 +14,7 @@ local reviews = require "octo.reviews"
 local signs = require "octo.ui.signs"
 local window = require "octo.ui.window"
 local colors = require "octo.ui.colors"
+local persistent_cache = require "octo.cache"
 local writers = require "octo.ui.writers"
 local utils = require "octo.utils"
 local uri = require "octo.uri"
@@ -27,6 +28,51 @@ _G.octo_buffers = {}
 local M = {}
 local next_load_generation = 0
 local active_loads = {} ---@type table<integer, integer>
+local cached_indicator_ns = vim.api.nvim_create_namespace "octo_persistent_cache"
+
+---@param bufnr integer
+local function mark_cached(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(bufnr, cached_indicator_ns, 0, -1)
+  vim.api.nvim_buf_set_extmark(bufnr, cached_indicator_ns, 0, 0, {
+    virt_text = { { " (cached)", "Comment" } },
+    virt_text_pos = "eol",
+  })
+  vim.b[bufnr].octo_cached = true
+end
+
+---@param bufnr integer
+local function clear_cached_mark(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(bufnr, cached_indicator_ns, 0, -1)
+  vim.b[bufnr].octo_cached = nil
+end
+
+---@param hostname string?
+---@return string
+local function resolve_hostname(hostname)
+  if not utils.is_blank(hostname) then
+    return hostname
+  end
+  if not utils.is_blank(config.values.github_hostname) then
+    return config.values.github_hostname
+  end
+  return utils.get_remote_host() or "github.com"
+end
+
+---@param bufnr integer
+---@param cached boolean
+function M.set_cached_indicator(bufnr, cached)
+  if cached then
+    mark_cached(bufnr)
+  else
+    clear_cached_mark(bufnr)
+  end
+end
 
 function M.setup(user_config)
   if not vim.fn.has "nvim-0.7" then
@@ -97,6 +143,7 @@ end
 ---@field verbose? boolean
 ---@field respect_local_changes? boolean
 ---@field on_local_changes? fun()
+---@field on_cached? fun()
 ---@field on_reload? fun()
 ---@field on_error? fun()
 
@@ -156,6 +203,14 @@ function M.load_buffer(opts)
     end
   end
 
+  local function has_local_changes()
+    if vim.bo[bufnr].modified then
+      return true
+    end
+    local current_buffer = octo_buffers[bufnr]
+    return current_buffer ~= nil and current_buffer:has_local_changes()
+  end
+
   ---@param buffer OctoBuffer
   ---@return table<string, boolean>
   local function capture_closed_comment_folds(buffer)
@@ -201,6 +256,103 @@ function M.load_buffer(opts)
     end
   end
 
+  local shell_rendered = false
+  local cached_rendered = false
+  local cached_full_rendered = false
+  local fresh_shell_rendered = false
+  local fresh_response_received = false
+  local cached_notification_sent = false
+  local function notify_cached()
+    if not cached_notification_sent then
+      cached_notification_sent = true
+      if opts.on_cached then
+        opts.on_cached()
+      end
+    end
+  end
+  local cacheable_kind = kind == "pull" or kind == "issue" or kind == "discussion" or kind == "pull_diff"
+  local cache_key ---@type string?
+  if config.values.persistent_cache.enabled and cacheable_kind then
+    cache_key = persistent_cache.key(resolve_hostname(hostname), repo, kind, id)
+    persistent_cache.read(cache_key, function(cache_entry)
+      if
+        not cache_entry
+        or type(cache_entry.object) ~= "table"
+        or not is_latest_load()
+        or not vim.api.nvim_buf_is_valid(bufnr)
+        or fresh_shell_rendered
+      then
+        return
+      end
+      if has_local_changes() then
+        return
+      end
+
+      local cached_obj = cache_entry.object
+      local cached_lines = cache_entry.rendered_lines
+      if type(cached_lines) == "table" then
+        local valid_lines = true
+        for _, line in ipairs(cached_lines) do
+          if type(line) ~= "string" then
+            valid_lines = false
+            break
+          end
+        end
+        if valid_lines then
+          vim.api.nvim_buf_call(bufnr, function()
+            vim.bo[bufnr].modifiable = true
+            vim.bo[bufnr].readonly = false
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, cached_lines)
+            vim.bo[bufnr].filetype = kind == "pull_diff" and "diff" or "octo"
+            vim.bo[bufnr].modifiable = false
+            vim.bo[bufnr].modified = false
+            mark_cached(bufnr)
+            notify_cached()
+          end)
+          shell_rendered = true
+          cached_rendered = true
+          cached_full_rendered = true
+          vim.schedule(function()
+            if
+              not is_latest_load()
+              or fresh_response_received
+              or not vim.api.nvim_buf_is_valid(bufnr)
+              or has_local_changes()
+            then
+              return
+            end
+            vim.api.nvim_buf_call(bufnr, function()
+              vim.bo[bufnr].modifiable = true
+              vim.bo[bufnr].readonly = false
+              if kind == "pull_diff" then
+                M.create_pull_diff_buffer(cached_obj, repo, false, hostname)
+              else
+                M.create_buffer(kind, cached_obj, repo, false, hostname)
+              end
+              mark_cached(bufnr)
+              restore_cursor()
+            end)
+          end)
+          return
+        end
+      end
+
+      vim.api.nvim_buf_call(bufnr, function()
+        if kind == "pull_diff" then
+          M.create_pull_diff_buffer(cached_obj, repo, false, hostname)
+        else
+          M.create_buffer(kind, cached_obj, repo, false, hostname)
+        end
+        shell_rendered = true
+        cached_rendered = true
+        cached_full_rendered = true
+        mark_cached(bufnr)
+        notify_cached()
+        restore_cursor()
+      end)
+    end)
+  end
+
   if kind == "pull_diff" then
     vim.api.nvim_buf_call(bufnr, function()
       vim.cmd [[setlocal filetype=diff]]
@@ -215,6 +367,7 @@ function M.load_buffer(opts)
       if not is_latest_load() then
         return
       end
+      fresh_response_received = true
       if not vim.api.nvim_buf_is_valid(bufnr) then
         finish_load()
         if opts.on_error then
@@ -223,8 +376,9 @@ function M.load_buffer(opts)
         return
       end
 
-      local octo_buf = octo_buffers[bufnr]
-      if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+      local has_local_buffer_edits = has_local_changes()
+      clear_cached_mark(bufnr)
+      if has_local_buffer_edits then
         finish_load()
         if opts.on_local_changes then
           opts.on_local_changes()
@@ -241,6 +395,12 @@ function M.load_buffer(opts)
         end
       end)
 
+      if cache_key then
+        persistent_cache.write(cache_key, {
+          object = obj,
+          rendered_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+        })
+      end
       finish_load()
       if opts.on_reload then
         opts.on_reload()
@@ -256,11 +416,11 @@ function M.load_buffer(opts)
     return
   end
 
-  local shell_rendered = false
   M.load(repo, kind, id, hostname, function(obj)
     if not is_latest_load() then
       return
     end
+    fresh_response_received = true
     if not vim.api.nvim_buf_is_valid(bufnr) then
       finish_load()
       if opts.on_error then
@@ -270,7 +430,8 @@ function M.load_buffer(opts)
     end
 
     local octo_buf = octo_buffers[bufnr]
-    if octo_buf and octo_buf:has_local_changes() and (opts.respect_local_changes or shell_rendered) then
+    if has_local_changes() then
+      clear_cached_mark(bufnr)
       finish_load()
       if opts.on_local_changes then
         opts.on_local_changes()
@@ -287,9 +448,15 @@ function M.load_buffer(opts)
       window_view = vim.api.nvim_win_call(win, vim.fn.winsaveview)
     end
 
+    clear_cached_mark(bufnr)
     vim.api.nvim_buf_call(bufnr, function()
+      vim.bo[bufnr].modifiable = true
+      vim.bo[bufnr].readonly = false
       if shell_rendered and octo_buf then
         octo_buf:update_node(obj)
+        -- Rendering clears the old comment extmarks, so their metadata must be rebuilt too.
+        octo_buf.commentsMetadata = {}
+        octo_buf.threadsMetadata = {}
         if kind == "discussion" then
           octo_buf:render_discussion()
         else
@@ -308,6 +475,12 @@ function M.load_buffer(opts)
       end
     end)
 
+    if cache_key then
+      persistent_cache.write(cache_key, {
+        object = obj,
+        rendered_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+      })
+    end
     finish_load()
     if opts.on_reload then
       opts.on_reload()
@@ -330,18 +503,32 @@ function M.load_buffer(opts)
       vim.bo[bufnr].modifiable = false
       vim.b[bufnr].octo_loading_skeleton = true
     end,
-    on_shell = function(shell)
+    on_shell = function(shell, is_cached)
       if not is_latest_load() or not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
       local octo_buf = octo_buffers[bufnr]
-      if opts.respect_local_changes and octo_buf and octo_buf:has_local_changes() then
+      if has_local_changes() then
         return
+      end
+      if cached_full_rendered or (is_cached and fresh_shell_rendered) then
+        return
+      end
+      if not is_cached then
+        fresh_shell_rendered = true
+        if cached_rendered then
+          return
+        end
       end
 
       vim.api.nvim_buf_call(bufnr, function()
         M.create_buffer(kind, shell, repo, false, hostname)
         shell_rendered = true
+        if is_cached then
+          cached_rendered = true
+          mark_cached(bufnr)
+          notify_cached()
+        end
         restore_cursor()
       end)
     end,
@@ -439,38 +626,21 @@ end
 
 ---@type table<string, { expires_at: number, obj: table }>
 local fast_load_cache = {}
----@type table<string, { success: fun(obj: table), failure: fun(stderr: string)? }[]>
+---@type table<string, { success: fun(obj: table, cached: boolean), failure: fun(stderr: string)?, cached_delivered: boolean, fresh_delivered: boolean }[]>
 local fast_load_inflight = {}
 
 ---@param repo string
 ---@param kind "pull"|"pull_request"|"issue"|"discussion"
 ---@param id integer|string
 ---@param hostname string?
----@param cb fun(obj: table): nil
+---@param cb fun(obj: table, cached: boolean): nil
 ---@param on_error? fun(stderr: string): nil
 function M.load_preview(repo, kind, id, hostname, cb, on_error)
   local normalized_kind = kind == "pull_request" and "pull" or kind
   local owner, name = utils.split_repo(repo)
-  local host = hostname or config.values.github_hostname or utils.get_remote_host() or "github.com"
+  local host = resolve_hostname(hostname)
   local cache_key = table.concat({ host, repo, normalized_kind, tostring(id) }, "|")
-  local now = vim.loop.hrtime() / 1000000000
-  local cached = fast_load_cache[cache_key]
-  if cached and cached.expires_at > now then
-    vim.schedule(function()
-      cb(vim.deepcopy(cached.obj))
-    end)
-    return
-  elseif cached then
-    fast_load_cache[cache_key] = nil
-  end
-
-  local waiting = fast_load_inflight[cache_key]
-  if waiting then
-    waiting[#waiting + 1] = { success = cb, failure = on_error }
-    return
-  end
-  fast_load_inflight[cache_key] = { { success = cb, failure = on_error } }
-
+  local preview_key = persistent_cache.key(host, repo, normalized_kind, id, "preview")
   local query, fields
   if normalized_kind == "pull" then
     query = graphql("pull_request_fast_query", _G.octo_pv2_fragment)
@@ -482,7 +652,50 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
     query = queries.discussion_fast
     fields = { owner = owner, name = name, number = tonumber(id) }
   else
-    fast_load_inflight[cache_key] = nil
+    return
+  end
+
+  local waiter = {
+    success = cb,
+    failure = on_error,
+    cached_delivered = false,
+    fresh_delivered = false,
+  }
+  local function deliver_cached(callback, obj)
+    if callback.cached_delivered or callback.fresh_delivered then
+      return
+    end
+    callback.cached_delivered = true
+    callback.success(vim.deepcopy(obj), true)
+  end
+
+  local now = vim.loop.hrtime() / 1000000000
+  local memory_cached = fast_load_cache[cache_key]
+  if memory_cached and memory_cached.expires_at > now then
+    vim.schedule(function()
+      deliver_cached(waiter, memory_cached.obj)
+    end)
+  elseif memory_cached then
+    fast_load_cache[cache_key] = nil
+  end
+
+  local callbacks = fast_load_inflight[cache_key]
+  if callbacks then
+    callbacks[#callbacks + 1] = waiter
+  else
+    callbacks = { waiter }
+    fast_load_inflight[cache_key] = callbacks
+  end
+
+  persistent_cache.read(preview_key, function(cached_obj)
+    if cached_obj and type(cached_obj) == "table" then
+      for _, callback in ipairs(callbacks) do
+        deliver_cached(callback, cached_obj)
+      end
+    end
+  end)
+
+  if #callbacks > 1 then
     return
   end
 
@@ -494,15 +707,13 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
       hostname = hostname,
       cb = gh.create_callback {
         failure = function(stderr)
-          local callbacks = fast_load_inflight[cache_key]
+          local waiting = fast_load_inflight[cache_key]
           fast_load_inflight[cache_key] = nil
-          if callbacks then
-            for _, callback in ipairs(callbacks) do
-              if callback.failure then
-                callback.failure(stderr)
-              else
-                utils.print_err(stderr)
-              end
+          for _, callback in ipairs(waiting or {}) do
+            if callback.failure then
+              callback.failure(stderr)
+            elseif not callback.cached_delivered then
+              utils.print_err(stderr)
             end
           end
         end,
@@ -517,9 +728,9 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
               )
             or nil
           if type(obj) ~= "table" then
-            local callbacks = fast_load_inflight[cache_key]
+            local waiting = fast_load_inflight[cache_key]
             fast_load_inflight[cache_key] = nil
-            for _, callback in ipairs(callbacks or {}) do
+            for _, callback in ipairs(waiting or {}) do
               if callback.failure then
                 callback.failure "Fast query returned no object"
               end
@@ -527,10 +738,12 @@ function M.load_preview(repo, kind, id, hostname, cb, on_error)
             return
           end
           fast_load_cache[cache_key] = { expires_at = vim.loop.hrtime() / 1000000000 + 30, obj = vim.deepcopy(obj) }
-          local callbacks = fast_load_inflight[cache_key]
+          persistent_cache.write(preview_key, obj)
+          local waiting = fast_load_inflight[cache_key]
           fast_load_inflight[cache_key] = nil
-          for _, callback in ipairs(callbacks or {}) do
-            callback.success(vim.deepcopy(obj))
+          for _, callback in ipairs(waiting or {}) do
+            callback.fresh_delivered = true
+            callback.success(vim.deepcopy(obj), false)
           end
         end,
       },
@@ -541,7 +754,7 @@ end
 ---@param repo string
 ---@class octo.LoadOpts
 ---@field on_skeleton? fun(): nil
----@field on_shell? fun(obj: octo.Issue|octo.PullRequest|octo.Discussion): nil
+---@field on_shell? fun(obj: octo.Issue|octo.PullRequest|octo.Discussion, cached: boolean): nil
 
 ---@param kind octo.NodeKind
 ---@param id? integer|string pull request, issue, or discussion number or release tag
@@ -748,7 +961,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
 
     -- Start the full query before the shell request so neither waits on the other.
     request_page(nil)
-    M.load_preview(repo, kind, id, hostname, function(shell)
+    M.load_preview(repo, kind, id, hostname, function(shell, is_cached)
       if fallback_started or load_completed or details_received then
         return
       end
@@ -763,7 +976,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
       expected_count = count
       shell._timelineIncomplete = count > #shell_nodes
       if opts and opts.on_shell then
-        opts.on_shell(shell)
+        opts.on_shell(shell, is_cached)
       end
     end, function()
       fallback()
@@ -1093,7 +1306,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     }
   end
 
-  M.load_preview(repo, kind, id, hostname, function(shell)
+  M.load_preview(repo, kind, id, hostname, function(shell, is_cached)
     if fallback_started or load_completed or details_received then
       return
     end
@@ -1111,7 +1324,7 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end
     shell._timelineIncomplete = count > #shell_nodes
     if opts and opts.on_shell then
-      opts.on_shell(shell)
+      opts.on_shell(shell, is_cached)
     end
   end, function()
     fallback()

@@ -4,6 +4,9 @@ describe("Octo module:", function()
   local octo
   local gh
   local polling
+  local config
+  local persistent_cache
+  local original_cache_enabled
   local original_get
   local original_graphql
   local original_load_preview
@@ -18,6 +21,10 @@ describe("Octo module:", function()
     octo = require "octo"
     gh = require "octo.gh"
     polling = require "octo.polling"
+    config = require "octo.config"
+    persistent_cache = require "octo.cache"
+    original_cache_enabled = config.values.persistent_cache.enabled
+    config.values.persistent_cache.enabled = false
     original_get = gh.api.get
     original_graphql = gh.api.graphql
     original_load_preview = octo.load_preview
@@ -29,6 +36,7 @@ describe("Octo module:", function()
   end)
 
   after_each(function()
+    config.values.persistent_cache.enabled = original_cache_enabled
     gh.api.get = original_get
     gh.api.graphql = original_graphql
     octo.load_preview = original_load_preview
@@ -124,6 +132,21 @@ describe("Octo module:", function()
     return requests, function(shell)
       shell_callback(shell)
     end, queries
+  end
+
+  local function seed_cached_issue(issue)
+    config.values.persistent_cache.enabled = true
+    local key = persistent_cache.key("github.com", "owner/repo", "issue", 17)
+    local complete = false
+    persistent_cache.write(key, {
+      object = issue,
+      rendered_lines = { "cached issue snapshot" },
+    }, function()
+      complete = true
+    end)
+    assert.is_true(vim.wait(5000, function()
+      return complete
+    end))
   end
 
   local function setup_pull_load_requests()
@@ -353,7 +376,7 @@ describe("Octo module:", function()
     assert.is_true(vim.wait(100, function()
       return completed == 3
     end))
-    assert.are.same(1, #requests)
+    assert.are.same(2, #requests)
   end)
 
   it("loads timeline pages at exact boundaries and preserves groups across page edges", function()
@@ -828,6 +851,52 @@ describe("Octo module:", function()
     octo.load_pull_diff("owner/repo", 7, nil, function() end)
 
     assert.are.same({ "diff", "fingerprint" }, requests)
+  end)
+
+  it("renders stale cached data before fresh data and marks it until revalidation", function()
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
+    seed_cached_issue { id = "cached", number = 17, title = "Cached issue" }
+    local requests, get_buffer = install_async_load_stubs()
+
+    octo.load_buffer { bufnr = bufnr }
+    assert.is_true(vim.wait(1000, function()
+      return get_buffer() ~= nil
+    end))
+    assert.are.same("cached", get_buffer().node.id)
+    assert.is_true(vim.b[bufnr].octo_cached)
+
+    requests[1].callback { id = "fresh" }
+
+    assert.are.same("fresh", get_buffer().node.id)
+    assert.is_nil(vim.b[bufnr].octo_cached)
+    assert.are.same(
+      {},
+      vim.api.nvim_buf_get_extmarks(bufnr, vim.api.nvim_create_namespace "octo_persistent_cache", 0, -1, {})
+    )
+  end)
+
+  it("does not overwrite edits made after stale cache is rendered", function()
+    local bufnr = create_named_buffer "octo://github.com/owner/repo/issue/17"
+    seed_cached_issue { id = "cached", number = 17, title = "Cached issue" }
+    local requests, get_buffer = install_async_load_stubs()
+    local local_changes = 0
+
+    octo.load_buffer {
+      bufnr = bufnr,
+      on_local_changes = function()
+        local_changes = local_changes + 1
+      end,
+    }
+    assert.is_true(vim.wait(1000, function()
+      return get_buffer() ~= nil
+    end))
+    get_buffer().dirty = true
+
+    requests[1].callback { id = "fresh" }
+
+    assert.are.same("cached", get_buffer().node.id)
+    assert.are.same(1, local_changes)
+    assert.is_nil(vim.b[bufnr].octo_cached)
   end)
 
   it("does not overwrite edits made while the second phase is loading", function()

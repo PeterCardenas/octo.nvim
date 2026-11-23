@@ -37,12 +37,20 @@ describe("Config module:", function()
       eq(merged_config.colors.black, "#000000")
       eq(merged_config.user_icon, "A")
       eq(merged_config.timeline_order, "newest_first")
+      eq(merged_config.persistent_cache.enabled, true)
     end)
     it("user defined mappings completely overrides defaults.", function()
       eq(merged_config.mappings.issue.close_issue.lhs, "<C-x>")
       eq(merged_config.mappings.issue.close_issue.desc, "Close issue")
       eq(merged_config.mappings.pull_request.merge_pr.lhs, "<localleader>pm")
       eq(merged_config.mappings.pull_request.merge_pr.desc, "merge commit PR")
+    end)
+    it("validates persistent cache enablement", function()
+      local original = this.values.persistent_cache.enabled
+      this.values.persistent_cache.enabled = "yes"
+      assert.is_not_nil(this.validate_config()["persistent_cache.enabled"])
+      this.values.persistent_cache.enabled = original
+      assert.is_nil(this.validate_config()["persistent_cache.enabled"])
     end)
     it("validates timeline ordering values", function()
       local original = this.values.timeline_order

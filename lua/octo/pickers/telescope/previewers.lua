@@ -30,11 +30,12 @@ local discussion = defaulter(function(opts)
       end
 
       local number = entry.value
-      require("octo").load_preview(entry.repo, "discussion", number, nil, function(obj)
+      require("octo").load_preview(entry.repo, "discussion", number, nil, function(obj, is_cached)
         if not vim.api.nvim_buf_is_valid(bufnr) then
           return
         end
         writers.discussion_preview(obj, bufnr)
+        require("octo").set_cached_indicator(bufnr, is_cached)
       end)
     end,
   }
@@ -51,11 +52,12 @@ local issue = defaulter(function(opts)
 
       if self.state.bufname ~= entry.value or vim.api.nvim_buf_line_count(bufnr) == 1 then
         local number = entry.value
-        require("octo").load_preview(entry.repo, entry.kind, number, nil, function(obj)
+        require("octo").load_preview(entry.repo, entry.kind, number, nil, function(obj, is_cached)
           if not vim.api.nvim_buf_is_loaded(bufnr) then
             return
           end
           writers.issue_preview(obj, bufnr)
+          require("octo").set_cached_indicator(bufnr, is_cached)
         end)
       end
     end,

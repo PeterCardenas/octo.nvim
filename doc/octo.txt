@@ -532,6 +532,13 @@ Timeline activity in issue and pull request buffers, and top-level discussion
 comments, is newest first by default. Set `timeline_order = "oldest_first"` to
 restore oldest-first ordering. Replies in discussions remain chronological.
 
+Issue, pull request, discussion, picker preview, and pull-diff data is cached
+under `stdpath("cache")/octo/persistent` (up to 50 MiB) for stale-while-
+revalidate rendering. Cached buffers show a subtle `(cached)` marker until the
+live response arrives. Every cache hit is revalidated immediately; successful
+responses replace stale content unless the buffer has local edits. Set
+`persistent_cache = { enabled = false }` to disable disk caching.
+
 
 PR REVIEW                                       *octo-pr-review*
 

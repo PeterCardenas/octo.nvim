@@ -197,7 +197,7 @@ loading skeleton, then replaces it with fetched content as it arrives.
 
 ## 🔧 Configuration
 
-Timeline buffers show activity newest first by default. Set `timeline_order = "oldest_first"` to restore oldest-first activity; discussion replies remain chronological either way.
+Timeline buffers show activity newest first by default. Set `timeline_order = "oldest_first"` to restore oldest-first activity; discussion replies remain chronological either way. Issue, pull request, discussion, picker preview, and pull-diff data is also cached under `stdpath("cache")/octo/persistent` (up to 50 MiB) for stale-while-revalidate rendering. Cached buffers show a subtle `(cached)` marker until the live response arrives; set `persistent_cache = { enabled = false }` to disable disk caching. Every cache hit is revalidated immediately, and a successful response replaces stale content unless the buffer has local edits.
 
 Below is the full *default* configuration for `octo.nvim`.
 
@@ -251,6 +251,7 @@ require"octo".setup {
   timeline_marker = " ",
   timeline_indent = 2,
   timeline_order = "newest_first", -- timeline order in issue, PR, and discussion buffers
+  persistent_cache = { enabled = true }, -- stale-while-revalidate cache for issue, PR, discussion, previews, and diffs
   use_timeline_icons = true,
   timeline_icons = {
     auto_squash = "  ",

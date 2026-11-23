@@ -115,6 +115,9 @@ local M = {}
 ---@class OctoConfigDebug
 ---@field notify_missing_timeline_items boolean
 
+---@class OctoConfigPersistentCache
+---@field enabled boolean
+
 ---@class OctoConfigSearch
 ---@field completion_overrides table<string, string[]|fun(argLead: string, cmdLine: string): string[]>
 
@@ -138,6 +141,7 @@ local M = {}
 ---@field timeline_marker string
 ---@field timeline_indent number
 ---@field timeline_order "newest_first"|"oldest_first"
+---@field persistent_cache OctoConfigPersistentCache
 ---@field use_timeline_icons boolean
 ---@field timeline_icons table
 ---@field right_bubble_delimiter string
@@ -219,6 +223,7 @@ function M.get_default_values()
     timeline_marker = " ",
     timeline_indent = 2,
     timeline_order = "newest_first", -- timeline order in issue, PR, and discussion buffers
+    persistent_cache = { enabled = true }, -- stale-while-revalidate cache for issue, PR, discussion, previews, and diffs
     use_timeline_icons = true,
     timeline_icons = {
       auto_squash = "  ",
@@ -787,6 +792,9 @@ function M.validate_config()
     validate_type(config.timeline_marker, "timeline_marker", "string")
     validate_type(config.timeline_indent, "timeline_indent", "number")
     validate_string_enum(config.timeline_order, "timeline_order", { "newest_first", "oldest_first" })
+    if validate_type(config.persistent_cache, "persistent_cache", "table") then
+      validate_type(config.persistent_cache.enabled, "persistent_cache.enabled", "boolean")
+    end
     validate_type(config.right_bubble_delimiter, "right_bubble_delimiter", "string")
     validate_type(config.left_bubble_delimiter, "left_bubble_delimiter", "string")
     validate_type(config.github_hostname, "github_hostname", "string")

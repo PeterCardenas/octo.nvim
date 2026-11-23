@@ -66,7 +66,7 @@ end
 ---@param name string
 ---@param number string
 ---@param kind string
----@param on_success fun(obj: table): nil
+---@param on_success fun(obj: table, cached?: boolean): nil
 function M.fetch_preview(owner, name, number, kind, on_success)
   ---@param query string
   ---@param fields table<string, string>
@@ -85,7 +85,7 @@ function M.fetch_preview(owner, name, number, kind, on_success)
               utils.error("Failed to parse preview data: " .. vim.inspect(output))
               return
             end
-            on_success(obj)
+            on_success(obj, false)
           end,
         },
       },

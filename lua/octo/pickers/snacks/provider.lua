@@ -21,7 +21,7 @@ local M = {}
 local function render_fast_preview(ctx, kind, repo, number)
   ctx.preview:reset()
   ctx.preview:set_lines { "Loading preview…" }
-  require("octo").load_preview(repo, kind, number, nil, function(obj)
+  require("octo").load_preview(repo, kind, number, nil, function(obj, is_cached)
     if not vim.api.nvim_buf_is_valid(ctx.buf) or ctx.preview.item ~= ctx.item then
       return
     end
@@ -30,6 +30,7 @@ local function render_fast_preview(ctx, kind, repo, number)
     else
       writers.issue_preview(obj, ctx.buf)
     end
+    require("octo").set_cached_indicator(ctx.buf, is_cached)
     ctx.preview:highlight { ft = "octo" }
   end)
 end

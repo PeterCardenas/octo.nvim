@@ -1456,9 +1456,9 @@ function M.notifications(opts)
         vim.b[bufnr].bufpath =
           string.format("octo://%s/%s/%s", entry.repo, entry.kind == "pull_request" and "pull" or entry.kind, number)
         preview(cached_notification, bufnr)
-        return
+        require("octo").set_cached_indicator(bufnr, true)
       end
-      notifications.fetch_preview(owner, name, number, kind, function(obj)
+      notifications.fetch_preview(owner, name, number, kind, function(obj, is_cached)
         cached_notification_infos[entry.ordinal] = obj
         if not vim.api.nvim_buf_is_loaded(bufnr) then
           return
@@ -1466,6 +1466,7 @@ function M.notifications(opts)
         vim.b[bufnr].bufpath =
           string.format("octo://%s/%s/%s", entry.repo, entry.kind == "pull_request" and "pull" or entry.kind, number)
         preview(obj, bufnr)
+        require("octo").set_cached_indicator(bufnr, is_cached == true)
       end)
     end
     opts.preview_fn = preview_fn

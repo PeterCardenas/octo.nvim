@@ -62,7 +62,7 @@ function M.issue(formatted_issues, title)
     local entry = formatted_issues[entry_str]
 
     local number = entry.value
-    require("octo").load_preview(entry.repo, entry.kind, number, nil, function(obj)
+    require("octo").load_preview(entry.repo, entry.kind, number, nil, function(obj, is_cached)
       if self.preview_bufnr == tmpbuf and vim.api.nvim_buf_is_valid(tmpbuf) then
         local state = utils.get_displayed_state(entry.kind == "issue", obj.state, obj.stateReason)
 
@@ -78,6 +78,7 @@ function M.issue(formatted_issues, title)
           writers.write_reactions(tmpbuf, obj.reactionGroups, reactions_line)
           vim.bo[tmpbuf].filetype = "octo"
         end
+        require("octo").set_cached_indicator(tmpbuf, is_cached)
       end
     end)
 
@@ -114,7 +115,7 @@ function M.search(search_type)
     local number = tonumber(match())
 
     local repo = owner .. "/" .. name
-    require("octo").load_preview(repo, kind, number, nil, function(obj)
+    require("octo").load_preview(repo, kind, number, nil, function(obj, is_cached)
       if self.preview_bufnr == tmpbuf and vim.api.nvim_buf_is_valid(tmpbuf) then
         if kind == "discussion" then
           writers.discussion_preview(obj, tmpbuf)
@@ -132,6 +133,7 @@ function M.search(search_type)
         vim.b[tmpbuf].bufpath =
           string.format("octo://%s/%s/%s/%s", owner, name, kind == "pull_request" and "pull" or kind, number)
         vim.bo[tmpbuf].filetype = "octo"
+        require("octo").set_cached_indicator(tmpbuf, is_cached)
       end
     end)
 
@@ -396,12 +398,14 @@ function M.notifications(formatted_notifications, cached_notification_infos)
 
     if cached_notification then
       preview(cached_notification, tmpbuf)
+      require("octo").set_cached_indicator(tmpbuf, true)
     end
 
-    notifications.fetch_preview(owner, name, number, kind, function(obj)
+    notifications.fetch_preview(owner, name, number, kind, function(obj, is_cached)
       cached_notification_infos[entry.ordinal] = obj
       if self.preview_bufnr == tmpbuf and vim.api.nvim_buf_is_valid(tmpbuf) then
         preview(obj, tmpbuf)
+        require("octo").set_cached_indicator(tmpbuf, is_cached == true)
       end
     end)
     self:set_preview_buf(tmpbuf)
