@@ -23,9 +23,10 @@ end
 ---@param path string
 ---@param use_local boolean
 ---@param callback fun(path: string?, err: string?)
-function M.fetch(repo, commit, path, use_local, callback)
+---@param hostname? string GitHub Enterprise hostname for the pull request
+function M.fetch(repo, commit, path, use_local, callback, hostname)
   local cache = vim.fn.stdpath "cache" .. "/octo/images"
-  local host = config.values.github_hostname
+  local host = hostname or config.values.github_hostname
   if require("octo.utils").is_blank(host) then
     host = require("octo.utils").get_remote_host() or "github.com"
   end
@@ -76,6 +77,7 @@ function M.fetch(repo, commit, path, use_local, callback)
     gh.api.get {
       endpoint,
       opts = {
+        hostname = host,
         cb = function(output, stderr, code)
           if code ~= 0 then
             callback(nil, vim.trim(stderr or "Could not download image"))

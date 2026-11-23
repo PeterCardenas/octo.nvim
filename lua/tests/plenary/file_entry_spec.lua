@@ -2,24 +2,47 @@
 local file_entry = require "octo.reviews.file-entry"
 local reviews = require "octo.reviews"
 local utils = require "octo.utils"
+local gh = require "octo.gh"
+local config = require "octo.config"
 local FileEntry = file_entry.FileEntry
 local eq = assert.are.same
 
 describe("FileEntry:fetch", function()
   local original_reviews
   local original_get_file_contents
+  local original_graphql
+  local original_github_hostname
   local tabpage_key
 
   before_each(function()
     original_reviews = reviews.reviews
     original_get_file_contents = utils.get_file_contents
+    original_graphql = gh.api.graphql
+    original_github_hostname = config.values.github_hostname
     reviews.reviews = {}
     -- A fake current review so FileEntry:fetch can resolve the diff commits.
     tabpage_key = tostring(vim.api.nvim_get_current_tabpage())
     reviews.reviews[tabpage_key] = {
+      threads = {},
+      get_level = function()
+        return "PR"
+      end,
       layout = {
-        left = { commit = "left_sha" },
-        right = { commit = "right_sha" },
+        left = {
+          commit = "left_sha",
+          abbrev = function()
+            return "left"
+          end,
+        },
+        right = {
+          commit = "right_sha",
+          abbrev = function()
+            return "right"
+          end,
+        },
+        on_win_leave = function() end,
+        on_enter = function() end,
+        on_leave = function() end,
       },
     }
   end)
@@ -27,6 +50,8 @@ describe("FileEntry:fetch", function()
   after_each(function()
     reviews.reviews = original_reviews
     utils.get_file_contents = original_get_file_contents
+    gh.api.graphql = original_graphql
+    config.values.github_hostname = original_github_hostname
   end)
 
   local function make_file()
@@ -95,6 +120,42 @@ describe("FileEntry:fetch", function()
     file.right_fetched = true
 
     eq(true, file:fetch(true))
+  end)
+
+  it("renders text files from the PR host instead of the configured default host", function()
+    config.values.github_hostname = "other-github.example"
+    local requests = {}
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+      opts.opts.cb("loaded from enterprise", "", 0)
+    end
+    local file = FileEntry:new {
+      path = "a.txt",
+      pull_request = {
+        repo = "owner/repo",
+        hostname = "github.enterprise.internal",
+        local_left = false,
+        local_right = false,
+        files = {},
+      },
+      status = "M",
+      stats = { additions = 1, deletions = 0, changes = 1 },
+    }
+
+    eq(true, file:fetch(true))
+    local left_win = vim.api.nvim_get_current_win()
+    vim.cmd "vsplit"
+    local right_win = vim.api.nvim_get_current_win()
+    file:load_buffers(left_win, right_win)
+
+    eq(2, #requests)
+    for _, request in ipairs(requests) do
+      eq("github.enterprise.internal", request.opts.hostname)
+    end
+    eq({ "loaded from enterprise" }, vim.api.nvim_buf_get_lines(file.left_bufid, 0, -1, false))
+    eq({ "loaded from enterprise" }, vim.api.nvim_buf_get_lines(file.right_bufid, 0, -1, false))
+    file:destroy()
+    vim.cmd "only!"
   end)
 
   it("fetches the head side before merge-base metadata and the base side after it", function()

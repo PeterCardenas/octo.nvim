@@ -5,6 +5,7 @@ local Rev = require("octo.reviews.rev").Rev
 local gh = require "octo.gh"
 local pull_request_model = require "octo.model.pull-request"
 local utils = require "octo.utils"
+local config = require "octo.config"
 local eq = assert.are.same
 
 describe("Reviews module:", function()
@@ -15,6 +16,7 @@ describe("Reviews module:", function()
   local original_graphql
   local original_get
   local original_commit_exists
+  local original_file_panel_icons
 
   before_each(function()
     vim.cmd "tabonly!"
@@ -25,6 +27,7 @@ describe("Reviews module:", function()
     original_graphql = gh.api.graphql
     original_get = gh.api.get
     original_commit_exists = utils.commit_exists
+    original_file_panel_icons = config.values.file_panel.use_icons
     reviews.reviews = {}
   end)
 
@@ -37,9 +40,11 @@ describe("Reviews module:", function()
     gh.api.graphql = original_graphql
     gh.api.get = original_get
     utils.commit_exists = original_commit_exists
+    config.values.file_panel.use_icons = original_file_panel_icons
   end)
 
   it("keeps the registered review tab open when merge-base resolution falls back to the base OID", function()
+    config.values.file_panel.use_icons = false
     local reported_errors = {}
     utils.error = function(message)
       reported_errors[#reported_errors + 1] = message
@@ -50,9 +55,30 @@ describe("Reviews module:", function()
     utils.commit_exists = function(_, callback)
       callback(false)
     end
+    local compare_requests = 0
+    local files_endpoint_requested = false
     gh.api.get = function(opts)
       if opts[1] and opts[1]:find("compare", 1, true) then
+        compare_requests = compare_requests + 1
         opts.opts.cb(nil, "deleted fork head", 404)
+      elseif opts[1] and opts[1]:find("/files", 1, true) then
+        files_endpoint_requested = true
+        opts.opts.cb(
+          vim.json.encode {
+            {
+              {
+                filename = "file.lua",
+                status = "modified",
+                additions = 1,
+                deletions = 0,
+                changes = 1,
+              },
+            },
+          },
+          ""
+        )
+      elseif opts.jq == ".head.sha" then
+        opts.opts.cb("captured-head", "")
       end
     end
 
@@ -69,14 +95,11 @@ describe("Reviews module:", function()
       headRefOid = "captured-head",
       baseRefName = "main",
       headRefName = "deleted-branch",
-      changedFiles = 0,
+      changedFiles = 1,
       files = { nodes = {} },
     }, function(pr)
       ready_pull_request = pr
     end, function(pr)
-      pr.get_changed_files = function(_, callback)
-        callback {}
-      end
       early_review = reviews.Review:new(pr)
       early_review.populate_threads = function(_, callback)
         callback {
@@ -99,8 +122,52 @@ describe("Reviews module:", function()
     assert.are.same("captured-base", ready_pull_request.left.commit)
     assert.is_true(vim.api.nvim_tabpage_is_valid(layout.tabpage))
     assert.is_true(layout:is_live())
+    eq(1, #layout.files)
+    eq(1, compare_requests)
+    eq(true, files_endpoint_requested)
     assert.is_true(reported_errors[1]:find("Failed to fetch merge base", 1, true) ~= nil)
     early_review:close_layout(layout)
+  end)
+
+  it("checks the captured thread revision before starting the review mutation", function()
+    local mutation_requests = 0
+    gh.api.graphql = function()
+      mutation_requests = mutation_requests + 1
+    end
+    local review = setmetatable({
+      pull_request = {
+        id = "pr-node",
+        hostname = "github.enterprise.internal",
+        owner = "owner",
+        name = "repo",
+        number = 17,
+        base_oid = "captured-base",
+        head_oid = "captured-head",
+      },
+      populate_threads = function(_, callback)
+        callback {
+          data = {
+            repository = {
+              pullRequest = {
+                baseRefOid = "captured-base",
+                headRefOid = "moved-head",
+                reviewThreads = { nodes = {} },
+              },
+            },
+          },
+        }
+      end,
+    }, { __index = reviews.Review })
+    local error_message
+
+    review:create(function()
+      error "must not create a review against a changed thread revision"
+    end, function(message)
+      error_message = message
+    end)
+
+    eq(0, mutation_requests)
+    eq("Pull request revision changed while loading review; reopen the review", error_message)
   end)
 
   it("carries the pull request host through review-thread queries", function()
@@ -516,6 +583,114 @@ describe("Reviews module:", function()
     eq(true, browse_layout.closed)
   end)
 
+  it("re-enters a loading layout asynchronously instead of synchronously fetching its file", function()
+    local update_mode
+    local layout = setmetatable({
+      ready = true,
+      files = {},
+      file_panel = { loading = true },
+      get_current_file = function()
+        return nil
+      end,
+      update_files = function(_, async)
+        update_mode = async
+      end,
+    }, { __index = Layout })
+
+    layout:on_enter()
+
+    eq(true, update_mode)
+  end)
+
+  it("does not recover an asynchronously updated review layout by switching tabs", function()
+    vim.cmd "tabnew"
+    local review_tab = vim.api.nvim_get_current_tabpage()
+    vim.cmd "tabnew"
+    local user_tab = vim.api.nvim_get_current_tabpage()
+    local recovery_count, render_count = 0, 0
+    local pending_callback
+    local file = {
+      is_ready_to_render = function()
+        return false
+      end,
+      fetch = function(_, _, on_complete)
+        pending_callback = on_complete
+      end,
+      load_buffers = function()
+        render_count = render_count + 1
+      end,
+      detach_buffers = function() end,
+    }
+    local layout = setmetatable({
+      tabpage = review_tab,
+      closed = false,
+      files = { file },
+      selected_file_idx = 1,
+      file_panel = {
+        mark_selected = function() end,
+        set_cursor_to_file = function() end,
+      },
+      get_current_file = function()
+        return file
+      end,
+      validate_layout = function()
+        return { valid = false, tabpage = true, left_win = false, right_win = true }
+      end,
+      recover_layout = function()
+        recovery_count = recovery_count + 1
+        vim.api.nvim_set_current_tabpage(review_tab)
+      end,
+      prefetch_nearby_files = function() end,
+    }, { __index = Layout })
+    reviews.reviews[tostring(review_tab)] = { layout = layout }
+
+    layout:set_current_file_async(file)
+    pending_callback()
+
+    eq(user_tab, vim.api.nvim_get_current_tabpage())
+    eq(0, recovery_count)
+    eq(0, render_count)
+    vim.cmd "tabonly!"
+  end)
+
+  it("ignores files from an earlier focus_commit layout generation", function()
+    local callbacks = {}
+    local applied_files = {}
+    local old_layout = { close = function() end }
+    local original_layout_new = Layout.new
+    Layout.new = function(_, opts)
+      local layout = { right = opts.right, left = opts.left, files = {}, live = true }
+      function layout:open() end
+      function layout:close()
+        self.live = false
+      end
+      function layout:is_live()
+        return self.live
+      end
+      return layout
+    end
+    local pull_request = {
+      left = { commit = "pr-base" },
+      right = { commit = "pr-head" },
+      get_commit_changed_files = function(_, rev, callback)
+        callbacks[rev.commit] = callback
+      end,
+    }
+    local review = setmetatable({ pull_request = pull_request, layout = old_layout }, { __index = reviews.Review })
+    review.set_files_and_select_first = function(_, files)
+      applied_files[#applied_files + 1] = files[1]
+    end
+
+    review:focus_commit("first-head", "first-base")
+    review:focus_commit("second-head", "second-base")
+    callbacks["first-head"] { "stale-file" }
+    eq(0, #applied_files)
+    callbacks["second-head"] { "current-file" }
+
+    eq({ "current-file" }, applied_files)
+    Layout.new = original_layout_new
+  end)
+
   it("keeps stale file callbacks window-scoped and ignores errors after selection moves", function()
     local target_tab = vim.api.nvim_get_current_tabpage()
     local target_win = vim.api.nvim_get_current_win()
@@ -608,7 +783,9 @@ describe("Reviews module:", function()
       tabpage = vim.api.nvim_get_current_tabpage(),
       left_winid = vim.api.nvim_get_current_win(),
       right_winid = vim.api.nvim_get_current_win(),
-      ensure_layout = function() end,
+      ensure_layout = function()
+        return true
+      end,
       file_safeguard = function()
         return false
       end,

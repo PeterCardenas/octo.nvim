@@ -122,7 +122,9 @@ end
 function Layout:set_current_file(file, focus)
   self.user_selected_file = true
   self.selection_generation = (self.selection_generation or 0) + 1
-  self:ensure_layout()
+  if not self:ensure_layout() then
+    return
+  end
   if self:file_safeguard() or not file then
     return
   end
@@ -197,7 +199,9 @@ function Layout:set_current_file_async(file)
     if not is_current_selection() then
       return
     end
-    self:ensure_layout()
+    if not self:ensure_layout() then
+      return
+    end
     file:load_buffers(self.left_winid, self.right_winid, self.review)
     self:prefetch_nearby_files()
     self.file_panel:mark_selected(file)
@@ -404,9 +408,19 @@ end
 ---Ensure both left and right windows exist in the view's tabpage.
 function Layout:ensure_layout()
   local state = self:validate_layout()
-  if not state.valid then
-    self:recover_layout(state)
+  if state.valid then
+    return true
   end
+  if
+    not self.tabpage
+    or not vim.api.nvim_tabpage_is_valid(self.tabpage)
+    or vim.api.nvim_get_current_tabpage() ~= self.tabpage
+  then
+    self.update_needed = true
+    return false
+  end
+  self:recover_layout(state)
+  return true
 end
 
 ---Ensures there are files to load, and loads the null buffer otherwise.
@@ -425,7 +439,7 @@ end
 
 function Layout:on_enter()
   if self.ready then
-    self:update_files()
+    self:update_files(true)
   end
 
   local file = self:get_current_file()

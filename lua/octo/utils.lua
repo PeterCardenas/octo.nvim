@@ -1207,13 +1207,15 @@ end
 ---@param path string
 ---@param cb fun(lines: string[]): nil
 ---@param on_error? fun(message: string): nil
-function M.get_file_contents(repo, commit, path, cb, on_error)
+---@param hostname? string GitHub Enterprise hostname for this repository
+function M.get_file_contents(repo, commit, path, cb, on_error, hostname)
   local owner, name = M.split_repo(repo)
   gh.api.graphql {
     query = queries.file_content,
     f = { owner = owner, name = name, expression = commit .. ":" .. path },
     jq = ".data.repository.object.text",
     opts = {
+      hostname = hostname,
       cb = gh.create_callback {
         failure = function(message)
           if on_error then

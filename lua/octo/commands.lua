@@ -2521,6 +2521,7 @@ function M.reaction_action(reaction)
     return
   end
 
+  local bufnr = buffer.bufnr
   local action
   for _, reaction_group in ipairs(reaction_groups) do
     if reaction_group.content == reaction and reaction_group.viewerHasReacted then
@@ -2549,32 +2550,37 @@ function M.reaction_action(reaction)
             reaction_groups = resp.data.removeReaction.subject.reactionGroups
           end
 
-          local metadata = buffer:get_reaction_metadata(id)
+          local buffers = _G.octo_buffers
+          local current_buffer = buffers and buffers[bufnr] or nil
+          if not current_buffer then
+            return
+          end
+          local metadata = current_buffer:get_reaction_metadata(id)
           if not metadata then
             return
           end
           local has_reaction_line = metadata.reactionLine ~= nil
-          local reaction_line = metadata.reactionLine or get_reaction_line(buffer.bufnr, metadata.extmark)
+          local reaction_line = get_reaction_line(bufnr, metadata.extmark)
           if not reaction_line then
             return
           end
           local has_reactions = utils.count_reactions(reaction_groups) > 0
           if action == "remove" and not has_reactions and has_reaction_line then
-            vim.api.nvim_buf_set_lines(buffer.bufnr, reaction_line - 1, reaction_line + 1, false, {})
+            vim.api.nvim_buf_set_lines(bufnr, reaction_line - 1, reaction_line + 1, false, {})
             vim.api.nvim_buf_clear_namespace(
-              buffer.bufnr,
+              bufnr,
               constants.OCTO_REACTIONS_VT_NS,
               reaction_line - 1,
               reaction_line + 1
             )
           elseif action == "add" and not has_reaction_line then
-            vim.api.nvim_buf_set_lines(buffer.bufnr, reaction_line - 1, reaction_line - 1, false, { "", "" })
+            vim.api.nvim_buf_set_lines(bufnr, reaction_line - 1, reaction_line - 1, false, { "", "" })
           end
-          buffer:update_reactions_for_target(id, reaction_groups, reaction_line)
+          current_buffer:update_reactions_for_target(id, reaction_groups, reaction_line)
           if has_reactions then
-            writers.write_reactions(buffer.bufnr, reaction_groups, reaction_line)
+            writers.write_reactions(bufnr, reaction_groups, reaction_line)
           end
-          buffer:update_metadata()
+          current_buffer:update_metadata()
         end,
       },
     },

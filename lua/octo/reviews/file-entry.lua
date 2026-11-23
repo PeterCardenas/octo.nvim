@@ -297,7 +297,7 @@ function FileEntry:fetch(sync, on_complete, on_error, review)
       else
         image.fetch(self.pull_request.repo, sha, path, use_local, function(image_path, err)
           complete(err and { err } or {}, image_path)
-        end)
+        end, self.pull_request.hostname)
       end
     elseif use_local then
       utils.get_file_at_commit(path, sha, function(lines)
@@ -309,7 +309,7 @@ function FileEntry:fetch(sync, on_complete, on_error, review)
       end, function(message)
         self[side .. "_fetching"] = false
         notify_error(message)
-      end)
+      end, self.pull_request.hostname)
     end
   end
 

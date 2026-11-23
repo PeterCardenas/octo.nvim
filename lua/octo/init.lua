@@ -164,6 +164,24 @@ end
 ---@field on_reload? fun()
 ---@field on_error? fun()
 
+---@param octo_buffer OctoBuffer
+local function navigate_to_pending_anchor(octo_buffer)
+  local bufnr = octo_buffer.bufnr
+  local anchor = vim.b[bufnr].octo_pending_anchor
+  if not anchor then
+    return
+  end
+  vim.schedule(function()
+    if not vim.api.nvim_buf_is_valid(bufnr) or vim.b[bufnr].octo_pending_anchor ~= anchor then
+      return
+    end
+    local found = M.navigate_to_anchor(octo_buffer, anchor)
+    if found or octo_buffer.node._loadState ~= "shell" then
+      vim.b[bufnr].octo_pending_anchor = nil
+    end
+  end)
+end
+
 --- Load issue/pr/repo buffer
 ---@param opts? ReloadOpts
 ---@return nil
@@ -371,90 +389,163 @@ function M.load_buffer(opts)
   end
 
   ---@param buffer OctoBuffer
-  ---@return table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
+  ---@return table<integer, table<string, { start_offset: integer, end_offset: integer, level: integer, closed: boolean }[]>>
   local function capture_comment_fold_states(buffer)
-    local states = {} ---@type table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
-    if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
-      return states
-    end
-    vim.api.nvim_win_call(win, function()
-      for _, comment in ipairs(buffer.commentsMetadata or {}) do
-        if comment.id and comment.extmark then
-          local mark =
-            vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
-          if mark[1] and mark[3] and mark[3].end_row then
-            local first_line = mark[1] + 1
-            local last_line = math.min(mark[3].end_row + 1, vim.api.nvim_buf_line_count(bufnr))
-            local folds = {} ---@type { start_offset: integer, end_offset: integer, closed: boolean }[]
-            local previous_level = first_line > 1 and vim.fn.foldlevel(first_line - 1) or 0
-            for line = first_line, last_line do
-              local level = vim.fn.foldlevel(line)
-              if level > previous_level then
-                local closed_start = vim.fn.foldclosed(line)
-                if closed_start == -1 or closed_start == line then
-                  local end_line = line
-                  for candidate = line + 1, last_line do
-                    if vim.fn.foldlevel(candidate) < level then
-                      break
+    local states = {} ---@type table<integer, table<string, { start_offset: integer, end_offset: integer, level: integer, closed: boolean }[]>>
+    local fold_windows = vim.fn.win_findbuf(bufnr)
+    for _, fold_win in ipairs(fold_windows) do
+      if vim.api.nvim_win_is_valid(fold_win) and vim.api.nvim_win_get_buf(fold_win) == bufnr then
+        local window_states = {} ---@type table<string, { start_offset: integer, end_offset: integer, level: integer, closed: boolean }[]>
+        vim.api.nvim_win_call(fold_win, function()
+          local view = vim.fn.winsaveview()
+          for _, comment in ipairs(buffer.commentsMetadata or {}) do
+            if comment.id and comment.extmark then
+              local mark = vim.api.nvim_buf_get_extmark_by_id(
+                bufnr,
+                constants.OCTO_COMMENT_NS,
+                comment.extmark,
+                { details = true }
+              )
+              if mark[1] and mark[3] and mark[3].end_row then
+                local first_line = mark[1] + 1
+                local last_line = math.min(mark[3].end_row + 1, vim.api.nvim_buf_line_count(bufnr))
+                local folds = {} ---@type { start_offset: integer, end_offset: integer, level: integer, closed: boolean }[]
+                local previous_level = first_line > 1 and vim.fn.foldlevel(first_line - 1) or 0
+                for line = first_line, last_line do
+                  local level = vim.fn.foldlevel(line)
+                  if level > previous_level then
+                    for depth = previous_level + 1, level do
+                      local end_line = line
+                      for candidate = line + 1, last_line do
+                        if vim.fn.foldlevel(candidate) < depth then
+                          break
+                        end
+                        end_line = candidate
+                      end
+                      folds[#folds + 1] = {
+                        start_offset = line - first_line,
+                        end_offset = end_line - first_line,
+                        level = depth,
+                        closed = false,
+                      }
                     end
-                    end_line = candidate
                   end
-                  folds[#folds + 1] = {
-                    start_offset = line - first_line,
-                    end_offset = end_line - first_line,
-                    closed = closed_start == line,
-                  }
+                  previous_level = level
+                end
+
+                table.sort(folds, function(left, right)
+                  if left.level == right.level then
+                    return left.start_offset < right.start_offset
+                  end
+                  return left.level < right.level
+                end)
+                for _, fold in ipairs(folds) do
+                  local opened_ancestors = {} ---@type { start_offset: integer, end_offset: integer, level: integer, closed: boolean }[]
+                  for _, ancestor in ipairs(folds) do
+                    local contains_fold = ancestor.level < fold.level
+                      and ancestor.start_offset <= fold.start_offset
+                      and ancestor.end_offset >= fold.end_offset
+                    if contains_fold then
+                      local ancestor_line = first_line + ancestor.start_offset
+                      if vim.fn.foldclosed(ancestor_line) == ancestor_line then
+                        vim.api.nvim_win_set_cursor(fold_win, { ancestor_line, 0 })
+                        vim.cmd "normal! zo"
+                        opened_ancestors[#opened_ancestors + 1] = ancestor
+                      end
+                    end
+                  end
+
+                  local fold_line = first_line + fold.start_offset
+                  fold.closed = vim.fn.foldclosed(fold_line) == fold_line
+                  for index = #opened_ancestors, 1, -1 do
+                    local ancestor_line = first_line + opened_ancestors[index].start_offset
+                    if vim.fn.foldclosed(ancestor_line) == -1 then
+                      vim.api.nvim_win_set_cursor(fold_win, { ancestor_line, 0 })
+                      vim.cmd "normal! zc"
+                    end
+                  end
+                end
+                if #folds > 0 then
+                  window_states[tostring(comment.id)] = folds
                 end
               end
-              previous_level = level
-            end
-            if #folds > 0 then
-              states[tostring(comment.id)] = folds
             end
           end
+          vim.fn.winrestview(view)
+        end)
+        if next(window_states) then
+          states[fold_win] = window_states
         end
       end
-    end)
+    end
     return states
   end
 
   ---@param buffer OctoBuffer
-  ---@param states table<string, { start_offset: integer, end_offset: integer, closed: boolean }[]>
+  ---@param states table<integer, table<string, { start_offset: integer, end_offset: integer, level: integer, closed: boolean }[]>>
   local function restore_comment_fold_states(buffer, states)
-    if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
-      return
-    end
-    vim.api.nvim_win_call(win, function()
-      for _, comment in ipairs(buffer.commentsMetadata or {}) do
-        local saved_folds = comment.id and states[tostring(comment.id)] or nil
-        if saved_folds and comment.extmark then
-          local mark =
-            vim.api.nvim_buf_get_extmark_by_id(bufnr, constants.OCTO_COMMENT_NS, comment.extmark, { details = true })
-          if mark[1] and mark[3] and mark[3].end_row then
-            local first_line = mark[1] + 1
-            local last_line = mark[3].end_row + 1
-            table.sort(saved_folds, function(left, right)
-              return left.start_offset < right.start_offset
-            end)
-            for _, state in ipairs(saved_folds) do
-              local line = first_line + state.start_offset
-              if line <= last_line and vim.fn.foldlevel(line) > 0 then
-                vim.api.nvim_win_set_cursor(win, { line, 0 })
-                if state.closed then
-                  if vim.fn.foldclosed(line) == -1 then
-                    vim.cmd "normal! zc"
+    for fold_win, window_states in pairs(states) do
+      if vim.api.nvim_win_is_valid(fold_win) and vim.api.nvim_win_get_buf(fold_win) == bufnr then
+        vim.api.nvim_win_call(fold_win, function()
+          local view = vim.fn.winsaveview()
+          for _, comment in ipairs(buffer.commentsMetadata or {}) do
+            local saved_folds = comment.id and window_states[tostring(comment.id)] or nil
+            if saved_folds and comment.extmark then
+              local mark = vim.api.nvim_buf_get_extmark_by_id(
+                bufnr,
+                constants.OCTO_COMMENT_NS,
+                comment.extmark,
+                { details = true }
+              )
+              if mark[1] and mark[3] and mark[3].end_row then
+                local first_line = mark[1] + 1
+                local last_line = mark[3].end_row + 1
+                table.sort(saved_folds, function(left, right)
+                  if left.level == right.level then
+                    return left.start_offset < right.start_offset
                   end
-                else
-                  while vim.fn.foldclosed(line) ~= -1 do
-                    vim.cmd "normal! zo"
+                  return left.level < right.level
+                end)
+
+                for _, fold in ipairs(saved_folds) do
+                  local fold_line = first_line + fold.start_offset
+                  if fold_line <= last_line and vim.fn.foldlevel(fold_line) > 0 then
+                    for _, ancestor in ipairs(saved_folds) do
+                      local contains_fold = ancestor.level < fold.level
+                        and ancestor.start_offset <= fold.start_offset
+                        and ancestor.end_offset >= fold.end_offset
+                      if contains_fold then
+                        local ancestor_line = first_line + ancestor.start_offset
+                        if vim.fn.foldclosed(ancestor_line) ~= -1 then
+                          vim.api.nvim_win_set_cursor(fold_win, { ancestor_line, 0 })
+                          vim.cmd "normal! zo"
+                        end
+                      end
+                    end
+                    if vim.fn.foldclosed(fold_line) ~= -1 then
+                      vim.api.nvim_win_set_cursor(fold_win, { fold_line, 0 })
+                      vim.cmd "normal! zo"
+                    end
+                  end
+                end
+
+                for index = #saved_folds, 1, -1 do
+                  local fold = saved_folds[index]
+                  local fold_line = first_line + fold.start_offset
+                  if fold.closed and fold_line <= last_line and vim.fn.foldlevel(fold_line) > 0 then
+                    if vim.fn.foldclosed(fold_line) == -1 then
+                      vim.api.nvim_win_set_cursor(fold_win, { fold_line, 0 })
+                      vim.cmd "normal! zc"
+                    end
                   end
                 end
               end
             end
           end
-        end
+          vim.fn.winrestview(view)
+        end)
       end
-    end)
+    end
   end
 
   local shell_rendered = false
@@ -714,6 +805,9 @@ function M.load_buffer(opts)
       end
 
       restore_cursor()
+      if shell_rendered and octo_buf then
+        navigate_to_pending_anchor(octo_buf)
+      end
 
       if opts.verbose then
         utils.info(string.format("Loaded %s/%s/%d", repo, kind, id))
@@ -2036,19 +2130,7 @@ function M.create_buffer(kind, obj, repo, create, hostname)
   vim.bo[bufnr].modified = false
   require("octo.polling").track_buffer(bufnr)
 
-  -- Navigate to anchor if one was set by Octo <url>
-  local anchor = vim.b[bufnr].octo_pending_anchor
-  if anchor then
-    vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(bufnr) or vim.b[bufnr].octo_pending_anchor ~= anchor then
-        return
-      end
-      local found = M.navigate_to_anchor(octo_buffer, anchor)
-      if found or octo_buffer.node._loadState ~= "shell" then
-        vim.b[bufnr].octo_pending_anchor = nil
-      end
-    end)
-  end
+  navigate_to_pending_anchor(octo_buffer)
 end
 
 ---@param obj table

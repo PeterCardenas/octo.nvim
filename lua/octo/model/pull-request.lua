@@ -148,10 +148,9 @@ end
 ---@param on_page? fun(files: FileEntry[]): nil
 ---@param on_error? fun(message: string): nil
 function PullRequest:get_changed_files(callback, on_page, on_error)
-  local base_oid = self.base_oid or self.left.commit
   local head_oid = self.head_oid or self.right.commit
-  if not base_oid or base_oid == "" or not head_oid or head_oid == "" then
-    local message = "Cannot load review files without immutable base and head commits"
+  if not head_oid or head_oid == "" then
+    local message = "Cannot load review files without an immutable head commit"
     if on_error then
       on_error(message)
     else
@@ -168,54 +167,109 @@ function PullRequest:get_changed_files(callback, on_page, on_error)
     end
   end
 
-  gh.api.get {
-    "/repos/{repo}/compare/{base}...{head}",
-    format = { repo = self.repo, base = base_oid, head = head_oid },
-    opts = {
-      hostname = self.hostname,
-      cb = gh.create_callback {
-        failure = report_error,
-        success = function(output)
-          local ok, response = pcall(vim.json.decode, output)
-          local results = ok and type(response) == "table" and response.files or nil
-          if type(results) ~= "table" then
-            report_error "Comparison response has no changed-file list"
+  local function check_pinned_head(then_load_files)
+    gh.api.get {
+      "/repos/{repo}/pulls/{number}",
+      format = { repo = self.repo, number = self.number },
+      jq = ".head.sha",
+      opts = {
+        hostname = self.hostname,
+        cb = function(output, stderr, status)
+          if status ~= nil and status ~= 0 then
+            report_error(stderr or "Failed to verify pull request head revision")
             return
           end
-          if self.changed_files_count and #results ~= self.changed_files_count then
-            report_error(
-              string.format(
-                "Changed file count changed while loading (expected %d, received %d)",
-                self.changed_files_count,
-                #results
-              )
-            )
+          if not output then
+            report_error(stderr or "Failed to verify pull request head revision")
             return
           end
 
-          local files = {} ---@type FileEntry[]
-          for _, result in ipairs(results) do
-            files[#files + 1] = FileEntry:new {
-              path = result.filename,
-              previous_path = result.previous_filename,
-              patch = result.patch,
-              pull_request = self,
-              status = utils.file_status_map[result.status],
-              stats = {
-                additions = result.additions,
-                deletions = result.deletions,
-                changes = result.changes,
-              },
-            }
+          local head = vim.trim(output)
+          local ok, decoded = pcall(vim.json.decode, head)
+          if ok and type(decoded) == "string" then
+            head = decoded
           end
-          if on_page then
-            on_page(files)
+          if head ~= head_oid then
+            report_error "Pull request head changed while loading review; reopen the review"
+            return
           end
-          callback(files)
+          then_load_files()
         end,
       },
-    },
-  }
+    }
+  end
+
+  local function load_files()
+    gh.api.get {
+      "/repos/{repo}/pulls/{number}/files",
+      format = { repo = self.repo, number = self.number },
+      paginate = true,
+      slurp = true,
+      opts = {
+        hostname = self.hostname,
+        cb = gh.create_callback {
+          failure = report_error,
+          success = function(output)
+            local ok, pages = pcall(vim.json.decode, output)
+            if not ok or type(pages) ~= "table" then
+              report_error "Pull request files response is invalid"
+              return
+            end
+
+            local results = {}
+            for _, page in ipairs(pages) do
+              if type(page) ~= "table" then
+                report_error "Pull request files response contains an invalid page"
+                return
+              end
+              if page.filename then
+                results[#results + 1] = page
+              else
+                for _, result in ipairs(page) do
+                  results[#results + 1] = result
+                end
+              end
+            end
+
+            if self.changed_files_count and #results ~= self.changed_files_count then
+              report_error(
+                string.format(
+                  "Changed file count changed while loading (expected %d, received %d)",
+                  self.changed_files_count,
+                  #results
+                )
+              )
+              return
+            end
+
+            local files = {} ---@type FileEntry[]
+            for _, result in ipairs(results) do
+              files[#files + 1] = FileEntry:new {
+                path = result.filename,
+                previous_path = result.previous_filename,
+                patch = result.patch,
+                pull_request = self,
+                status = utils.file_status_map[result.status],
+                stats = {
+                  additions = result.additions,
+                  deletions = result.deletions,
+                  changes = result.changes,
+                },
+              }
+            end
+            check_pinned_head(function()
+              if on_page then
+                on_page(files)
+              end
+              callback(files)
+            end)
+          end,
+        },
+      },
+    }
+  end
+
+  check_pinned_head(load_files)
 end
 
 ---Fetch the changed files at a given commit

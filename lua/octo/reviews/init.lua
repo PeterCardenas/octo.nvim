@@ -49,26 +49,36 @@ end
 ---@param callback fun(obj: octo.mutations.StartReview): nil
 ---@param on_error? fun(message: string): nil
 function Review:create(callback, on_error)
-  local query = graphql("start_review_mutation", self.pull_request.id)
-  gh.api.graphql {
-    f = { query = query },
-    opts = {
-      hostname = self.pull_request.hostname,
-      cb = gh.create_callback {
-        failure = function(message)
-          if on_error then
-            on_error(message)
-          else
-            utils.error(message)
-          end
-        end,
-        success = function(output)
-          local resp = vim.json.decode(output)
-          callback(resp)
-        end,
+  local function report_error(message)
+    if on_error then
+      on_error(message)
+    else
+      utils.error(message)
+    end
+  end
+
+  self:populate_threads(function(response)
+    local pull_request = vim.tbl_get(response, "data", "repository", "pullRequest")
+    if type(pull_request) ~= "table" or not matches_pull_request_snapshot(self.pull_request, pull_request) then
+      report_error "Pull request revision changed while loading review; reopen the review"
+      return
+    end
+
+    local query = graphql("start_review_mutation", self.pull_request.id)
+    gh.api.graphql {
+      f = { query = query },
+      opts = {
+        hostname = self.pull_request.hostname,
+        cb = gh.create_callback {
+          failure = report_error,
+          success = function(output)
+            local resp = vim.json.decode(output)
+            callback(resp)
+          end,
+        },
       },
-    },
-  }
+    }
+  end, report_error)
 end
 
 ---Get review threads without starting a review.
@@ -366,20 +376,28 @@ end
 ---@param left string
 function Review:focus_commit(right, left)
   local pr = self.pull_request
-  self.layout:close()
-  self.layout = Layout:new {
+  local generation = (self.layout_generation or 0) + 1
+  self.layout_generation = generation
+  if self.layout then
+    self.layout:close()
+  end
+  local layout = Layout:new {
     right = Rev:new(right),
     left = Rev:new(left),
     files = {},
   }
-  self.layout:open(self)
+  self.layout = layout
+  layout:open(self)
   local function cb(files)
+    if self.layout_generation ~= generation or not self:is_loading_layout(layout) then
+      return
+    end
     self:set_files_and_select_first(files)
   end
   if right == self.pull_request.right.commit and left == self.pull_request.left.commit then
     pr:get_changed_files(cb)
   else
-    pr:get_commit_changed_files(self.layout.right, cb)
+    pr:get_commit_changed_files(layout.right, cb)
   end
 end
 
@@ -411,6 +429,7 @@ function Review:initiate(opts)
   end
 
   -- Open the loading layout before waiting for independent review requests.
+  self.layout_generation = (self.layout_generation or 0) + 1
   self.layout = Layout:new {
     left = opts.left or (pr.left_ready == false and Rev:new "" or pr.left),
     right = opts.right or pr.right,

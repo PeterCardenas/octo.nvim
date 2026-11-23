@@ -1472,6 +1472,109 @@ describe("Octo module:", function()
     assert.are.same(1, vim.fn.foldclosed(3))
   end)
 
+  it("preserves separate fold states in every window displaying the buffer", function()
+    local constants = require "octo.constants"
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "header", "body one", "body two", "body three", "tail" })
+    local old_mark = vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, 0, 0, { end_row = 4 })
+    vim.cmd [[setlocal foldmethod=manual]]
+    vim.cmd [[1,5fold]]
+    local first_win = vim.api.nvim_get_current_win()
+    vim.cmd "vsplit"
+    local second_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_call(first_win, function()
+      vim.cmd [[1foldclose]]
+    end)
+    vim.api.nvim_win_call(second_win, function()
+      vim.api.nvim_win_set_cursor(second_win, { 1, 0 })
+      vim.cmd "normal! zo"
+    end)
+    assert.are.same(
+      1,
+      vim.api.nvim_win_call(first_win, function()
+        return vim.fn.foldclosed(3)
+      end)
+    )
+    assert.are.same(
+      -1,
+      vim.api.nvim_win_call(second_win, function()
+        return vim.fn.foldclosed(3)
+      end)
+    )
+
+    local requests, get_buffer = install_async_load_stubs(function(buffer)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "header", "body one", "body two", "body three", "tail" })
+      local new_mark = vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, 0, 0, { end_row = 4 })
+      buffer.commentsMetadata = { { id = "comment-1", extmark = new_mark } }
+      for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+        vim.api.nvim_win_call(win, function()
+          vim.cmd "normal! zE"
+          vim.cmd [[setlocal foldmethod=manual]]
+          vim.cmd [[1,5fold]]
+        end)
+      end
+    end)
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell" }
+    get_buffer().commentsMetadata = { { id = "comment-1", extmark = old_mark } }
+
+    requests[1].callback { id = "complete" }
+
+    assert.are.same(
+      1,
+      vim.api.nvim_win_call(first_win, function()
+        return vim.fn.foldclosed(3)
+      end)
+    )
+    assert.are.same(
+      -1,
+      vim.api.nvim_win_call(second_win, function()
+        return vim.fn.foldclosed(3)
+      end)
+    )
+    vim.cmd "only!"
+  end)
+
+  it("preserves nested folds hidden under a closed comment parent", function()
+    local constants = require "octo.constants"
+    local bufnr = create_named_buffer "octo://owner/repo/issue/17"
+    local lines = { "comment start", "outer body", "<details>", "nested body", "</details>", "comment end", "tail" }
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    local old_mark = vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, 0, 0, { end_row = 6 })
+    vim.cmd [[setlocal foldmethod=manual]]
+    vim.cmd [[setlocal foldnestmax=20]]
+    vim.cmd [[1,6fold]]
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd "normal! zo"
+    vim.cmd [[3,5fold]]
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd "normal! zc"
+
+    local requests, get_buffer = install_async_load_stubs(function(buffer)
+      vim.cmd [[silent! normal! zE]]
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+      local new_mark = vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_COMMENT_NS, 0, 0, { end_row = 6 })
+      buffer.commentsMetadata = { { id = "comment-1", extmark = new_mark } }
+      vim.cmd [[setlocal foldmethod=manual]]
+      vim.cmd [[setlocal foldnestmax=20]]
+      vim.cmd [[1,6fold]]
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+      vim.cmd "normal! zo"
+      vim.cmd [[3,5fold]]
+      vim.api.nvim_win_set_cursor(0, { 3, 0 })
+      vim.cmd "normal! zo"
+    end)
+    octo.load_buffer { bufnr = bufnr }
+    requests[1].opts.on_shell { id = "shell" }
+    get_buffer().commentsMetadata = { { id = "comment-1", extmark = old_mark } }
+
+    requests[1].callback { id = "complete" }
+    assert.are.same(1, vim.fn.foldclosed(4))
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd "normal! zo"
+    assert.are.same(3, vim.fn.foldclosed(4))
+  end)
+
   it("preserves open comment and closed nested details fold states by comment ID", function()
     local constants = require "octo.constants"
     local bufnr = create_named_buffer "octo://owner/repo/issue/17"

@@ -65,11 +65,75 @@ describe("PullRequest:get_changed_files", function()
     utils.commit_exists = original_commit_exists
   end)
 
-  it("carries the resolved host through changed-file requests", function()
-    local request
+  it("loads more than 300 changed files from paginated PR files after validating the pinned head", function()
+    local requests = {}
     gh.api.get = function(opts)
-      request = opts
-      opts.opts.cb("[]", "")
+      requests[#requests + 1] = opts
+      if opts[1]:find("/files", 1, true) then
+        local pages = {}
+        for page = 1, 4 do
+          local files = {}
+          local first = (page - 1) * 100 + 1
+          local last = page == 4 and 305 or page * 100
+          for index = first, last do
+            files[#files + 1] = {
+              filename = string.format("file-%03d.txt", index),
+              status = "modified",
+              additions = 1,
+              deletions = 0,
+              changes = 1,
+            }
+          end
+          pages[#pages + 1] = files
+        end
+        opts.opts.cb(vim.json.encode(pages), "")
+      else
+        opts.opts.cb("head-oid", "")
+      end
+    end
+
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      hostname = "github.enterprise.internal",
+      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 305,
+    }, { __index = PullRequest })
+    local received
+    local error_message
+    pr:get_changed_files(
+      function(files)
+        received = files
+      end,
+      nil,
+      function(message)
+        error_message = message
+      end
+    )
+
+    eq(nil, error_message)
+    eq(305, #received)
+    eq("file-305.txt", received[305].path)
+    eq(3, #requests)
+    eq("github.enterprise.internal", requests[1].opts.hostname)
+    eq(true, requests[2].paginate)
+    eq(true, requests[2].slurp)
+    eq("/repos/{repo}/pulls/{number}/files", requests[2][1])
+  end)
+
+  it("carries the resolved host through revision and changed-file requests", function()
+    local requests = {}
+    gh.api.get = function(opts)
+      requests[#requests + 1] = opts
+      if opts[1]:find("/files", 1, true) then
+        opts.opts.cb("[]", "")
+      else
+        opts.opts.cb("head-oid", "")
+      end
     end
 
     local pr = setmetatable({
@@ -85,33 +149,41 @@ describe("PullRequest:get_changed_files", function()
     }, { __index = PullRequest })
     pr:get_changed_files(function() end)
 
-    eq("github.enterprise.internal", request.opts.hostname)
+    eq(3, #requests)
+    for _, request in ipairs(requests) do
+      eq("github.enterprise.internal", request.opts.hostname)
+    end
   end)
 
-  it("uses the immutable base and head OIDs for changed-file comparison after PR retargeting", function()
-    local request
+  it("uses paginated PR files and verifies the immutable head before and after loading", function()
+    local requests = {}
     gh.api.get = function(opts)
-      request = opts
-      opts.opts.cb(
-        vim.json.encode {
-          files = {
+      requests[#requests + 1] = opts
+      if opts[1]:find("/files", 1, true) then
+        opts.opts.cb(
+          vim.json.encode {
             {
-              filename = "file.lua",
-              status = "modified",
-              additions = 1,
-              deletions = 0,
-              changes = 1,
+              {
+                filename = "file.lua",
+                status = "modified",
+                additions = 1,
+                deletions = 0,
+                changes = 1,
+              },
             },
           },
-        },
-        ""
-      )
+          ""
+        )
+      else
+        opts.opts.cb("snapshot-head-oid", "")
+      end
     end
 
     local pr = setmetatable({
       repo = "owner/repo",
       number = 1,
       files = {},
+      hostname = "github.enterprise.internal",
       base_oid = "snapshot-base-oid",
       head_oid = "snapshot-head-oid",
       left = { commit = "merge-base-oid" },
@@ -126,32 +198,118 @@ describe("PullRequest:get_changed_files", function()
       progress = files
     end)
 
-    eq("/repos/{repo}/compare/{base}...{head}", request[1])
-    eq("owner/repo", request.format.repo)
-    eq("snapshot-base-oid", request.format.base)
-    eq("snapshot-head-oid", request.format.head)
+    eq(3, #requests)
+    eq("/repos/{repo}/pulls/{number}/files", requests[2][1])
+    eq(true, requests[2].paginate)
+    eq(true, requests[2].slurp)
+    eq(".head.sha", requests[1].jq)
+    eq(".head.sha", requests[3].jq)
     eq("file.lua", received[1].path)
     eq(received, progress)
   end)
 
-  it("reports a page failure instead of completing with a partial file list", function()
-    local request
+  it("accepts successful head validation with informational gh stderr", function()
     gh.api.get = function(opts)
-      request = opts.opts.cb
+      if opts[1]:find("/files", 1, true) then
+        opts.opts.cb("[[]]", "", 0)
+      else
+        opts.opts.cb("head-oid", "hint: use gh event listen", 0)
+      end
     end
 
     local pr = setmetatable({
       repo = "owner/repo",
       number = 1,
       files = {},
-      base_oid = "base-oid",
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 0,
+    }, { __index = PullRequest })
+    local completed = false
+    local error_message
+    pr:get_changed_files(
+      function()
+        completed = true
+      end,
+      nil,
+      function(message)
+        error_message = message
+      end
+    )
+
+    eq(true, completed)
+    eq(nil, error_message)
+  end)
+
+  it("reports a head revision change that occurs during the paginated file load", function()
+    local head_lookups = 0
+    gh.api.get = function(opts)
+      if opts[1]:find("/files", 1, true) then
+        opts.opts.cb(
+          vim.json.encode {
+            {
+              {
+                filename = "file.lua",
+                status = "modified",
+                additions = 1,
+                deletions = 0,
+                changes = 1,
+              },
+            },
+          },
+          ""
+        )
+      else
+        head_lookups = head_lookups + 1
+        opts.opts.cb(head_lookups == 1 and "head-oid" or "moved-head", "")
+      end
+    end
+
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
       head_oid = "head-oid",
       left = { commit = "base-oid" },
       right = { commit = "head-oid" },
       changed_files_count = 1,
-    }, {
-      __index = PullRequest,
-    })
+    }, { __index = PullRequest })
+    local completed = false
+    local error_message
+    pr:get_changed_files(
+      function()
+        completed = true
+      end,
+      nil,
+      function(message)
+        error_message = message
+      end
+    )
+
+    eq(false, completed)
+    eq("Pull request head changed while loading review; reopen the review", error_message)
+  end)
+
+  it("reports a paginated files failure instead of completing a partial list", function()
+    local file_request
+    gh.api.get = function(opts)
+      if opts[1]:find("/files", 1, true) then
+        file_request = opts.opts.cb
+      else
+        opts.opts.cb("head-oid", "")
+      end
+    end
+
+    local pr = setmetatable({
+      repo = "owner/repo",
+      number = 1,
+      files = {},
+      head_oid = "head-oid",
+      left = { commit = "base-oid" },
+      right = { commit = "head-oid" },
+      changed_files_count = 1,
+    }, { __index = PullRequest })
     local complete = false
     local error_message
     pr:get_changed_files(
@@ -164,30 +322,43 @@ describe("PullRequest:get_changed_files", function()
       end
     )
 
-    request(nil, "request failed")
+    file_request(nil, "request failed")
 
     eq(false, complete)
     eq("request failed", error_message)
   end)
 
   it("rejects a changed-file response whose count differs from PR metadata", function()
-    local request
     gh.api.get = function(opts)
-      request = opts.opts.cb
+      if opts[1]:find("/files", 1, true) then
+        opts.opts.cb(
+          vim.json.encode {
+            {
+              {
+                filename = "only-file.txt",
+                status = "modified",
+                additions = 1,
+                deletions = 0,
+                changes = 1,
+              },
+            },
+          },
+          ""
+        )
+      else
+        opts.opts.cb("head-oid", "")
+      end
     end
 
     local pr = setmetatable({
       repo = "owner/repo",
       number = 1,
       files = {},
-      base_oid = "base-oid",
       head_oid = "head-oid",
       left = { commit = "base-oid" },
       right = { commit = "head-oid" },
       changed_files_count = 2,
-    }, {
-      __index = PullRequest,
-    })
+    }, { __index = PullRequest })
     local complete = false
     local error_message
     pr:get_changed_files(
@@ -198,21 +369,6 @@ describe("PullRequest:get_changed_files", function()
       function(message)
         error_message = message
       end
-    )
-
-    request(
-      vim.json.encode {
-        files = {
-          {
-            filename = "only-file.txt",
-            status = "modified",
-            additions = 1,
-            deletions = 0,
-            changes = 1,
-          },
-        },
-      },
-      ""
     )
 
     eq(false, complete)

@@ -3,6 +3,7 @@ local FileEntry = require("octo.reviews.file-entry").FileEntry
 local reviews = require "octo.reviews"
 local utils = require "octo.utils"
 local gh = require "octo.gh"
+local config = require "octo.config"
 local eq = assert.are.same
 local bytes = "\137PNG\r\n\26\n\0\255\r\nimage\0"
 
@@ -14,13 +15,14 @@ local function read_bytes(path)
 end
 
 describe("automatic image reviews", function()
-  local original_reviews, original_snacks, original_get, original_text, original_system
-  local files, requests, rendered, cleaned
+  local original_reviews, original_snacks, original_get, original_text, original_system, original_hostname
+  local files, requests, request_hosts, rendered, cleaned
 
   before_each(function()
     original_reviews, original_snacks = reviews.reviews, _G.Snacks
-    original_get, original_text, original_system = gh.api.get, utils.get_file_contents, vim.system
-    files, requests, rendered, cleaned = {}, {}, {}, {}
+    original_get, original_text, original_system, original_hostname =
+      gh.api.get, utils.get_file_contents, vim.system, config.values.github_hostname
+    files, requests, request_hosts, rendered, cleaned = {}, {}, {}, {}, {}
     reviews.reviews = {
       [tostring(vim.api.nvim_get_current_tabpage())] = {
         threads = {},
@@ -75,6 +77,7 @@ describe("automatic image reviews", function()
     end
     gh.api.get = function(opts)
       requests[#requests + 1] = opts[1]
+      request_hosts[#request_hosts + 1] = opts.opts.hostname
       opts.opts.cb(vim.json.encode { encoding = "base64", content = vim.base64.encode(bytes), sha = "blob_sha" }, "", 0)
     end
   end)
@@ -91,13 +94,20 @@ describe("automatic image reviews", function()
     reviews.reviews, _G.Snacks = original_reviews, original_snacks
     vim.cmd "silent! only!"
     gh.api.get, utils.get_file_contents, vim.system = original_get, original_text, original_system
+    config.values.github_hostname = original_hostname
   end)
 
-  local function make_file(status, path)
+  local function make_file(status, path, hostname)
     local file = FileEntry:new {
       path = path or "images/a #?.png",
       previous_path = "images/old.png",
-      pull_request = { repo = "owner/repo", local_left = false, local_right = false, files = {} },
+      pull_request = {
+        repo = "owner/repo",
+        hostname = hostname,
+        local_left = false,
+        local_right = false,
+        files = {},
+      },
       status = status or "M",
       stats = { additions = 0, deletions = 0, changes = 0 },
     }
@@ -119,6 +129,20 @@ describe("automatic image reviews", function()
     eq(2, #requests)
     eq(true, file:fetch(true))
     eq(2, #requests)
+  end)
+
+  it("renders images from the PR host when the configured default is different", function()
+    config.values.github_hostname = "other-github.example"
+    local file = make_file(nil, nil, "github.enterprise.internal")
+    eq(true, file:fetch(true))
+    local left = vim.api.nvim_get_current_win()
+    vim.cmd "vsplit"
+    local right = vim.api.nvim_get_current_win()
+    file:load_buffers(left, right)
+
+    eq({ "github.enterprise.internal", "github.enterprise.internal" }, request_hosts)
+    eq(file.left_image_path, rendered[file.left_bufid])
+    eq(file.right_image_path, rendered[file.right_bufid])
   end)
 
   it("renders the two images without enabling text diff and cleans placements", function()
@@ -230,7 +254,9 @@ describe("automatic image reviews", function()
       }
     end
     layout.files = { entry "old.png", entry "new.png" }
-    layout.ensure_layout = function() end
+    layout.ensure_layout = function()
+      return true
+    end
     layout.file_safeguard = function()
       return false
     end
