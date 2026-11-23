@@ -490,7 +490,10 @@ describe("Octo module:", function()
 
       assert.is_table(loaded, "load should complete for " .. count .. " timeline nodes")
       assert.are.same(count, #loaded.timelineItems.nodes)
-      local expected_skips = { 99 }
+      local expected_skips = {}
+      if count > 100 then
+        expected_skips[1] = 99
+      end
       if count >= 200 then
         expected_skips[#expected_skips + 1] = 198
       end
@@ -567,6 +570,21 @@ describe("Octo module:", function()
 
     assert.is_true(fallback_used)
     assert.are.same(3, #loaded.timelineItems.nodes)
+  end)
+
+  it("starts the fast shell request before speculative page and detail requests", function()
+    local fragments = require "octo.gh.fragments"
+    local queries = require "octo.gh.queries"
+    fragments.setup()
+    queries.setup()
+    _G.octo_pv2_fragment = ""
+    local requests = {}
+    gh.api.graphql = function(opts)
+      requests[#requests + 1] = opts
+    end
+    octo.load("owner/repo", "issue", 17, nil, function() end)
+
+    assert.are.same(require "octo.gh.graphql"("issue_fast_query", _G.octo_pv2_fragment), requests[1].query)
   end)
 
   it("paints a loading skeleton before speculative timeline requests start", function()

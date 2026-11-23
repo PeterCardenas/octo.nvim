@@ -1209,8 +1209,6 @@ function M.load(repo, kind, id, hostname, cb, opts)
       }
     end
 
-    -- Start the full query before the shell request so neither waits on the other.
-    request_page(nil)
     M.load_preview(repo, kind, id, hostname, function(shell, is_cached)
       if fallback_started or load_completed or details_received then
         return
@@ -1233,6 +1231,9 @@ function M.load(repo, kind, id, hostname, cb, opts)
     end, function()
       fallback()
     end)
+
+    -- Give the fast paint request the first slot before starting full pagination.
+    request_page(nil)
     return
   end
 
@@ -1429,6 +1430,32 @@ function M.load(repo, kind, id, hostname, cb, opts)
     opts.on_skeleton()
   end
 
+  M.load_preview(repo, kind, id, hostname, function(shell, is_cached)
+    if fallback_started or load_completed or details_received then
+      return
+    end
+    local load_shell = shell
+    load_shell._loadState = "shell"
+    local shell_timeline = load_shell.timelineItems
+    local count = shell_timeline and shell_timeline.filteredCount
+    local shell_nodes = shell_timeline and shell_timeline.nodes or {}
+    if type(count) ~= "number" or count < #shell_nodes then
+      fallback()
+      return
+    end
+
+    start_page_fanout(count)
+    if details_received or fallback_started or load_completed then
+      return
+    end
+    load_shell._timelineIncomplete = count > #shell_nodes
+    if opts and opts.on_shell then
+      opts.on_shell(load_shell, is_cached)
+    end
+  end, function()
+    fallback()
+  end)
+
   -- Two overlap pages can reveal the count while shell and details are in flight.
   for page_index = 1, 2 do
     if expected_count == nil then
@@ -1571,32 +1598,6 @@ function M.load(repo, kind, id, hostname, cb, opts)
       },
     }
   end
-
-  M.load_preview(repo, kind, id, hostname, function(shell, is_cached)
-    if fallback_started or load_completed or details_received then
-      return
-    end
-    local load_shell = shell
-    load_shell._loadState = "shell"
-    local shell_timeline = load_shell.timelineItems
-    local count = shell_timeline and shell_timeline.filteredCount
-    local shell_nodes = shell_timeline and shell_timeline.nodes or {}
-    if type(count) ~= "number" or count < #shell_nodes then
-      fallback()
-      return
-    end
-
-    start_page_fanout(count)
-    if details_received or fallback_started or load_completed then
-      return
-    end
-    load_shell._timelineIncomplete = count > #shell_nodes
-    if opts and opts.on_shell then
-      opts.on_shell(load_shell, is_cached)
-    end
-  end, function()
-    fallback()
-  end)
 end
 
 function M.render_signs()
